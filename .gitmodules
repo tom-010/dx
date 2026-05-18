@@ -1,0 +1,18 @@
+[submodule "dx-agents"]
+	path = dx-agents
+	url = https://github.com/tom-010/dx-agents
+[submodule "mwbo"]
+	path = mwbo
+	url = https://github.com/tom-010/mwbo-german-medical-specialties
+[submodule "dependent-data"]
+	path = dependent-data
+	url = https://github.com/tom-010/dependent-data
+[submodule "pubmed-baseline"]
+	path = pubmed-baseline
+	url = https://github.com/tom-010/pubmed-baseline-data
+[submodule "dx-tom"]
+	path = dx-tom
+	url = https://github.com/tom-010/dx-tom
+[submodule "dx-website"]
+	path = dx-website
+	url = https://github.com/tom-010/dx-website
