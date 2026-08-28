@@ -1,0 +1,1 @@
+google-chrome-stable htmlcov/index.html

@@ -1,0 +1,119 @@
+# Dev infrastructure. `db`, `redis` and `s3` are always started; `app` + `worker` (the built
+# image) only with `--profile app`.
+name: dx
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: dx
+      POSTGRES_PASSWORD: dx
+      POSTGRES_DB: dx
+    ports:
+      - "5432:5432"
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql (not .../data).
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dx -d dx"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Celery broker + result store (Valkey is the open-source Redis fork; same protocol).
+  # Persistent: the append-only file is fsynced every second and lives in the `valkeydata`
+  # volume, so queued tasks and results survive a container restart (`db.sh down -v` wipes it).
+  redis:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible object store for uploaded files (Django's default storage, see CLAUDE.md
+  # "File storage"). RustFS: Apache-2.0 MinIO drop-in with bucket versioning; MinIO itself stopped
+  # publishing community images in 2025. Console: http://localhost:9101 (login dx / dxdxdxdx).
+  # Host ports are 9100/9101 (not 9000/9001) to stay clear of Hadoop & friends.
+  # The bucket + versioning are created by `manage.py ensure_bucket` (./scripts/db.sh runs it).
+  s3:
+    image: rustfs/rustfs:1.0.0-rc.3
+    environment:
+      RUSTFS_ACCESS_KEY: dx
+      RUSTFS_SECRET_KEY: dxdxdxdx
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "9100:9000"  # S3 API
+      - "9101:9001"  # web console
+    volumes:
+      - s3data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # The bundled image (frontend + backend). Build it with ./scripts/build.sh.
+  app:
+    profiles: ["app"]
+    image: dx-app:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment: &app_env
+      DATABASE_URL: postgres://dx:dx@db:5432/dx
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://s3:9000
+      S3_ACCESS_KEY: dx
+      S3_SECRET_KEY: dxdxdxdx
+      S3_BUCKET: dx-media
+      DEBUG: "false"
+      ALLOWED_HOSTS: '["localhost"]'
+      # Plain http on :8080 — the production image refuses to start otherwise (docker/entrypoint.sh
+      # runs `check --deploy`). Real values: docker/.env.prod.example + docker-compose.prod.yml.
+      SECRET_KEY: dev-compose-only-not-a-secret-0123456789abcdefghijklmnopqrstuvwxyz
+      HTTPS_ONLY: "false"
+      EMAIL_URL: dummy://
+    ports:
+      - "8080:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=8)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+
+  # Celery worker: same image, same env, different command. Starts once `app` is healthy, i.e.
+  # after the entrypoint applied the migrations (only the web process migrates).
+  worker:
+    profiles: ["app"]
+    image: dx-app:latest
+    command: ["celery", "-A", "config", "worker", "--loglevel=info", "--concurrency=2"]
+    environment: *app_env
+    healthcheck:
+      test: ["CMD", "celery", "-A", "config", "inspect", "ping", "--timeout=5"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  valkeydata:
+  s3data:

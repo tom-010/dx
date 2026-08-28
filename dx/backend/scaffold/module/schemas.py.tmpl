@@ -1,0 +1,31 @@
+"""API schemas for ${name}: services take `${Model}In`/`${Model}Patch` for PUT/PATCH."""
+
+import uuid
+
+from ninja import Field, ModelSchema
+
+from apps.core.schemas import StrictSchema
+from apps.${name}.models import ${Model}
+
+
+class ${Model}Out(ModelSchema):
+    id: uuid.UUID
+    description: str
+
+    class Meta:
+        model = ${Model}
+        fields = ["id", "name", "description", "created", "modified"]
+
+
+class ${Model}In(StrictSchema):
+    """Create (POST) and full update (PUT)."""
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+
+
+class ${Model}Patch(StrictSchema):
+    """Partial update (PATCH): only the fields that are present change."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None

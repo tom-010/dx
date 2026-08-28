@@ -1,0 +1,6 @@
+{
+    "app_name": "myapp",
+    "app_name_capitalized": "{{ cookiecutter.app_name.capitalize() }}",
+    "model_name": "{{ cookiecutter.app_name.replace('_', ' ').title().replace(' ', '') }}",
+    "verbose_name": "{{ cookiecutter.app_name.replace('_', ' ').title() }}"
+}

@@ -1,0 +1,155 @@
+# Production stack on one host: Caddy (TLS via Let's Encrypt) → app (gunicorn: API + SPA);
+# worker + beat (Celery); Postgres; Valkey (broker, results, cache); RustFS (uploads, backups).
+# Configuration comes from docker/.env.prod (copy docker/.env.prod.example). Run it with
+# ./scripts/prod.sh (= docker compose --env-file docker/.env.prod -f docker/docker-compose.prod.yml).
+# Only Caddy publishes ports; everything else talks over the internal network. To use managed
+# services instead, set DATABASE_URL / CACHE_URL / CELERY_BROKER_URL / S3_* in .env.prod and drop
+# the matching service here.
+name: dx-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Shared by app, worker and beat: same image, same environment, different command.
+x-app: &app
+  image: ${IMAGE:-dx-app:latest}
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+    args:
+      APP_VERSION: ${APP_VERSION:-dev}
+  restart: unless-stopped
+  logging: *logging
+  # Every key of backend/config/env.py may be set in .env.prod; the wiring below wins.
+  env_file: .env.prod
+  environment:
+    DEBUG: "false"
+    ALLOWED_HOSTS: '["${DOMAIN:?}"]'
+    DATABASE_URL: ${DATABASE_URL:-postgres://dx:${POSTGRES_PASSWORD:?}@db:5432/dx}
+    CACHE_URL: ${CACHE_URL:-redis://redis:6379/1}
+    CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+    CELERY_EAGER: "false"
+    S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging: *logging
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?}
+      ACME_EMAIL: ${ACME_EMAIL:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates + ACME account. Keep it: re-issuing on every restart hits rate limits.
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - app
+
+  app:
+    <<: *app
+    healthcheck:
+      # Readiness: database migrated, broker, buckets (apps/core/health.py) — worker and beat wait for it.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=8)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "config", "worker", "--loglevel=info", "--concurrency=${CELERY_CONCURRENCY:-2}"]
+    healthcheck:
+      test: ["CMD", "celery", "-A", "config", "inspect", "ping", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      app:
+        condition: service_healthy  # migrations applied
+
+  # Periodic tasks (CELERY_BEAT_SCHEDULE, e.g. the nightly backup). Exactly one instance; its
+  # state file (last run times) is disposable, so it lives in /tmp.
+  beat:
+    <<: *app
+    command: ["celery", "-A", "config", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    # No HTTP here, so the image's HEALTHCHECK does not apply; beat exits on failure and is restarted.
+    healthcheck:
+      disable: true
+    depends_on:
+      app:
+        condition: service_healthy
+
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: dx
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: dx
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql (not .../data).
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dx -d dx"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # Celery broker + results (db 0) and Django's cache (db 1). Append-only file in a volume:
+  # queued tasks survive restarts (settings.py "Durability").
+  redis:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    logging: *logging
+    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible object store: uploads (S3_BUCKET) and database dumps (S3_BACKUP_BUCKET),
+  # created by `manage.py ensure_bucket` in the entrypoint. No console, no published port —
+  # reach it through an SSH tunnel if you must.
+  s3:
+    image: rustfs/rustfs:1.0.0-rc.3
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:?}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:?}
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes:
+      - s3data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:9000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  valkeydata:
+  s3data:
+  caddydata:
+  caddyconfig:

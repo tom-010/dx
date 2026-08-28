@@ -1,0 +1,43 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+backend/staticfiles/
+db.sqlite3
+
+# Node
+node_modules/
+frontend/dist/
+
+# Local config
+.env
+.env.local
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+backend/media/
+
+# Backend artifacts
+*.log
+*.sqlite3
+*.sqlite3-journal
+backend/backups/
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# Editors
+.history/
+
+# Dev server logs (backend/scripts/serve.sh, frontend/scripts/serve.sh)
+logs/
+
+# Production stack configuration (docker/docker-compose.prod.yml)
+docker/.env.prod

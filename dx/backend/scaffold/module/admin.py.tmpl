@@ -1,0 +1,11 @@
+from django.contrib import admin
+
+from apps.${name}.models import ${Model}
+
+
+@admin.register(${Model})
+class ${Model}Admin(admin.ModelAdmin[${Model}]):
+    list_display = ["name", "owner", "created"]
+    list_filter = ["owner"]
+    search_fields = ["name"]
+    readonly_fields = ["id", "created", "modified"]

@@ -1,0 +1,65 @@
+"""HTTP surface for ${name}: thin ninja router delegating to services."""
+
+import uuid
+
+from django.db.models import QuerySet
+from django.http import HttpRequest
+from ninja import Router, Status
+from ninja.errors import HttpError
+from ninja.pagination import PageNumberPagination, paginate
+
+from apps.accounts.auth import current_user
+from apps.${name} import services
+from apps.${name}.models import ${Model}, ${Model}Id
+from apps.${name}.schemas import ${Model}In, ${Model}Out, ${Model}Patch
+
+router = Router(tags=["${name}"])
+
+
+@router.get("/${name}", response=list[${Model}Out])
+@paginate(PageNumberPagination)
+def list_${plural}(request: HttpRequest) -> QuerySet[${Model}]:
+    return services.list_${plural}(current_user(request))
+
+
+@router.post("/${name}", response={201: ${Model}Out})
+def create_${model}(request: HttpRequest, payload: ${Model}In) -> Status[${Model}]:
+    ${model} = services.create_${model}(
+        current_user(request), name=payload.name, description=payload.description
+    )
+    return Status(201, ${model})
+
+
+@router.get("/${name}/{${model}_id}", response=${Model}Out)
+def get_${model}(request: HttpRequest, ${model}_id: uuid.UUID) -> ${Model}:
+    try:
+        return services.get_${model}(current_user(request), ${Model}Id(${model}_id))
+    except services.${Model}NotFound:
+        raise HttpError(404, "${Model} not found") from None
+
+
+@router.put("/${name}/{${model}_id}", response=${Model}Out)
+def update_${model}(request: HttpRequest, ${model}_id: uuid.UUID, payload: ${Model}In) -> ${Model}:
+    try:
+        return services.update_${model}(current_user(request), ${Model}Id(${model}_id), payload)
+    except services.${Model}NotFound:
+        raise HttpError(404, "${Model} not found") from None
+
+
+@router.patch("/${name}/{${model}_id}", response=${Model}Out)
+def patch_${model}(
+    request: HttpRequest, ${model}_id: uuid.UUID, payload: ${Model}Patch
+) -> ${Model}:
+    try:
+        return services.patch_${model}(current_user(request), ${Model}Id(${model}_id), payload)
+    except services.${Model}NotFound:
+        raise HttpError(404, "${Model} not found") from None
+
+
+@router.delete("/${name}/{${model}_id}", response={204: None})
+def delete_${model}(request: HttpRequest, ${model}_id: uuid.UUID) -> Status[None]:
+    try:
+        services.delete_${model}(current_user(request), ${Model}Id(${model}_id))
+    except services.${Model}NotFound:
+        raise HttpError(404, "${Model} not found") from None
+    return Status(204, None)

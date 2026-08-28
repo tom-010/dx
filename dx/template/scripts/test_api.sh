@@ -1,0 +1,1 @@
+pytest -W ignore::DeprecationWarning -s -m "api" "${@:1}"

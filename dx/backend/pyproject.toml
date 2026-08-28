@@ -1,0 +1,108 @@
+[project]
+name = "dx-backend"
+version = "0.1.0"
+description = "Django backend for the dx data-management app"
+requires-python = ">=3.14"
+dependencies = [
+    "celery[redis]>=5.6.3",
+    "django>=6.1,<6.2",
+    "django-click>=2.5.0",
+    "django-cors-headers>=4.9.0",
+    "django-ninja>=1.6",
+    "django-pydantic-field>=0.5.4",
+    "django-storages[s3]>=1.14.6",
+    "django-structlog>=10.1.0",
+    "django-stubs-ext>=6.1.0",
+    "gunicorn>=26.2.0",
+    "psycopg[binary]>=3.3",
+    "pydantic-settings>=2.15",
+    "pyjwt>=2.13.0",
+    "rich>=15.0.0",
+    "sentry-sdk>=2.68",
+    "structlog>=26.1.0",
+    "whitenoise[brotli]>=6.12.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16",
+    "mypy>=2.3",
+    "django-stubs[compatible-mypy]>=6.1",
+    "pytest>=9.1",
+    "pytest-django>=4.14",
+    "watchfiles>=1.2.0",
+    "pytest-cov>=7.1.0",
+    "celery-types>=0.26.0",
+    "boto3-stubs[s3]>=1.43.82",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+# scaffold/ holds *.py.tmpl templates with placeholders, not code.
+extend-exclude = ["scaffold"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ANN"]
+
+[tool.ruff.lint.per-file-ignores]
+"*/migrations/*" = ["ANN", "E501"]
+"stubs/*" = ["F403"]
+
+# Strict plus the checks that catch logic errors (None handling, dead code, non-exhaustive
+# matches) — no style rules. Run with ./scripts/check.py; see CLAUDE.md "Type checking".
+[tool.mypy]
+strict = true
+warn_unused_ignores = true
+# Code mypy proves unreachable is a logic error (`if x is None` on a non-optional, dead branch).
+warn_unreachable = true
+# An untyped import must not silently turn a base class or signature into Any:
+# add a stub under stubs/ instead (never `ignore_missing_imports`).
+disallow_any_unimported = true
+enable_error_code = [
+    "possibly-undefined",  # a name assigned in only some branches is used afterwards
+    "redundant-expr",      # condition is always true/false (e.g. `x is None` on a non-optional)
+    "truthy-bool",         # `if obj:` on a type that is always truthy (missing `| None`?)
+    "truthy-iterable",     # `if iterable:` on an Iterable that may not support emptiness checks
+    "exhaustive-match",    # `match` must cover every case
+    "deprecated",          # calling something marked @deprecated
+    "unused-awaitable",    # a coroutine/future is created and dropped
+    "ignore-without-code", # `# type: ignore` must name the error code it silences
+]
+plugins = ["mypy_django_plugin.main"]
+exclude = ["migrations/", "scaffold/"]
+# Local stubs for untyped dependencies (stubs/<package>/__init__.pyi), see NOTES.md §5.
+# Currently: djclick, storages (django-storages).
+mypy_path = "stubs"
+
+# Business logic is Any-free: services are the framework-free layer (NOTES.md §3), so an `Any`
+# there is a missing type, not an edge. Framework edges (settings, env, task meta) may use it.
+[[tool.mypy.overrides]]
+module = ["apps.*.services"]
+disallow_any_explicit = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings"
+
+# Testing strategy: CLAUDE.md "Testing". Fixtures + auto-markers: backend/conftest.py.
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings_test"
+python_files = ["test_*.py"]
+addopts = "--strict-markers --tb=short -ra"
+markers = [
+    "api: HTTP-level tests through the Django test client (auto-applied to test_api.py)",
+    "infra: dev tooling such as management commands (auto-applied to test_commands.py)",
+    "slow: takes seconds; deselect with -m 'not slow'",
+]
+# Warnings are bugs waiting to happen: fail on them, allow-list third-party noise explicitly.
+filterwarnings = ["error"]
+
+# ./scripts/coverage.sh
+[tool.coverage.run]
+source = ["apps", "config"]
+omit = ["*/migrations/*", "*/tests/*", "manage.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["def __str__", "def __repr__", "if TYPE_CHECKING:", "pragma: no cover"]

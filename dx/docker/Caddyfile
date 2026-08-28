@@ -1,0 +1,12 @@
+# Reverse proxy with automatic HTTPS (Let's Encrypt) for docker/docker-compose.prod.yml.
+# DOMAIN and ACME_EMAIL come from docker/.env.prod. Caddy redirects http → https itself, sets
+# X-Forwarded-Proto/For for the app (SECURE_PROXY_SSL_HEADER) and keeps the original Host.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	# API responses are compressed here; WhiteNoise ships the static assets pre-compressed.
+	encode zstd gzip
+	reverse_proxy app:8000
+}

@@ -1,0 +1,18 @@
+import uuid
+from typing import NewType
+
+from django.db import models
+
+from apps.core.models import OwnedModel
+
+${Model}Id = NewType("${Model}Id", uuid.UUID)
+
+
+class ${Model}(OwnedModel):
+    """TODO: describe what a ${model} is."""
+
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+
+    class Meta(OwnedModel.Meta):
+        pass
