@@ -63,8 +63,9 @@ class Env(BaseSettings):
     # Location of the Vite build output (`pnpm build`); collected by collectstatic.
     FRONTEND_DIST: Path = BASE_DIR.parent / "frontend" / "dist"
 
-    # --- Logging (config/logging.py). Structured logs via structlog: human-readable console
-    # lines in dev, one JSON object per line in prod (LOG_FORMAT unset = follow DEBUG).
+    # --- Logging (config/logging.py). `console` = plain readable lines for developers (the
+    # default with DEBUG), `json` = structured one-object-per-line logs for production (the
+    # default without DEBUG, i.e. the docker image). LOG_FORMAT unset = follow DEBUG.
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     LOG_FORMAT: Literal["console", "json"] | None = None
     # Log every SQL query (`django.db.backends` at DEBUG); needs DEBUG=true to have any effect.
@@ -81,9 +82,12 @@ class Env(BaseSettings):
     # Share of requests/tasks traced for performance monitoring (0 = report errors only).
     SENTRY_TRACES_SAMPLE_RATE: float = 0.0
 
-    # --- Auth (apps.accounts) ---
-    # Lifetime of the JWT access tokens issued by POST /api/auth/login.
-    ACCESS_TOKEN_LIFETIME_DAYS: int = 7
+    # --- Auth (apps.accounts). A login yields two JWTs: a short-lived access token that every
+    # request carries, and a refresh token that renews it (POST /api/auth/refresh, rotated on
+    # every use, revoked by logout). Keep the access lifetime short — it cannot be revoked.
+    ACCESS_TOKEN_LIFETIME_MINUTES: int = 15
+    # How long a login stays valid without use; a refresh extends it by this again.
+    REFRESH_TOKEN_LIFETIME_DAYS: int = 30
     # Optional static bearer token for CI/scripts; authenticates as the first superuser.
     API_FIXED_TOKEN: str | None = None
     # Allow self-service sign-up via POST /api/auth/register.

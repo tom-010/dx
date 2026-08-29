@@ -16,6 +16,8 @@ PUBLIC_OPERATIONS = {
     "ready": "readiness probe (database, migrations, broker, storage) for orchestrators",
     "login": "issues the tokens everything else needs",
     "register": "self-service sign-up (disabled unless REGISTRATION_OPEN)",
+    "refresh_token": "renews an expired access token; the refresh token in the body is the key",
+    "logout": "revokes the refresh token in the body; must work after the access token expired",
     "download_document": "protected by a signed, expiring URL instead of a header",
     "stream_task_events": "SSE for EventSource (no headers): signed, expiring URL instead",
 }

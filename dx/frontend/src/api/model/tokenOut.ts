@@ -6,8 +6,11 @@
  */
 
 /**
- * Send as `Authorization: Bearer <access_token>`.
+ * Send `access_token` as `Authorization: Bearer …`; it expires after
+ * ACCESS_TOKEN_LIFETIME_MINUTES. Then POST `refresh_token` to /auth/refresh for a new pair
+ * (the refresh token is single-use) — or to /auth/logout to end the session.
  */
 export interface TokenOut {
   access_token: string;
+  refresh_token: string;
 }

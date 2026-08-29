@@ -518,6 +518,20 @@
         "title": "ReadyOut",
         "type": "object"
       },
+      "RefreshTokenIn": {
+        "additionalProperties": false,
+        "properties": {
+          "refresh_token": {
+            "title": "Refresh Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "refresh_token"
+        ],
+        "title": "RefreshTokenIn",
+        "type": "object"
+      },
       "RegisterIn": {
         "additionalProperties": false,
         "properties": {
@@ -647,15 +661,20 @@
         "type": "object"
       },
       "TokenOut": {
-        "description": "Send as `Authorization: Bearer <access_token>`.",
+        "description": "Send `access_token` as `Authorization: Bearer …`; it expires after\nACCESS_TOKEN_LIFETIME_MINUTES. Then POST `refresh_token` to /auth/refresh for a new pair\n(the refresh token is single-use) — or to /auth/logout to end the session.",
         "properties": {
           "access_token": {
             "title": "Access Token",
             "type": "string"
+          },
+          "refresh_token": {
+            "title": "Refresh Token",
+            "type": "string"
           }
         },
         "required": [
-          "access_token"
+          "access_token",
+          "refresh_token"
         ],
         "title": "TokenOut",
         "type": "object"
@@ -843,6 +862,32 @@
         ]
       }
     },
+    "/api/auth/logout": {
+      "post": {
+        "description": "End the session: the refresh token stops working (the access token expires by itself).\n\nPublic for the same reason as /auth/refresh; always 204, even for a token that is gone.",
+        "operationId": "logout",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshTokenIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/auth/me": {
       "get": {
         "operationId": "get_current_user",
@@ -872,9 +917,19 @@
     },
     "/api/auth/refresh": {
       "post": {
-        "description": "Issue a fresh access token for the caller (call before the current one expires).",
+        "description": "Trade a refresh token for a new access + refresh pair (the old refresh token is revoked).\n\nPublic: the access token is usually expired by the time this is called; the refresh token\nin the body is the credential.",
         "operationId": "refresh_token",
         "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshTokenIn"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -887,11 +942,6 @@
             "description": "OK"
           }
         },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
         "summary": "Refresh Token",
         "tags": [
           "auth"

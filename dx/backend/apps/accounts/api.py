@@ -29,9 +29,16 @@ class RegisterIn(StrictSchema):
 
 
 class TokenOut(Schema):
-    """Send as `Authorization: Bearer <access_token>`."""
+    """Send `access_token` as `Authorization: Bearer …`; it expires after
+    ACCESS_TOKEN_LIFETIME_MINUTES. Then POST `refresh_token` to /auth/refresh for a new pair
+    (the refresh token is single-use) — or to /auth/logout to end the session."""
 
     access_token: str
+    refresh_token: str
+
+
+class RefreshTokenIn(StrictSchema):
+    refresh_token: str
 
 
 class UserOut(Schema):
@@ -63,7 +70,11 @@ def login(request: HttpRequest, credentials: LoginIn) -> TokenOut:
         user = services.login(credentials.username, credentials.password)
     except services.InvalidCredentials:
         raise HttpError(401, "Invalid username or password") from None
-    return TokenOut(access_token=services.issue_access_token(user))
+    return _token_pair(services.issue_tokens(user))
+
+
+def _token_pair(pair: services.TokenPair) -> TokenOut:
+    return TokenOut(access_token=pair.access_token, refresh_token=pair.refresh_token)
 
 
 @router.post("/auth/register", response={201: TokenOut}, auth=None)
@@ -75,7 +86,7 @@ def register(request: HttpRequest, payload: RegisterIn) -> Status[TokenOut]:
         raise HttpError(403, "Registration is closed") from None
     except services.UserAlreadyExists as exc:
         raise HttpError(409, str(exc)) from None
-    return Status(201, TokenOut(access_token=services.issue_access_token(user)))
+    return Status(201, _token_pair(services.issue_tokens(user)))
 
 
 @router.get("/auth/me", response=UserOut)
@@ -83,10 +94,27 @@ def get_current_user(request: HttpRequest) -> User:
     return current_user(request)
 
 
-@router.post("/auth/refresh", response=TokenOut)
-def refresh_token(request: HttpRequest) -> TokenOut:
-    """Issue a fresh access token for the caller (call before the current one expires)."""
-    return TokenOut(access_token=services.issue_access_token(current_user(request)))
+@router.post("/auth/refresh", response=TokenOut, auth=None)
+def refresh_token(request: HttpRequest, payload: RefreshTokenIn) -> TokenOut:
+    """Trade a refresh token for a new access + refresh pair (the old refresh token is revoked).
+
+    Public: the access token is usually expired by the time this is called; the refresh token
+    in the body is the credential.
+    """
+    try:
+        return _token_pair(services.rotate_refresh_token(payload.refresh_token))
+    except services.InvalidRefreshToken:
+        raise HttpError(401, "Invalid or expired refresh token") from None
+
+
+@router.post("/auth/logout", response={204: None}, auth=None)
+def logout(request: HttpRequest, payload: RefreshTokenIn) -> Status[None]:
+    """End the session: the refresh token stops working (the access token expires by itself).
+
+    Public for the same reason as /auth/refresh; always 204, even for a token that is gone.
+    """
+    services.revoke_refresh_token(payload.refresh_token)
+    return Status(204, None)
 
 
 @router.get("/auth/api-tokens", response=list[ApiTokenOut])

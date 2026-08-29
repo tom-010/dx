@@ -9,6 +9,7 @@ from django.utils import timezone
 from apps.core.models import BaseModel
 
 ApiTokenId = NewType("ApiTokenId", uuid.UUID)
+RefreshTokenId = NewType("RefreshTokenId", uuid.UUID)
 
 # Distinguishes personal API tokens from JWTs in the Authorization header.
 API_TOKEN_PREFIX = "tk_"
@@ -54,3 +55,23 @@ class ApiToken(BaseModel):
     def touch(self) -> None:
         self.last_used = timezone.now()
         self.save(update_fields=["last_used"])
+
+
+class RefreshToken(BaseModel):
+    """One login session: the server-side half of a refresh JWT (its `jti` is this row's id).
+
+    Access tokens are stateless and short-lived; the refresh token that renews them is checked
+    against this row, so a login can be ended (logout, admin) before the JWT expires. Rotation
+    revokes the row and creates a new one on every refresh — a refresh token is single-use.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="refresh_tokens")
+    expires = models.DateTimeField()
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self) -> str:
+        return f"{self.user} - {self.pk}"
+
+    def revoke(self) -> None:
+        self.is_active = False
+        self.save(update_fields=["is_active", "modified"])

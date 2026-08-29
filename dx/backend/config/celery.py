@@ -5,10 +5,13 @@ Dev and prod run a real worker (`./scripts/celery.sh` auto-reloads on code chang
 `CELERY_EAGER=true` (tests) tasks run inline in the calling process and need no broker.
 """
 
+import logging.config
 import os
 
 import celery
 from celery import Celery
+from celery.signals import setup_logging
+from django.conf import settings
 from django_structlog.celery.steps import DjangoStructLogInitStep
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
@@ -19,6 +22,14 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 # Structured task logs with the request_id of the caller (config/logging.py).
 app.steps["worker"].add(DjangoStructLogInitStep)
+
+
+@setup_logging.connect
+def configure_worker_logging(**_kwargs: object) -> None:
+    """The worker logs like the web process: Django's LOGGING (config/logging.py) — plain
+    lines in dev, JSON in prod. Connecting this signal makes Celery skip its own logging
+    setup, which would otherwise replace the root handler with Celery's text format."""
+    logging.config.dictConfig(settings.LOGGING)
 
 
 class WithRetry(celery.Task):  # type: ignore[type-arg]  # celery-types wants Task[P, R]; base classes are generic-free

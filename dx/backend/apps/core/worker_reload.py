@@ -67,8 +67,9 @@ def run_with_reload(
     KeyboardInterrupt on SIGINT); tests pass a list. Returns the last worker's exit code.
     """
     process = spawn()
-    try:
-        with _sigterm_as_interrupt():
+    interrupted = False
+    with _sigterm_as_interrupt():
+        try:
             for changed in changes:
                 files = ", ".join(sorted({path for _, path in changed}))
                 if process.poll() is not None:
@@ -76,9 +77,20 @@ def run_with_reload(
                 echo(f"{files} changed, restarting worker")
                 stop_worker(process, stop_timeout, echo)
                 process = spawn()
-    except KeyboardInterrupt:
-        echo("stopping worker")
-    finally:
-        stop_worker(process, stop_timeout, echo)
+        except KeyboardInterrupt:
+            interrupted = True
+        finally:
+            # Ctrl+C reaches us more than once (`uv run` forwards it to its child on top of the
+            # terminal's process-group delivery): a repeat must not abort the graceful stop.
+            # Repeating SIGTERM is harmless — Celery's TERM handler is the same warm shutdown.
+            while True:
+                try:
+                    if interrupted:
+                        echo("stopping worker")
+                        interrupted = False
+                    stop_worker(process, stop_timeout, echo)
+                    break
+                except KeyboardInterrupt:
+                    continue
     # Negative = ended by our signal (expected); positive = the worker exited on its own (crash).
     return max(process.returncode or 0, 0)

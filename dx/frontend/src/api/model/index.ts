@@ -28,6 +28,7 @@ export * from "./pagedDocumentOut";
 export * from "./pagedMediaItemOut";
 export * from "./readyOut";
 export * from "./readyOutStatus";
+export * from "./refreshTokenIn";
 export * from "./registerIn";
 export * from "./streamTaskEventsParams";
 export * from "./taskOut";

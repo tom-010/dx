@@ -200,6 +200,31 @@ def test_run_with_reload_restarts_the_worker_per_change_set() -> None:
     assert code == 0  # a SIGTERM'd worker is the expected end, not a failure
 
 
+def test_run_with_reload_survives_a_repeated_ctrl_c() -> None:
+    """`uv run` forwards Ctrl+C to its child on top of the process-group delivery, so a second
+    KeyboardInterrupt lands while the worker is being stopped — it must not abort the stop."""
+    workers: list[subprocess.Popen[bytes]] = []
+    messages: list[str] = []
+
+    def spawn() -> subprocess.Popen[bytes]:
+        workers.append(subprocess.Popen(["sleep", "60"]))
+        return workers[-1]
+
+    def ctrl_c() -> set[worker_reload.FileChange]:
+        raise KeyboardInterrupt
+
+    def echo(message: str) -> None:
+        messages.append(message)
+        if messages.count("stopping worker") == 1:
+            raise KeyboardInterrupt  # the repeat, arriving mid-stop
+
+    code = worker_reload.run_with_reload(spawn, iter(ctrl_c, None), stop_timeout=5, echo=echo)
+
+    assert workers[0].returncode == -signal.SIGTERM
+    assert messages == ["stopping worker", "stopping worker"]
+    assert code == 0
+
+
 def test_run_with_reload_stops_the_worker_on_sigterm() -> None:
     """`kill`/`docker compose stop` must not leave the worker running in its own session."""
     workers: list[subprocess.Popen[bytes]] = []

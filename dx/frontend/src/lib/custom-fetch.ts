@@ -1,9 +1,22 @@
 /**
  * Transport used by every generated API function (see orval.config.ts → override.mutator).
  * Hand-written on purpose: it is not part of the API contract, only the HTTP plumbing.
- * Adds the bearer token (src/lib/auth.ts) and drops it again when the API answers 401.
+ *
+ * Auth: adds the access token (src/lib/auth.ts) as bearer header. When the API answers 401 the
+ * token has expired — the refresh token is traded for a new pair (POST /api/auth/refresh) and
+ * the request is retried once. Only when that fails too is the session over: the tokens are
+ * dropped and the root route sends the user back to /login.
  */
-import { getAccessToken, setAccessToken } from "@/lib/auth";
+import {
+  getRefreshTokenUrl,
+  refreshToken as requestRefresh,
+} from "@/api/auth/auth";
+import {
+  getAccessToken,
+  getRefreshToken,
+  reloadTokens,
+  setTokens,
+} from "@/lib/auth";
 
 /** Non-2xx responses are thrown so TanStack Query surfaces them as errors. */
 export class ApiError extends Error {
@@ -39,21 +52,68 @@ async function parseBody(response: Response): Promise<unknown> {
   return contentType.includes("application/json") ? JSON.parse(text) : text;
 }
 
+function send(
+  url: string,
+  init: RequestInit | undefined,
+  token: string | null,
+): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  if (token !== null && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return fetch(apiUrl(url), { ...init, headers });
+}
+
+let refreshing: Promise<string | null> | null = null;
+
+/**
+ * New access token from the refresh token, or null when the session is over. Single-flight:
+ * requests failing at the same moment share one refresh call (the refresh token is single-use).
+ */
+function refreshSession(): Promise<string | null> {
+  refreshing ??= refreshOnce().finally((): void => {
+    refreshing = null;
+  });
+  return refreshing;
+}
+
+async function refreshOnce(): Promise<string | null> {
+  const refresh = getRefreshToken();
+  if (refresh === null) return null;
+  try {
+    const pair = await requestRefresh({ refresh_token: refresh });
+    setTokens(pair);
+    return pair.access_token;
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 401) {
+      throw error; // network trouble: keep the session, the caller reports the failure
+    }
+    // Rejected. Either another tab rotated the pair meanwhile (its copy is in storage), or
+    // the session has ended (expired, logged out elsewhere, revoked).
+    if (reloadTokens()) return getAccessToken();
+    setTokens(null);
+    return null;
+  }
+}
+
 export async function customFetch<T>(
   url: string,
   init?: RequestInit,
 ): Promise<T> {
   const token = getAccessToken();
-  const headers = new Headers(init?.headers);
-  if (token !== null && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
+  let response = await send(url, init, token);
+  if (
+    response.status === 401 &&
+    token !== null &&
+    url !== getRefreshTokenUrl()
+  ) {
+    // Expired access token: use the one a concurrent refresh already stored, else refresh now.
+    const current = getAccessToken();
+    const fresh =
+      current !== null && current !== token ? current : await refreshSession();
+    if (fresh !== null) response = await send(url, init, fresh);
   }
-  const response = await fetch(apiUrl(url), { ...init, headers });
   const body = await parseBody(response);
-  if (response.status === 401 && token !== null) {
-    // Expired or revoked: forget it so the root route sends the user back to /login.
-    setAccessToken(null);
-  }
   if (!response.ok) {
     const detail =
       typeof body === "object" && body !== null && "detail" in body

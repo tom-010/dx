@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getAccessToken, setAccessToken } from "@/lib/auth";
+import { getAccessToken, setTokens } from "@/lib/auth";
 import { errorMessage } from "@/lib/custom-fetch";
 
 export const Route = createFileRoute("/login")({
@@ -28,8 +28,8 @@ function LoginPage(): JSX.Element {
   const [password, setPassword] = useState("");
   const login = useLogin({
     mutation: {
-      onSuccess: (token: TokenOut): void => {
-        setAccessToken(token.access_token);
+      onSuccess: (tokens: TokenOut): void => {
+        setTokens(tokens);
         navigate({ to: "/" });
       },
     },

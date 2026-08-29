@@ -9,9 +9,14 @@ import {
   useNavigate,
 } from "@tanstack/react-router";
 import { type JSX, useEffect } from "react";
-import { useGetCurrentUser } from "@/api/auth/auth";
+import { logout as logoutRequest, useGetCurrentUser } from "@/api/auth/auth";
 import { Button } from "@/components/ui/button";
-import { getAccessToken, setAccessToken, useAccessToken } from "@/lib/auth";
+import {
+  getAccessToken,
+  getRefreshToken,
+  setTokens,
+  useAccessToken,
+} from "@/lib/auth";
 
 const LOGIN_PATH = "/login";
 
@@ -39,7 +44,8 @@ function RootLayout(): JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // A 401 clears the token while a page is open (see customFetch): go back to the login form.
+  // The session can end while a page is open (refresh rejected, logged out in another tab —
+  // see customFetch and src/lib/auth.ts): go back to the login form.
   useEffect(() => {
     if (token === null && location.pathname !== LOGIN_PATH) {
       navigate({ to: LOGIN_PATH });
@@ -86,7 +92,12 @@ function UserMenu(): JSX.Element {
   const me = useGetCurrentUser();
 
   function logout(): void {
-    setAccessToken(null);
+    const refresh = getRefreshToken();
+    if (refresh !== null) {
+      // Revoke the session server-side; best effort — locally it ends either way.
+      logoutRequest({ refresh_token: refresh }).catch((): void => undefined);
+    }
+    setTokens(null);
     queryClient.clear(); // nothing of the previous user may survive in the cache
     navigate({ to: LOGIN_PATH });
   }

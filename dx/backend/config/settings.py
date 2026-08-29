@@ -134,7 +134,7 @@ CACHES = {
 SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
 
 
-# Logging (config/logging.py): structlog → console lines in dev, JSON lines in prod.
+# Logging (config/logging.py): plain readable lines in dev, structured JSON lines in prod.
 
 LOG_FORMAT = env.LOG_FORMAT or ("console" if DEBUG else "json")
 LOGGING = logging_config(level=env.LOG_LEVEL, fmt=LOG_FORMAT, sql=env.LOG_SQL and DEBUG)

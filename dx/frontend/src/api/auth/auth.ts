@@ -20,6 +20,7 @@ import type {
   ApiTokenIn,
   ApiTokenOut,
   LoginIn,
+  RefreshTokenIn,
   RegisterIn,
   TokenOut,
   UserOut,
@@ -399,6 +400,103 @@ export const useLogin = <TError = unknown, TContext = unknown>(options?: {
 > => {
   return useMutation(getLoginMutationOptions(options));
 };
+export const getLogoutUrl = () => {
+  return `/api/auth/logout`;
+};
+
+/**
+ * End the session: the refresh token stops working (the access token expires by itself).
+ *
+ * Public for the same reason as /auth/refresh; always 204, even for a token that is gone.
+ * @summary Logout
+ */
+export const logout = async (
+  refreshTokenIn: RefreshTokenIn,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<void> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+  return customFetch<void>(getLogoutUrl(), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(refreshTokenIn),
+  });
+};
+
+export const getLogoutMutationOptions = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof logout>>,
+    TError,
+    LogoutMutationVariables,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof logout>>,
+  TError,
+  LogoutMutationVariables,
+  TContext
+> => {
+  const mutationKey = ["logout"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof logout>>,
+    LogoutMutationVariables
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return logout(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type LogoutMutationResult = NonNullable<
+  Awaited<ReturnType<typeof logout>>
+>;
+export type LogoutMutationBody = RefreshTokenIn;
+export type LogoutMutationError = unknown;
+export type LogoutMutationVariables = { data: RefreshTokenIn };
+
+/**
+ * @summary Logout
+ */
+export const useLogout = <TError = unknown, TContext = unknown>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof logout>>,
+    TError,
+    LogoutMutationVariables,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof logout>>,
+  TError,
+  LogoutMutationVariables,
+  TContext
+> => {
+  return useMutation(getLogoutMutationOptions(options));
+};
 export const getGetCurrentUserUrl = () => {
   return `/api/auth/me`;
 };
@@ -479,15 +577,32 @@ export const getRefreshTokenUrl = () => {
 };
 
 /**
- * Issue a fresh access token for the caller (call before the current one expires).
+ * Trade a refresh token for a new access + refresh pair (the old refresh token is revoked).
+ *
+ * Public: the access token is usually expired by the time this is called; the refresh token
+ * in the body is the credential.
  * @summary Refresh Token
  */
 export const refreshToken = async (
+  refreshTokenIn: RefreshTokenIn,
   options?: Parameters<typeof customFetch>[1],
 ): Promise<TokenOut> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
   return customFetch<TokenOut>(getRefreshTokenUrl(), {
     ...options,
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(refreshTokenIn),
   });
 };
 
@@ -498,14 +613,14 @@ export const getRefreshTokenMutationOptions = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof refreshToken>>,
     TError,
-    void,
+    RefreshTokenMutationVariables,
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof refreshToken>>,
   TError,
-  void,
+  RefreshTokenMutationVariables,
   TContext
 > => {
   const mutationKey = ["refreshToken"];
@@ -519,9 +634,11 @@ export const getRefreshTokenMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof refreshToken>>,
-    void
-  > = () => {
-    return refreshToken(requestOptions);
+    RefreshTokenMutationVariables
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return refreshToken(data, requestOptions);
   };
 
   return { mutationFn, ...mutationOptions };
@@ -530,8 +647,9 @@ export const getRefreshTokenMutationOptions = <
 export type RefreshTokenMutationResult = NonNullable<
   Awaited<ReturnType<typeof refreshToken>>
 >;
-
+export type RefreshTokenMutationBody = RefreshTokenIn;
 export type RefreshTokenMutationError = unknown;
+export type RefreshTokenMutationVariables = { data: RefreshTokenIn };
 
 /**
  * @summary Refresh Token
@@ -543,14 +661,14 @@ export const useRefreshToken = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof refreshToken>>,
     TError,
-    void,
+    RefreshTokenMutationVariables,
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
   Awaited<ReturnType<typeof refreshToken>>,
   TError,
-  void,
+  RefreshTokenMutationVariables,
   TContext
 > => {
   return useMutation(getRefreshTokenMutationOptions(options));

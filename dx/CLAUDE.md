@@ -28,8 +28,8 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
 |----------------------|-------------------------------------------------------------|
 | Start dev Postgres+Redis+S3 | `./scripts/db.sh` (`down`, `logs -f`, … are passed through); creates the media bucket |
 | S3 console          | http://localhost:9101 (dx / dxdxdxdx) · `manage.py ensure_bucket` (media + backup bucket, idempotent) |
-| Celery worker        | `./scripts/celery.sh` (auto-reloads like runserver; `worker` = no reload, `beat`, `flower`, `purge`, `ping`) — needed for tasks in dev; log: `logs/celery.log` |
-| Run Django           | `./scripts/serve.sh` (= `backend/scripts/serve.sh`) → http://127.0.0.1:8000 (`PORT=…`); log: `logs/backend.log` |
+| Celery worker (alone)| `./scripts/celery.sh` (auto-reloads like runserver; `worker` = no reload, `beat`, `flower`, `purge`, `ping`); `serve.sh` already starts it — use this to run it separately; log: `logs/celery.log` |
+| Run Django + worker  | `./scripts/serve.sh` (Django :8000 **and** the Celery worker in one terminal; `PORT=…`, `WORKER=0` = Django only); logs: `logs/backend.log`, `logs/celery.log` |
 | Run Vite (frontend)  | `./scripts/frontend.sh` (= `frontend/scripts/serve.sh`) → http://localhost:5173; log: `logs/frontend.log` |
 | Read dev server logs | `tail -f logs/backend.log` / `tail -f logs/frontend.log` (or `tail -n 100 …`); see "Dev server logs" |
 | Django management    | `cd backend && uv run python manage.py <cmd>`               |
@@ -43,7 +43,7 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
 | Add shadcn component | `cd frontend && pnpm dlx shadcn@latest add <name>`          |
 | Sync schema + client | `./scripts/sync_schema.sh` = `frontend/sync_schema.sh` (`--check`, `--watch`) |
 | Dev superuser        | `cd backend && uv run python manage.py createadmin` (admin/admin) |
-| Token for curl       | `TOKEN=$(cd backend && uv run python manage.py token)` then `curl -H "Authorization: Bearer $TOKEN" …` |
+| Token for curl       | `TOKEN=$(cd backend && uv run python manage.py token)` then `curl -H "Authorization: Bearer $TOKEN" …` (expires after `ACCESS_TOKEN_LIFETIME_MINUTES`; `-m 60` for longer) |
 | Backend tests (short)| `./scripts/test.sh [pytest args]` · `./scripts/coverage.sh [--open]` |
 | Format everything    | `./scripts/format.sh` (ruff + Biome, auto-fix)               |
 | Lint everything      | `./scripts/lint.sh` (ruff, mypy, Biome — no changes)         |
@@ -168,8 +168,8 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     they propagate to Django's logging + `handler500`).
 - Config: defaults in `config/env.py` target the compose database
   (`postgres://dx:dx@localhost:5432/dx`). Override via env vars or `backend/.env`
-  (template: `backend/.env.example`; `.env` is git-ignored). Other keys: `ACCESS_TOKEN_LIFETIME_DAYS`,
-  `API_FIXED_TOKEN`, `REGISTRATION_OPEN`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` (JSON
+  (template: `backend/.env.example`; `.env` is git-ignored). Other keys:
+  `ACCESS_TOKEN_LIFETIME_MINUTES`, `REFRESH_TOKEN_LIFETIME_DAYS`, `API_FIXED_TOKEN`, `REGISTRATION_OPEN`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` (JSON
   lists, only needed for the Capacitor origins), `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`,
   `CELERY_EAGER`, `MEDIA_STORAGE` + `S3_*` (see "File storage"), `S3_BACKUP_BUCKET` +
   `BACKUP_KEEP` (see "Backups"), `LOG_LEVEL`/`LOG_FORMAT`/`LOG_SQL` (see "Logging"). In containers
@@ -234,9 +234,17 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
   `auth=None` (health/ready, login, register, signed document downloads, `/api/docs`). Outside the
   API, `/media/<key>?sig=` is public-but-signed (see "Media files").
 - Three token kinds, all resolved by `services.authenticate_bearer()`:
-  1. JWT access tokens (HS256 with `SECRET_KEY`, `ACCESS_TOKEN_LIFETIME_DAYS`) from
-     `POST /api/auth/login` (`{username, password}` → `{access_token}`); `POST /api/auth/refresh`
-     issues a new one; `GET /api/auth/me` returns the caller.
+  1. JWT access tokens (HS256 with `SECRET_KEY`, claim `token_type=access`, stateless and
+     therefore short-lived: `ACCESS_TOKEN_LIFETIME_MINUTES`, 15) from `POST /api/auth/login`
+     (`{username, password}` → `{access_token, refresh_token}`). The refresh token is a second
+     JWT (`token_type=refresh`, `REFRESH_TOKEN_LIFETIME_DAYS`, 30) whose `jti` is a
+     `RefreshToken` row = the login session. `POST /api/auth/refresh` (`{refresh_token}`,
+     public — the access token is expired by then) trades it for a new pair and revokes the
+     old row (single-use); `POST /api/auth/logout` (`{refresh_token}`, public, always 204)
+     revokes it. Expired/revoked/inactive user → 401 "Invalid or expired refresh token".
+     Deliberately no reuse detection (ending every session when an old token shows up — two
+     tabs refreshing at once would trigger it; `services.rotate_refresh_token`). Login purges
+     the user's expired rows. `GET /api/auth/me` returns the caller.
   2. Personal API tokens (`tk_…`, `ApiToken` model, never expire) for scripts/CI:
      `GET/POST /api/auth/api-tokens`, `DELETE /api/auth/api-tokens/{id}`.
   3. `API_FIXED_TOKEN` from the environment → acts as the first superuser (CI without DB state).
@@ -246,11 +254,18 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
 - Files that a browser fetches via plain `<a href>`/`<img src>` (no header) use signed, expiring
   URLs: `DocumentOut.download_url` carries `?sig=` (`documents/services.py::sign_download`),
   every `FileField.url` does too (`config/media.py::media_url`).
-- Frontend: `src/lib/auth.ts` keeps the token (localStorage + `useAccessToken()`),
-  `custom-fetch.ts` adds the header and clears the token on 401, `routes/__root.tsx` redirects
-  to `/login` (`routes/login.tsx`, `useLogin()`) when there is no token, and shows the user +
-  logout otherwise.
-- Dev: `manage.py createadmin` (admin/admin), `manage.py token` prints a JWT for curl.
+- Frontend: `src/lib/auth.ts` keeps the pair (localStorage `dx.access_token` /
+  `dx.refresh_token`, `useAccessToken()`; the `storage` event keeps open tabs in sync).
+  `custom-fetch.ts` adds the header; on a 401 it calls the generated `refreshToken()` once
+  (single-flight — requests failing together share it, the refresh token being single-use),
+  stores the new pair and retries the request. Only when the refresh is rejected too are the
+  tokens dropped and `routes/__root.tsx` redirects to `/login` (`routes/login.tsx`,
+  `useLogin()`); a rejection because another tab already rotated the pair falls back to that
+  tab's tokens (`reloadTokens()`). Network errors keep the session (offline: the refresh
+  happens at the next 401 after reconnecting). Logout (`__root.tsx`) posts the refresh token
+  to `logout()`, then clears tokens + query cache.
+- Dev: `manage.py createadmin` (admin/admin), `manage.py token [-m MINUTES]` prints an access
+  JWT for curl; anything unattended should use a personal API token instead.
 - The user model is our own: `apps.accounts.models.User` (`AUTH_USER_MODEL = "accounts.User"`,
   `AbstractUser` + UUIDv7 id). Import it from there (or `get_user_model()`), never from
   `django.contrib.auth.models`; extend it in place instead of adding a profile table.
@@ -375,20 +390,35 @@ store stays private, and the bundled compose works without a browser-reachable `
 
 ## Logging (`config/logging.py`)
 
-- structlog for everything: `logging.getLogger()` (Django, libraries) and
-  `structlog.get_logger()` (our code) share one `ProcessorFormatter`, so every line has the same
-  shape and context. `LOG_FORMAT=console` (default with `DEBUG`) renders readable lines, `json`
-  (default in prod) one JSON object per line for Loki/CloudWatch & co. `LOG_LEVEL` is the root
-  level; `LOG_SQL=true` (dev only) logs every query.
+- One pipeline, two renderings: `logging.getLogger()` (Django, Celery, libraries) and
+  `structlog.get_logger()` (our code) share one `ProcessorFormatter`. **`LOG_FORMAT=console`**
+  (default with `DEBUG` — what `./scripts/serve.sh` shows) prints plain developer output,
+  `HH:MM:SS LEVEL message key=value …` (time in `TIME_ZONE`, like runserver's own lines): one
+  line per request (`GET /api/health 200`, 4xx as
+  `WARN`, 5xx as `ERROR`), plain Python tracebacks, Celery's own task lines, the module name
+  appended for our code and for warnings/errors. **`LOG_FORMAT=json`** (default without
+  `DEBUG`, i.e. the docker image) prints one JSON object per line with the full structlog
+  context for Loki/CloudWatch & co. `LOG_LEVEL` is the root level; `LOG_SQL=true` (dev only)
+  logs every query.
+- The console format deliberately hides what only matters for correlating lines in a log
+  store: `request_id`, `user_id`, `ip`, task ids, `request_started`, and django-structlog's
+  `task_started`/`task_succeeded` events (the worker's "received"/"succeeded" lines say the
+  same). `compact_dev_events` + `DevRenderer` in `config/logging.py`; JSON keeps everything.
 - Log events, not sentences: `log = structlog.get_logger(__name__)`;
   `log.info("dataset_imported", dataset_id=str(dataset.pk), rows=n)`. The event name is a
   constant, the key/value pairs are what you filter on later — no f-strings.
 - django-structlog (`RequestMiddleware`, last in `MIDDLEWARE`) binds `request_id`, `user_id`
   (re-bound after the view, so the bearer-authenticated API user shows up) and `ip` to every
   line of a request and logs `request_started`/`request_finished` (status, path);
-  `django.server`'s own request lines are silenced to avoid duplicates. The Celery boot step in
-  `config/celery.py` (`DJANGO_STRUCTLOG_CELERY_ENABLED`) carries the ids into task logs.
-- Tests: `apps/core/tests/test_logging.py` (both formats; stdlib records get the context).
+  `django.server`'s request lines and Django's "Not Found: /x" per 4xx are silenced to avoid
+  duplicates (`django.request` stays at `ERROR`: its "Internal Server Error: /x" carries the
+  traceback), Django's DEFAULT_LOGGING handlers are removed (else every Django line prints
+  twice), and stdlib `extra=` is not carried into lines (Django/Celery put objects there). The Celery boot step in `config/celery.py`
+  (`DJANGO_STRUCTLOG_CELERY_ENABLED`) carries the ids into task logs, and its `setup_logging`
+  receiver (`configure_worker_logging`) makes the worker use `LOGGING` instead of Celery's own
+  root handler — so the worker prints the same plain/JSON lines as the web process.
+- Tests: `apps/core/tests/test_logging.py` (both formats; stdlib records get the context; the
+  console compaction; Django's handlers gone; the worker hook).
 
 ## Backups (`apps/core/backups.py`)
 

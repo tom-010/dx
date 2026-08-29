@@ -69,8 +69,23 @@ export const LoginBody = zod.object({
 export const LoginResponse = zod
   .object({
     access_token: zod.string(),
+    refresh_token: zod.string(),
   })
-  .describe("Send as `Authorization: Bearer <access_token>`.");
+  .describe(
+    "Send `access_token` as `Authorization: Bearer …`; it expires after\nACCESS_TOKEN_LIFETIME_MINUTES. Then POST `refresh_token` to \/auth\/refresh for a new pair\n(the refresh token is single-use) — or to \/auth\/logout to end the session.",
+  );
+
+/**
+ * End the session: the refresh token stops working (the access token expires by itself).
+ *
+ * Public for the same reason as /auth/refresh; always 204, even for a token that is gone.
+ * @summary Logout
+ */
+export const LogoutBody = zod.object({
+  refresh_token: zod.string(),
+});
+
+export const LogoutResponse = zod.void();
 
 /**
  * @summary Get Current User
@@ -85,14 +100,24 @@ export const GetCurrentUserResponse = zod.object({
 });
 
 /**
- * Issue a fresh access token for the caller (call before the current one expires).
+ * Trade a refresh token for a new access + refresh pair (the old refresh token is revoked).
+ *
+ * Public: the access token is usually expired by the time this is called; the refresh token
+ * in the body is the credential.
  * @summary Refresh Token
  */
+export const RefreshTokenBody = zod.object({
+  refresh_token: zod.string(),
+});
+
 export const RefreshTokenResponse = zod
   .object({
     access_token: zod.string(),
+    refresh_token: zod.string(),
   })
-  .describe("Send as `Authorization: Bearer <access_token>`.");
+  .describe(
+    "Send `access_token` as `Authorization: Bearer …`; it expires after\nACCESS_TOKEN_LIFETIME_MINUTES. Then POST `refresh_token` to \/auth\/refresh for a new pair\n(the refresh token is single-use) — or to \/auth\/logout to end the session.",
+  );
 
 /**
  * Self-service sign-up; only available when `REGISTRATION_OPEN=true`.
@@ -116,5 +141,8 @@ export const RegisterBody = zod.object({
 export const RegisterResponse = zod
   .object({
     access_token: zod.string(),
+    refresh_token: zod.string(),
   })
-  .describe("Send as `Authorization: Bearer <access_token>`.");
+  .describe(
+    "Send `access_token` as `Authorization: Bearer …`; it expires after\nACCESS_TOKEN_LIFETIME_MINUTES. Then POST `refresh_token` to \/auth\/refresh for a new pair\n(the refresh token is single-use) — or to \/auth\/logout to end the session.",
+  );

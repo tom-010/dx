@@ -44,6 +44,15 @@ def test_token_prints_a_bare_access_token() -> None:
     assert user.username == "admin"
 
 
+def test_token_lifetime_option() -> None:
+    runner.invoke(createadmin.command, [])
+
+    result = runner.invoke(token.command, ["--minutes", "-1"])
+
+    assert result.exit_code == 0, result.output
+    assert services.user_from_access_token(result.output) is None  # already expired
+
+
 def test_token_fails_for_wrong_credentials() -> None:
     result = runner.invoke(token.command, ["-u", "nobody", "-p", "nothing"])
 
