@@ -167,7 +167,7 @@ class BaseModel(models.Model):
 
         `exclude` names schema fields that are not columns of this row — a tag list living in an
         owned through model, say. Assigning one would hit a related-manager descriptor; the
-        service writes those itself (`apps/datasets/services.py::set_dataset_tags`).
+        router writes those itself (`apps/datasets/api.py::set_dataset_tags`).
         """
         for name in type(payload).model_fields:
             if name not in exclude:
@@ -194,7 +194,7 @@ _OwnedT = TypeVar("_OwnedT", bound="OwnedModel")
 
 class OwnedQuerySet(ActiveQuerySet[_OwnedT]):
     """Queryset of an `OwnedModel`. `for_user(user)` is the explicit half of the isolation:
-    services name the user they act for; the manager below adds the ambient scope on top."""
+    callers name the user they act for; the manager below adds the ambient scope on top."""
 
     def for_user(self, user: User) -> Self:
         return self.filter(owner=user)
@@ -276,7 +276,7 @@ class OwnedModel(BaseModel):
          rows whose `owner_id` differs from the request's user are invisible and unwritable,
          whatever the application code does.
 
-    Rules: services take the acting `User` and go through `Model.objects.for_user(user)`, so
+    Rules: functions take the acting `User` and go through `Model.objects.for_user(user)`, so
     another user's rows are indistinguishable from missing ones (404, never 403);
     `apps/core/tests/test_ownership.py` and `test_tenancy.py` enforce this for every owned
     model. `owner` is filled in from the tenant context when a service does not set it. Never
@@ -288,7 +288,7 @@ class OwnedModel(BaseModel):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,  # erasing a user erases their data; never SET_NULL
         related_name="%(class)ss",
-        editable=False,  # assigned by services / the tenant context, never by a form or client
+        editable=False,  # assigned from the tenant context, never by a form or client
     )
 
     objects = OwnedManager()

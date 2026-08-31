@@ -30,10 +30,10 @@ from django_scopes import scope
 from kombu.exceptions import OperationalError
 
 from apps.accounts.models import User
-from apps.datasets.models import Dataset
 from apps.core import backups
 from apps.core.db import pin_session_tenant, tenant_context, unpin_session_tenant
 from apps.core.history import history_context
+from apps.datasets.models import Dataset
 from config.celery import WithRetry
 
 # Custom state reported by long-running tasks via `update_state`.

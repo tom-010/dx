@@ -77,12 +77,6 @@ exclude = ["migrations/", "scaffold/"]
 # Currently: djclick, storages (django-storages).
 mypy_path = "stubs"
 
-# Business logic is Any-free: services are the framework-free layer (NOTES.md §3), so an `Any`
-# there is a missing type, not an edge. Framework edges (settings, env, task meta) may use it.
-[[tool.mypy.overrides]]
-module = ["apps.*.services"]
-disallow_any_explicit = true
-
 [tool.django-stubs]
 django_settings_module = "config.settings"
 

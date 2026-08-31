@@ -16,10 +16,10 @@ from apps.accounts.models import User
 from apps.core import lineage
 from apps.core.history import EventRow
 from apps.core.testing import acting_as
-from apps.datasets import services
+from apps.datasets.api import import_dataset_for
 from apps.datasets.models import Dataset, DatasetOptions
+from apps.documents.api import store_documents
 from apps.documents.models import Document, DocumentId
-from apps.documents.services import store_documents
 
 pytestmark = pytest.mark.django_db
 
@@ -67,7 +67,7 @@ def test_import_counts_rows_and_records_where_they_came_from(
 def test_the_edge_keeps_pointing_at_the_version_it_read(user: User) -> None:
     with acting_as(user):
         document = _upload(user)
-        dataset = services.import_dataset_from_document(user, DocumentId(document.pk))
+        dataset = import_dataset_for(user, DocumentId(document.pk))
 
         document.name = "renamed.csv"
         document.save()
@@ -85,7 +85,7 @@ def test_the_edge_keeps_pointing_at_the_version_it_read(user: User) -> None:
 def test_nothing_is_stale_until_the_source_moves(user: User) -> None:
     with acting_as(user):
         document = _upload(user)
-        services.import_dataset_from_document(user, DocumentId(document.pk))
+        import_dataset_for(user, DocumentId(document.pk))
 
         assert lineage.derived_from(document).count() == 1
         assert lineage.stale_derivations(document).count() == 0
@@ -94,7 +94,7 @@ def test_nothing_is_stale_until_the_source_moves(user: User) -> None:
 def test_header_option_changes_the_row_count(user: User) -> None:
     with acting_as(user):
         document = _upload(user)
-        dataset = services.import_dataset_from_document(
+        dataset = import_dataset_for(
             user, DocumentId(document.pk), options=DatasetOptions(has_header=False)
         )
     assert dataset.row_count == 3
@@ -103,15 +103,15 @@ def test_header_option_changes_the_row_count(user: User) -> None:
 def test_a_final_line_without_a_newline_still_counts(user: User) -> None:
     with acting_as(user):
         document = _upload(user, body=b"name\nalice\nbob")
-        dataset = services.import_dataset_from_document(user, DocumentId(document.pk))
+        dataset = import_dataset_for(user, DocumentId(document.pk))
     assert dataset.row_count == 2
 
 
 def test_a_header_only_file_imports_as_zero_rows(user: User) -> None:
-    """Not an empty file — uploads reject those (`documents.services.validate_upload`)."""
+    """Not an empty file — uploads reject those (`documents.api.validate_upload`)."""
     with acting_as(user):
         document = _upload(user, body=b"name,amount\n")
-        dataset = services.import_dataset_from_document(user, DocumentId(document.pk))
+        dataset = import_dataset_for(user, DocumentId(document.pk))
     assert dataset.row_count == 0
 
 
@@ -152,7 +152,7 @@ def test_another_tenants_document_is_a_404(
 def test_the_import_shows_up_in_the_datasets_history(auth_client: Client, user: User) -> None:
     with acting_as(user):
         document = _upload(user)
-        dataset = services.import_dataset_from_document(user, DocumentId(document.pk))
+        dataset = import_dataset_for(user, DocumentId(document.pk))
 
     body = auth_client.get(f"/api/history/dataset/{dataset.pk}").json()
 

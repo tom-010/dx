@@ -31,19 +31,19 @@ from django_scopes import ScopeError, get_scope, scope, scopes_disabled
 from pytest_django import DjangoAssertNumQueries
 from pytest_django.fixtures import Settings
 
-from apps.accounts import services as accounts_services
+from apps.accounts import api as accounts_api
 from apps.accounts.admin import UserAdmin
+from apps.accounts.api import issue_access_token
 from apps.accounts.models import User
-from apps.accounts.services import issue_access_token
 from apps.core import cache as tenant_cache
 from apps.core import checks, db, health, middleware, rls, scrub, tasks, tenants
 from apps.core.db import NoTenantContext
 from apps.core.history import hard_delete
 from apps.core.models import OwnedModel
 from apps.core.testing import acting_as
+from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
-from apps.datasets.services import create_dataset
-from apps.documents.services import store_documents
+from apps.documents.api import store_documents
 from config.env import BASE_DIR
 
 pytestmark = pytest.mark.django_db
@@ -283,13 +283,13 @@ def test_bearer_token_is_verified_exactly_once(
     auth_client: Client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[str] = []
-    original = accounts_services.authenticate_bearer
+    original = accounts_api.authenticate_bearer
 
     def counting(token: str) -> User | None:
         calls.append(token)
         return original(token)
 
-    monkeypatch.setattr(accounts_services, "authenticate_bearer", counting)
+    monkeypatch.setattr(accounts_api, "authenticate_bearer", counting)
 
     assert auth_client.get("/api/auth/me").status_code == 200
     assert len(calls) == 1  # the middleware's verification is reused by BearerAuth
@@ -307,9 +307,9 @@ def test_session_login_never_authenticates_the_api(client: Client, staff_user: U
 
 def test_tenant_task_runs_in_the_owners_context(user: User, other_user: User) -> None:
     with acting_as(user):
-        create_dataset(user, name="a", row_count=2)
+        create_dataset_for(user, name="a", row_count=2)
     with acting_as(other_user):
-        create_dataset(other_user, name="b", row_count=5)
+        create_dataset_for(other_user, name="b", row_count=5)
 
     assert tasks.dataset_summary.delay(user.pk).get() == {"datasets": 1, "rows": 2}
     # Ids arrive as strings from a JSON-serialised task message.
@@ -482,9 +482,9 @@ def test_worker_path_pins_the_session_and_clears_it_afterwards(
     """`tenant_task` in a real worker: a pinned session-level context while the function runs,
     cleared when it returns so the next task on this worker cannot inherit the tenant."""
     with acting_as(user):
-        create_dataset(user, name="mine")
+        create_dataset_for(user, name="mine")
     with acting_as(other_user):
-        create_dataset(other_user, name="theirs")
+        create_dataset_for(other_user, name="theirs")
     seen: dict[str, object] = {}
 
     def work(owner_id: uuid.UUID) -> int:
@@ -505,9 +505,9 @@ def test_worker_path_survives_a_reconnect_mid_task(user: User, other_user: User)
     """A dropped connection must not silently un-scope a running task: it would then read
     nothing and report success over an empty database."""
     with acting_as(user):
-        create_dataset(user, name="mine")
+        create_dataset_for(user, name="mine")
     with acting_as(other_user):
-        create_dataset(other_user, name="theirs")
+        create_dataset_for(other_user, name="theirs")
 
     def work(owner_id: uuid.UUID) -> int:
         connection.close()  # e.g. a database failover, or a task that closes it itself
@@ -628,7 +628,7 @@ def test_readiness_rls_check_reports_exceptions(monkeypatch: pytest.MonkeyPatch)
 
 def test_scope_with_none_is_not_a_backdoor(user: User) -> None:
     with acting_as(user):
-        create_dataset(user, name="mine")
+        create_dataset_for(user, name="mine")
     with scope(user=None), pytest.raises(ScopeError, match="primary key"):
         Dataset.objects.count()
 
@@ -652,7 +652,7 @@ def test_owned_upload_path_needs_an_owned_instance_with_an_owner(user: User) -> 
 
 def test_scrub_leaves_models_without_pii_alone(user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="plain")
+        dataset = create_dataset_for(user, name="plain")
     scrubbed = scrub.scrub(dataset)
     assert isinstance(scrubbed, Dataset) and scrubbed.name == "plain"
     assert scrub.pii_fields(Dataset) == []
@@ -744,9 +744,9 @@ def test_deleting_a_user_erases_exactly_that_tenant(user: User, other_user: User
     constraints DEFERRABLE INITIALLY DEFERRED, that happens at COMMIT, far from the call.
     Account-deletion tooling has to run with cross-tenant credentials."""
     with acting_as(user):
-        create_dataset(user, name="mine")
+        create_dataset_for(user, name="mine")
     with acting_as(other_user):
-        create_dataset(other_user, name="theirs")
+        create_dataset_for(other_user, name="theirs")
 
     with acting_as(other_user), pytest.raises(IntegrityError), transaction.atomic():
         User.objects.get(pk=user.pk).delete()  # collects nothing: RLS hides the datasets
@@ -873,7 +873,7 @@ def test_delete_tenant_removes_every_row_and_file_of_one_user(
 ) -> None:
     for owner in (user, other_user):
         with acting_as(owner):
-            create_dataset(owner, name=f"{owner.username}s data")
+            create_dataset_for(owner, name=f"{owner.username}s data")
             store_documents(
                 owner, [SimpleUploadedFile("f.pdf", b"%PDF", content_type="application/pdf")]
             )
@@ -938,7 +938,7 @@ def test_the_admin_does_not_offer_a_user_deletion_it_cannot_perform(
     staff_user.save()
     client.force_login(staff_user)
     with acting_as(user):
-        create_dataset(user, name="mine")
+        create_dataset_for(user, name="mine")
 
     assert UserAdmin(User, site).has_delete_permission(RequestFactory().get("/")) is False
     assert (

@@ -339,6 +339,11 @@ export const getDeleteNoteUrl = (noteId: string) => {
 };
 
 /**
+ * Soft delete (apps/core/models.py): the row keeps its place in the version chain, and
+ * `objects` stops returning it — so a second delete is a 404 exactly as before.
+ *
+ * Notes merged from it keep their edges, and those still resolve: the source row is still
+ * there, one version further on. That is the reason deletes are soft.
  * @summary Delete Note
  */
 export const deleteNote = async (
@@ -497,6 +502,7 @@ export const getPatchNoteUrl = (noteId: string) => {
 };
 
 /**
+ * PATCH: change only the fields the client sent.
  * @summary Patch Note
  */
 export const patchNote = async (
@@ -592,6 +598,7 @@ export const getUpdateNoteUrl = (noteId: string) => {
 };
 
 /**
+ * PUT: replace every field with the payload (schema defaults for omitted ones).
  * @summary Update Note
  */
 export const updateNote = async (

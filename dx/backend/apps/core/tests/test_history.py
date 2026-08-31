@@ -32,8 +32,8 @@ from apps.core.models import BaseModel
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
-from apps.documents.models import Document
 from apps.documents.api import store_documents
+from apps.documents.models import Document
 
 pytestmark = pytest.mark.django_db
 

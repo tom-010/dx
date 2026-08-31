@@ -13,7 +13,7 @@ from apps.accounts.models import User
 from apps.core import lineage
 from apps.core.history import EventRow
 from apps.core.testing import acting_as
-from apps.notes.api import create_note_for, delete_note_for, merge_notes_for
+from apps.notes.api import create_note_for, get_note_for, merge_notes_for
 from apps.notes.models import Note, NoteId
 
 pytestmark = pytest.mark.django_db
@@ -261,7 +261,7 @@ def test_a_deleted_note_still_appears_in_the_graph(user: User) -> None:
         first = create_note_for(user, title="Draft")
         second = create_note_for(user, title="Keep")
         merged = merge(user, first, second, title="Both")
-        delete_note_for(user, NoteId(first.pk))
+        get_note_for(user, NoteId(first.pk)).soft_delete()
 
         graph = lineage.graph(merged, depth=2)
 

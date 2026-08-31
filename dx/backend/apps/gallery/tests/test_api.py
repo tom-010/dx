@@ -5,11 +5,19 @@ from pathlib import Path
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
+from ninja.errors import HttpError
 from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.gallery.api import MAX_SIZE, kind_of, media_type_of, store_media_items, validate_upload
+from apps.gallery.api import (
+    MAX_SIZE,
+    get_media_item_for,
+    kind_of,
+    media_type_of,
+    store_media_items,
+    validate_upload,
+)
 from apps.gallery.models import MediaItem, MediaItemId, MediaKind
 
 pytestmark = pytest.mark.django_db

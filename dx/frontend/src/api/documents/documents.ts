@@ -236,6 +236,11 @@ export const getDeleteDocumentUrl = (documentId: string) => {
 };
 
 /**
+ * Soft delete, and the stored object stays.
+ *
+ * Deleting the bytes would leave every earlier version of this document pointing at a file
+ * that no longer exists. The row drops out of listings and downloads immediately; the object
+ * is reclaimed when the tenant is erased (`apps/core/tenants.py`).
  * @summary Delete Document
  */
 export const deleteDocument = async (

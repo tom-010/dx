@@ -23,8 +23,8 @@ from django.db import DatabaseError, connection, connections
 from django.test import Client
 from pytest_django import DjangoDbBlocker
 
-from apps.accounts.models import User
 from apps.accounts.api import issue_access_token
+from apps.accounts.models import User
 from apps.core import rls
 
 AUTO_MARKERS = {"test_api.py": "api", "test_commands.py": "infra"}

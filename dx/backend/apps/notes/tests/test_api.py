@@ -3,13 +3,13 @@ from collections.abc import Callable
 
 import pytest
 from django.test import Client
+from ninja.errors import HttpError
 
 from apps.accounts.models import User
 from apps.core import history, revisions
 from apps.core.testing import acting_as
-from apps.notes.api import create_note_for, get_note_for, patch_note_for
+from apps.notes.api import create_note_for, get_note_for, normalize_tags
 from apps.notes.models import Note, NoteId
-from apps.notes.schemas import NotePatch
 
 pytestmark = pytest.mark.django_db
 
@@ -32,7 +32,7 @@ def test_create_and_list(auth_client: Client) -> None:
 
 
 def test_get_put_patch_delete(auth_client: Client, user: User) -> None:
-    with acting_as(user):  # services need a tenant context; requests get it from the middleware
+    with acting_as(user):  # writes need a tenant context; requests get it from the middleware
         note = create_note_for(user, title="Temp", body="d")
     url = f"/api/notes/{note.pk}"
 
@@ -126,7 +126,8 @@ def test_reordering_tags_is_not_a_change(user: User) -> None:
     a different order must not look like an edit."""
     with acting_as(user):
         note = create_note_for(user, title="x", tags="walk, birds")
-        services.patch_note(user, NoteId(note.pk), NotePatch(tags="birds,walk"))
+        note.tags = normalize_tags("birds,walk")
+        note.save()
         note.refresh_from_db()
 
         assert note.tags == "birds, walk"

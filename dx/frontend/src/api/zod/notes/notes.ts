@@ -99,6 +99,11 @@ export const MergeNotesResponse = zod.object({
 });
 
 /**
+ * Soft delete (apps/core/models.py): the row keeps its place in the version chain, and
+ * `objects` stops returning it — so a second delete is a 404 exactly as before.
+ *
+ * Notes merged from it keep their edges, and those still resolve: the source row is still
+ * there, one version further on. That is the reason deletes are soft.
  * @summary Delete Note
  */
 export const DeleteNoteParams = zod.object({
@@ -127,6 +132,7 @@ export const GetNoteResponse = zod.object({
 });
 
 /**
+ * PATCH: change only the fields the client sent.
  * @summary Patch Note
  */
 export const PatchNoteParams = zod.object({
@@ -162,6 +168,7 @@ export const PatchNoteResponse = zod.object({
 });
 
 /**
+ * PUT: replace every field with the payload (schema defaults for omitted ones).
  * @summary Update Note
  */
 export const UpdateNoteParams = zod.object({

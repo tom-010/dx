@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from django.test import Client
 
-from apps.accounts import services
+from apps.accounts.api import issue_access_token, user_from_access_token
 from apps.accounts.models import ApiToken, RefreshToken, User
 from config.env import env
 
@@ -100,7 +100,7 @@ def test_refresh_rotates_the_pair(client: Client, user: User) -> None:
 def test_refresh_needs_no_access_token(client: Client, user: User) -> None:
     """Public endpoint: the frontend calls it precisely because the access token has expired."""
     tokens = _login(client)
-    expired = services.issue_access_token(user, lifetime=timedelta(seconds=-1))
+    expired = issue_access_token(user, lifetime=timedelta(seconds=-1))
 
     status, _ = _refresh(_bearer(expired), tokens["refresh_token"])
 
@@ -210,9 +210,9 @@ def test_register_when_open(client: Client, monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_expired_or_tampered_jwt_is_rejected(user: User) -> None:
-    expired = services.issue_access_token(user, lifetime=timedelta(seconds=-1))
-    tampered = services.issue_access_token(user) + "x"
+    expired = issue_access_token(user, lifetime=timedelta(seconds=-1))
+    tampered = issue_access_token(user) + "x"
 
-    assert services.user_from_access_token(expired) is None
-    assert services.user_from_access_token(tampered) is None
-    assert services.user_from_access_token(services.issue_access_token(user)) == user
+    assert user_from_access_token(expired) is None
+    assert user_from_access_token(tampered) is None
+    assert user_from_access_token(issue_access_token(user)) == user

@@ -13,7 +13,7 @@ import structlog
 from django.http import HttpRequest, HttpResponse
 from django.http.response import HttpResponseBase
 
-from apps.accounts.api import authenticate_bearer
+from apps.accounts import api as accounts_api
 from apps.accounts.models import User
 from apps.core.db import tenant_context
 
@@ -26,12 +26,16 @@ API_PREFIX = "/api/"
 
 def bearer_user(request: HttpRequest) -> User | None:
     """The user behind `Authorization: Bearer <token>`, parsed the way ninja's HttpBearer does
-    (so the middleware and `BearerAuth` always agree on the token)."""
+    (so the middleware and `BearerAuth` always agree on the token).
+
+    Reached through the module rather than a direct name so both call sites — here and
+    `BearerAuth` — resolve the same function at call time (test_tenancy counts the calls).
+    """
     header = request.headers.get("Authorization", "")
     scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token:
         return None
-    return authenticate_bearer(token)
+    return accounts_api.authenticate_bearer(token)
 
 
 class TenantMiddleware:

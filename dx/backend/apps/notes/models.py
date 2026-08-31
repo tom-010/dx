@@ -17,7 +17,7 @@ NoteId = NewType("NoteId", uuid.UUID)
 class Note(OwnedModel):
     """A piece of writing the user keeps.
 
-    Notes are the project's showcase for versioning and lineage (see `apps/notes/services.py`):
+    Notes are the project's showcase for versioning and lineage (see `apps/notes/api.py`):
     every edit is a version, and merging records which *version* of each source note the result
     was built from.
     """
@@ -27,7 +27,7 @@ class Note(OwnedModel):
     # A plain comma-separated string, deliberately: notes are a showcase, and a tag here is a
     # label on one note, not a thing in its own right. `apps/datasets` has the other shape —
     # an owned, versioned `Tag` model with a join table — for when tags need to be shared,
-    # renamed or counted. Normalised on write (`services.normalize_tags`).
+    # renamed or counted. Normalised on write (`api.normalize_tags`).
     tags = models.CharField(max_length=500, blank=True)
 
     class Meta(OwnedModel.Meta):

@@ -65,6 +65,7 @@ export const UploadMediaItemsResponseItem = zod.object({
 export const UploadMediaItemsResponse = zod.array(UploadMediaItemsResponseItem);
 
 /**
+ * Soft delete; the stored object stays (see `delete_document` in apps/documents/api.py).
  * @summary Delete Media Item
  */
 export const DeleteMediaItemParams = zod.object({

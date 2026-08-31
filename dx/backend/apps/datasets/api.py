@@ -232,6 +232,17 @@ def count_rows(document: Document, options: DatasetOptions) -> int:
     return max(newlines, 0)
 
 
+def delete_dataset_for(user: User, dataset_id: DatasetId) -> None:
+    """Soft delete: the row keeps its place in the version chain (apps/core/models.py).
+
+    The tag links go with it, and a tag that lost its last link is retired too — the cascade
+    Django no longer runs for us.
+    """
+    dataset = get_dataset_for(user, dataset_id)
+    set_dataset_tags(user, dataset, [])
+    dataset.soft_delete()
+
+
 def import_dataset_for(
     user: User,
     document_id: DocumentId,
@@ -348,13 +359,7 @@ def patch_dataset(request: HttpRequest, dataset_id: uuid.UUID, payload: DatasetP
 
 @router.delete("/datasets/{dataset_id}", response={204: None})
 def delete_dataset(request: HttpRequest, dataset_id: uuid.UUID) -> Status[None]:
-    """Soft delete: the row keeps its place in the version chain (apps/core/models.py).
-
-    `objects` already hides deleted rows, so a second DELETE of the same id is a 404, exactly as
-    a hard delete was. The tag links go with it — the cascade Django no longer runs for us.
-    """
-    user = current_user(request)
-    dataset = get_dataset_for(user, DatasetId(dataset_id))
-    set_dataset_tags(user, dataset, [])
-    dataset.soft_delete()
+    """`objects` already hides deleted rows, so a second DELETE of the same id is a 404,
+    exactly as a hard delete was."""
+    delete_dataset_for(current_user(request), DatasetId(dataset_id))
     return Status(204, None)

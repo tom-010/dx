@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
+from ninja.errors import HttpError
 from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
@@ -70,9 +71,7 @@ def test_download_streams_the_file(client: Client, user: User) -> None:
         (document,) = store_documents(user, [_pdf("download.pdf", b"payload")])
 
     # A signed link works without a bearer token (plain <a href> in the SPA).
-    response = client.get(
-        f"/api/documents/{document.pk}/download?sig={sign_download(document)}"
-    )
+    response = client.get(f"/api/documents/{document.pk}/download?sig={sign_download(document)}")
 
     assert response.status_code == 200
     assert b"".join(response.streaming_content) == b"payload"  # type: ignore[attr-defined]
@@ -118,7 +117,7 @@ def test_delete_hides_the_row_and_keeps_the_file(
     auth_client: Client, user: User, media_root: Path
 ) -> None:
     """Deletes are soft, so the stored object stays: earlier versions of the document still
-    reference it (apps/documents/services.py::delete_document)."""
+    reference it (delete_document in apps/documents/api.py)."""
     with acting_as(user):
         (document,) = store_documents(user, [_pdf("gone.pdf")])
     assert len(list(media_root.rglob("*.pdf"))) == 1
@@ -135,14 +134,14 @@ def test_delete_hides_the_row_and_keeps_the_file(
     assert gone.version == 2  # the soft delete is a version of the object
 
 
-def test_service_validates_size_limit() -> None:
+def test_upload_validates_the_size_limit() -> None:
     big = SimpleUploadedFile("big.bin", b"x", content_type="application/octet-stream")
     big.size = MAX_DOCUMENT_SIZE + 1
 
-    with pytest.raises(services.InvalidDocument, match="exceeds"):
+    with pytest.raises(HttpError, match="exceeds"):
         validate_upload([big])
 
 
-def test_service_raises_for_unknown_id(user: User) -> None:
-    with acting_as(user), pytest.raises(services.DocumentNotFound):
+def test_lookup_raises_for_unknown_id(user: User) -> None:
+    with acting_as(user), pytest.raises(HttpError):
         get_document_for(user, DocumentId(uuid.uuid7()))

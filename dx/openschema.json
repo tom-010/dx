@@ -1489,7 +1489,7 @@
     },
     "/api/auth/logout": {
       "post": {
-        "description": "End the session: the refresh token stops working (the access token expires by itself).\n\nPublic for the same reason as /auth/refresh; always 204, even for a token that is gone.",
+        "description": "End the session: the refresh token stops working (the access token expires by itself).\n\nPublic for the same reason as /auth/refresh; always 204, even for a token that is gone —\nlogging out twice is not an error.",
         "operationId": "logout",
         "parameters": [],
         "requestBody": {
@@ -1542,7 +1542,7 @@
     },
     "/api/auth/refresh": {
       "post": {
-        "description": "Trade a refresh token for a new access + refresh pair (the old refresh token is revoked).\n\nPublic: the access token is usually expired by the time this is called; the refresh token\nin the body is the credential.",
+        "description": "Trade a refresh token for a new access + refresh pair (the old refresh token is revoked).\n\nPublic: the access token is usually expired by the time this is called; the refresh token\nin the body is the credential.\n\nDeliberately no \"reuse detection\" (ending every session of the user when an old token shows\nup): two browser tabs refreshing at the same moment would trigger it constantly, and a\nrefresh token that leaked via the client's storage implies the client itself is compromised.",
         "operationId": "refresh_token",
         "parameters": [],
         "requestBody": {
@@ -1608,6 +1608,7 @@
     },
     "/api/datasets": {
       "get": {
+        "description": "The user's datasets, newest first.\n\n`tag_links` is prefetched because every row renders its tags: the related manager is the\nowned one, so the prefetch leaves out soft-deleted links by itself.",
         "operationId": "list_datasets",
         "parameters": [
           {
@@ -1737,6 +1738,7 @@
     },
     "/api/datasets/{dataset_id}": {
       "delete": {
+        "description": "`objects` already hides deleted rows, so a second DELETE of the same id is a 404,\nexactly as a hard delete was.",
         "operationId": "delete_dataset",
         "parameters": [
           {
@@ -2010,6 +2012,7 @@
     },
     "/api/documents/{document_id}": {
       "delete": {
+        "description": "Soft delete, and the stored object stays.\n\nDeleting the bytes would leave every earlier version of this document pointing at a file\nthat no longer exists. The row drops out of listings and downloads immediately; the object\nis reclaimed when the tenant is erased (`apps/core/tenants.py`).",
         "operationId": "delete_document",
         "parameters": [
           {
@@ -2225,6 +2228,7 @@
     },
     "/api/gallery/{media_item_id}": {
       "delete": {
+        "description": "Soft delete; the stored object stays (see `delete_document` in apps/documents/api.py).",
         "operationId": "delete_media_item",
         "parameters": [
           {
@@ -2550,6 +2554,7 @@
     },
     "/api/notes/{note_id}": {
       "delete": {
+        "description": "Soft delete (apps/core/models.py): the row keeps its place in the version chain, and\n`objects` stops returning it — so a second delete is a 404 exactly as before.\n\nNotes merged from it keep their edges, and those still resolve: the source row is still\nthere, one version further on. That is the reason deletes are soft.",
         "operationId": "delete_note",
         "parameters": [
           {
@@ -2615,6 +2620,7 @@
         ]
       },
       "patch": {
+        "description": "PATCH: change only the fields the client sent.",
         "operationId": "patch_note",
         "parameters": [
           {
@@ -2661,6 +2667,7 @@
         ]
       },
       "put": {
+        "description": "PUT: replace every field with the payload (schema defaults for omitted ones).",
         "operationId": "update_note",
         "parameters": [
           {

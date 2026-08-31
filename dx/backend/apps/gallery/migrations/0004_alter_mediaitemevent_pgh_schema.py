@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("gallery", "0003_mediaitemevent_mediaitem_deleted_at_and_more"),
     ]

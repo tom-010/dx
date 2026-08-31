@@ -1,7 +1,7 @@
 import pytest
 from click.testing import CliRunner
 
-from apps.accounts import services
+from apps.accounts.api import user_from_access_token
 from apps.accounts.management.commands import createadmin, token
 from apps.accounts.models import User
 
@@ -39,7 +39,7 @@ def test_token_prints_a_bare_access_token() -> None:
     result = runner.invoke(token.command, [])
 
     assert result.exit_code == 0, result.output
-    user = services.user_from_access_token(result.output)
+    user = user_from_access_token(result.output)
     assert user is not None
     assert user.username == "admin"
 
@@ -50,7 +50,7 @@ def test_token_lifetime_option() -> None:
     result = runner.invoke(token.command, ["--minutes", "-1"])
 
     assert result.exit_code == 0, result.output
-    assert services.user_from_access_token(result.output) is None  # already expired
+    assert user_from_access_token(result.output) is None  # already expired
 
 
 def test_token_fails_for_wrong_credentials() -> None:

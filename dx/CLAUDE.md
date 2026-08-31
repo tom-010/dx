@@ -8,7 +8,9 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
 - **Everything in English**: code, comments, docs, commit messages.
 - Monorepo: `backend/` (Django, uv) and `frontend/` (Vite SPA, pnpm). One deployable in prod
   (Django serves `frontend/dist` via WhiteNoise); in dev both run separately.
-- Business logic lives in a typed service layer without framework imports; ninja routers stay thin.
+- **One module per feature: `apps/<feature>/api.py`** holds the ninja schemas, the logic and the
+  router together. No `services.py`, no `schemas.py` — a lookup that 404s is three lines in the
+  view, and the handful of functions two routes share sit above them in the same file.
 - Every API operation declares `response=Schema`; never return bare dicts. The OpenAPI spec
   (`openschema.json`) is the contract with the frontend; the frontend talks to the API ONLY through
   the code orval generates from it (`frontend/src/api/`). See "End-to-end types".
@@ -140,9 +142,9 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
 - Layout (see `NOTES.md` §9):
   - `config/` — `settings.py`, `urls.py`, `api.py` (root `NinjaAPI`, mount routers here),
     `env.py` (typed env via pydantic-settings — read config from `env`, never `os.environ`).
-  - `apps/<feature>/` — one Django app per feature module: `api.py` (ninja `Router`),
-    `models.py`, services, `tests/test_*.py`. Register new apps in `INSTALLED_APPS` as
-    `"apps.<feature>"` and their router in `config/api.py`.
+  - `apps/<feature>/` — one Django app per feature module: `api.py` (schemas, logic and the
+    ninja `Router`), `models.py`, `admin.py`, `tests/test_*.py`. Register new apps in
+    `INSTALLED_APPS` as `"apps.<feature>"` and their router in `config/api.py`.
   - `apps/core/` — infrastructure: `health.py` (`GET /api/health`, `GET /api/ready`, see "Health
     checks"), `models.py` (`BaseModel`: UUIDv7 pk + `created`/`modified` +
     `set_payload()`/`set_payload_partial()` for PUT/PATCH; `OwnedModel` + `OwnedManager`/
@@ -154,21 +156,24 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     (`StrictSchema` for inputs),
     `backups.py` (see "Backups"), `scaffold.py` + `backend/scaffold/module/` (`manage.py
     startmodule`), `storage.py` (buckets), the sample Celery tasks + `tenant_task` (`tasks.py`,
-    `services.py`, `/api/tasks/...` in `api.py`, tag `tasks`) and the cross-cutting tests
+    `/api/tasks/...` in `api.py`, tag `tasks`) and the cross-cutting tests
     (`tests/test_security.py`, `test_openapi.py`, `test_errors.py`, `test_ownership.py`,
     `test_tenancy.py`).
   - `apps/accounts/` — authentication, see "Auth" below.
   - `apps/datasets/` — demo feature module and the reference for new ones (`startmodule`
     generates the same shape): `models.py` (`Dataset(OwnedModel)`, `DatasetId = NewType(...,
     uuid.UUID)`, `DatasetOptions` = typed JSON column, plus `Tag` and the explicit `DatasetTag`
-    through model), `schemas.py` (`DatasetOut`, `DatasetIn`, `DatasetPatch`), `services.py`
-    (plain typed functions taking the acting `user`, raise domain
-    exceptions such as `DatasetNotFound`), `api.py` (router maps exceptions to `HttpError`,
-    returns `Status(201, obj)` for non-200 codes), `tests/test_api.py`.
+    through model), `api.py` — the schemas (`DatasetOut`, `DatasetIn`, `DatasetPatch`), the
+    logic and the router in one file. Views raise `HttpError` themselves and return
+    `Status(201, obj)` for non-200 codes; the functions two routes share take the acting `user`
+    first and carry a `_for` suffix where a route already owns the plain name (the route name is
+    the operation id): `get_dataset_for`, `create_dataset_for`, `delete_dataset_for`,
+    `import_dataset_for`. A lookup miss is a `HttpError(404, ...)` at the source, so there are no
+    domain exception classes to map. Then `tests/test_api.py`.
     **Tags** are the project's one many-to-many and its worked example of the rules that come
     with soft deletes: an owned, versioned join model; a conditional unique constraint so a
     retired name can be reused; matching case-insensitively while storing what the user typed;
-    and cascade written out in the service (`set_dataset_tags`, `prune_unused_tags`) because
+    and cascade written out by hand (`set_dataset_tags`, `prune_unused_tags`) because
     Django's collector no longer runs. Read them through `dataset.tag_links` / `tag_names()` —
     `dataset.tags` is Django's m2m manager, which queries the join table raw and cannot see that
     a link was soft-deleted. Tags travel in `DatasetIn`/`DatasetPatch`, so one PATCH that renames
@@ -185,14 +190,14 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     storage = the S3-compatible object store, see "File storage"; keys
     `documents/<owner id>/%Y/%m/<name>`, `owned_upload_path`),
     multipart `POST /api/documents/upload` (`files: File[list[UploadedFile]]`, validated as a
-    batch in `services.py`), paginated list/get/delete, and `GET /api/documents/{id}/download`
+    batch by `validate_upload`), paginated list/get/delete, and `GET /api/documents/{id}/download`
     (streams a `FileResponse`; exposed to clients as `DocumentOut.download_url`, so storage can
     change without touching the frontend; the signed link — which names the owner — replaces
-    the user check: `get_document_for_download` runs inside that owner's `tenant_context`).
+    the user check: the view reads the row inside that owner's `tenant_context`).
   - `apps/gallery/` — images and videos shown inline: `MediaItem` (owned; `kind` image|video,
-    `file` under `gallery/<owner id>/%Y/%m/`), `services.py` decides the MIME type (browser's, else guessed
-    from the name), rejects everything that is not `image/*`/`video/*` and enforces per-kind
-    size limits (`MAX_SIZE`). `POST /api/gallery/upload`, paginated `GET /api/gallery`, get/delete.
+    `file` under `gallery/<owner id>/%Y/%m/`), `api.py` decides the MIME type (`media_type_of`:
+    the browser's, else guessed from the name), rejects everything that is not
+    `image/*`/`video/*` and enforces per-kind size limits (`MAX_SIZE`). `POST /api/gallery/upload`, paginated `GET /api/gallery`, get/delete.
     `MediaItemOut.url` is the signed `/media/…` link (see "Media files") — the SPA puts it
     straight into `<img src>` / `<video src>`.
   - `config/spa.py` + `config/static.py` — serve the built SPA (see "Serving the SPA");
@@ -222,11 +227,11 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
   `warn_unused_ignores`. `django_stubs_ext.monkeypatch()` runs in settings so generics like
   `ModelAdmin[Dataset]` work at runtime.
 - New feature module: `uv run python manage.py startmodule <name> [--model Item]` scaffolds
-  `apps/<name>/` from `backend/scaffold/module/` (owned model with `name`/`description`,
-  `schemas.py` Out/In/Patch, services taking `user`, router with paginated list +
-  get/POST/PUT/PATCH/DELETE, admin, tests), inserts it at the `# needle:` comments in
-  `settings.py` (`INSTALLED_APPS`) and `config/api.py`, runs `makemigrations` + ruff. Then:
-  adjust `models.py`/`schemas.py`, `./scripts/migrate.sh` (migrations + the RLS policy for the
+  `apps/<name>/` from `backend/scaffold/module/` (owned model with `name`/`description`, and one
+  `api.py` with the Out/In/Patch schemas, a `get_<model>_for` lookup and a router with paginated
+  list + get/POST/PUT/PATCH/DELETE; plus admin and tests), inserts it at the `# needle:` comments
+  in `settings.py` (`INSTALLED_APPS`) and `config/api.py`, runs `makemigrations` + ruff. Then:
+  adjust `models.py`/`api.py`, `./scripts/migrate.sh` (migrations + the RLS policy for the
   new table *and its event table*), `manage.py history_schema --write` after any field change,
   add the resource to `RESOURCES` in `apps/core/tests/test_ownership.py`,
   `./scripts/sync_schema.sh` (view names become hook names), frontend route + nav entry. A new
@@ -239,12 +244,13 @@ A note-taking module that exists to *demonstrate* versioning and lineage end to 
 the product needs notes. It is deliberately self-contained.
 
 - `Note(OwnedModel)` — title, body, and `tags` as a plain comma-separated string, normalised on
-  write (`services.normalize_tags`) so that retyping the same set in a different order is not a
+  write (`api.normalize_tags`) so that retyping the same set in a different order is not a
   change in the note's history. Deliberately *not* the shape `apps/datasets` uses: an owned,
   versioned `Tag` model with a join table is what you want when tags are shared, renamed or
   counted; a string is what you want when a tag is just a label on one note.
 - One derivation, `merge` (many → one), recording an edge to the **version** of each source it
-  read (`apps/notes/services.py`). Merging alone is enough for a directed acyclic *graph*: a note
+  read (`merge_notes_for` in `apps/notes/api.py`). Merging alone is enough for a directed acyclic
+  *graph*: a note
   merged into two others branches, and merging two merged notes closes a diamond. The sources are
   left alone — a merge adds a note, it does not consume any.
 - `GET /api/lineage/{resource}/{id}?depth=` (`apps/core/lineage.py::graph`, `apps/core/api.py`)
@@ -429,7 +435,7 @@ version* of a source, not at the live row.
 - **Cascade is application logic now**: Django's collector never runs, so decide per relation in
   the service layer (block, reassign, or soft-delete the children) — never in a signal, which
   would also fire for the restore and erasure paths, where it is exactly wrong.
-  `apps/datasets/services.py` is the worked example: deleting a dataset retires its tag links,
+  `apps/datasets/api.py` is the worked example: deleting a dataset retires its tag links,
   and a tag that lost its last link is retired with them. Foreign keys between owned models use
   `on_delete=CASCADE`: nothing hard-deletes them except tenant erasure, and `PROTECT` would turn
   that one legitimate delete into a `ProtectedError` (erasure walks the tables in name order).
@@ -462,7 +468,7 @@ version* of a source, not at the live row.
   chain, append-only, never soft-deleted — but it carries `owner` and gets the tenant policy.
   There is deliberately no FK on the `*_pgh_id` columns (event rows are append-only, so a dangling
   pointer cannot arise, and an FK into history would make a *write* fail for a reference).
-  Written by `POST /api/datasets/import-document` (`apps/datasets/services.py`), the one
+  Written by `POST /api/datasets/import-document` (`apps/datasets/api.py`), the one
   derivation in the app; any new one calls `record_derivation` the same way and gets the
   revision page's "Derived from" links for free.
 - **Revision page**: `GET /api/history/{resource}/{id}` (`apps/core/revisions.py`, `api.py`;
@@ -577,8 +583,8 @@ with it (they need an admin session to log in with). Administer production throu
   signature stands in for the user (download links carry the owner id and open their context).
 - **Input schemas extend `StrictSchema`** (`extra="forbid"`): unknown fields are a 422 instead of
   being ignored (a typo in a PATCH would otherwise be a silent no-op). Output schemas stay
-  `Schema`/`ModelSchema`. When services need the payload objects (PUT/PATCH) the schemas live in
-  `apps/<feature>/schemas.py`, otherwise in `api.py`.
+  `Schema`/`ModelSchema`. All of a module's schemas live in its `api.py`, next to the routes that
+  use them.
 - **Typed JSON columns**: `django_pydantic_field.SchemaField(Model, default=Model)`
   (`Dataset.options: DatasetOptions`) — stored as `jsonb`, validated on load and save, and a
   nested typed object in the API/TS types (NOTES.md §5). Give new fields defaults so old rows
@@ -591,13 +597,15 @@ with it (they need an admin session to log in with). Administer production throu
 
 ## Auth (`apps/accounts/`)
 
-- Every API operation requires `Authorization: Bearer <token>` — `BearerAuth` (`auth.py`,
-  ninja `HttpBearer`) is installed globally in `config/api.py`. Public operations opt out with
+- Everything lives in `apps/accounts/api.py`: the schemas, the JWT handling, `BearerAuth`,
+  `current_user()` and the routes (there is no `auth.py` and no `services.py`).
+- Every API operation requires `Authorization: Bearer <token>` — `BearerAuth` (ninja
+  `HttpBearer`) is installed globally in `config/api.py`. Public operations opt out with
   `auth=None` (health/ready, login, register, signed document downloads, `/api/docs`). Outside the
   API, `/media/<key>?sig=` is public-but-signed (see "Media files"). `TenantMiddleware`
   (`apps/core/middleware.py`) resolves the same header before the view and opens the tenant
   context; `BearerAuth` reuses its result (verified exactly once) — see "Multitenancy".
-- Three token kinds, all resolved by `services.authenticate_bearer()`:
+- Three token kinds, all resolved by `authenticate_bearer()`:
   1. JWT access tokens (HS256 with `SECRET_KEY`, claim `token_type=access`, stateless and
      therefore short-lived: `ACCESS_TOKEN_LIFETIME_MINUTES`, 15) from `POST /api/auth/login`
      (`{username, password}` → `{access_token, refresh_token}`). The refresh token is a second
@@ -607,16 +615,18 @@ with it (they need an admin session to log in with). Administer production throu
      old row (single-use); `POST /api/auth/logout` (`{refresh_token}`, public, always 204)
      revokes it. Expired/revoked/inactive user → 401 "Invalid or expired refresh token".
      Deliberately no reuse detection (ending every session when an old token shows up — two
-     tabs refreshing at once would trigger it; `services.rotate_refresh_token`). Login purges
-     the user's expired rows. `GET /api/auth/me` returns the caller.
+     tabs refreshing at once would trigger it). Login purges the user's expired rows;
+     `session_from_refresh_token()` returns `None` for anything spent. `GET /api/auth/me`
+     returns the caller.
   2. Personal API tokens (`tk_…`, `ApiToken` model, never expire) for scripts/CI:
      `GET/POST /api/auth/api-tokens`, `DELETE /api/auth/api-tokens/{id}`.
   3. `API_FIXED_TOKEN` from the environment → acts as the first superuser (CI without DB state).
 - `POST /api/auth/register` only works with `REGISTRATION_OPEN=true` (403 otherwise).
-- Inside operations use `current_user(request)` (`auth.py`); services take a `User`, never a
-  request, and scope owned data with it (see "Data model conventions").
+- Inside operations use `current_user(request)` (`apps/accounts/api.py`); helper functions take
+  a `User`, never a request, and scope owned data with it (see "Data model conventions").
+  Every other module imports it as `from apps.accounts.api import current_user`.
 - Files that a browser fetches via plain `<a href>`/`<img src>` (no header) use signed, expiring
-  URLs: `DocumentOut.download_url` carries `?sig=` (`documents/services.py::sign_download`),
+  URLs: `DocumentOut.download_url` carries `?sig=` (`documents/api.py::sign_download`),
   every `FileField.url` does too (`config/media.py::media_url`).
 - Frontend: `src/lib/auth.ts` keeps the pair (localStorage `dx.access_token` /
   `dx.refresh_token`, `useAccessToken()`; the `storage` event keeps open tabs in sync).
@@ -720,8 +730,8 @@ store stays private, and the bundled compose works without a browser-reachable `
   exception) instead of raising into the request (`CELERY_TASK_EAGER_PROPAGATES=False`), so the
   API behaves the same as with a worker. Tests always run eager with an in-memory result store
   (`config/settings_test.py`).
-- Pattern (`apps/core/tasks.py`): logic in `services.py` as plain functions; `tasks.py` holds thin
-  `@shared_task` wrappers (no logic) — **`@tenant_task` for anything that touches owned data**
+- Pattern (`apps/core/tasks.py`): the task body is the work — **`@tenant_task` for anything
+  that touches owned data**
   (first argument `owner_id`, see "Multitenancy"); an endpoint enqueues (`task.delay(...)`) and returns
   `TaskOut` (`id`, `state`, `ready`, `result`, `error`, `progress`, `stream_url`) built by
   `tasks.status_of()`. Long tasks report progress with
@@ -869,9 +879,9 @@ The configuration lives with the tools, not in the script:
   on a non-optional type is an error (write `is not None`, or the type is missing `| None`);
   the test client's response cannot be `isinstance`-narrowed to `StreamingHttpResponse`
   (`cast` it, see `test_tasks.py`). Signatures are forced by ruff `ANN` (every parameter and
-  return annotated, no `Any` in them) and, for `apps/*/services.py`, `disallow_any_explicit`:
-  business logic is `Any`-free (`UploadedFile[bytes]`, not `[Any]`); framework edges
-  (settings, env, task meta) may still use `Any`.
+  return annotated, no `Any` in them). There is no `disallow_any_explicit` override any more:
+  the logic now sits in `api.py` beside ninja's `Field(...)`, which is typed `Any`. Keep `Any`
+  out of your own signatures anyway (`UploadedFile[bytes]`, not `[Any]`).
 - **Frontend** (`frontend/tsconfig.app.json` + `tsconfig.node.json`, checked by `tsc -b` — the
   same call `pnpm build` makes): `strict` (the TS 6 default, kept explicit),
   `noUncheckedIndexedAccess` (`xs[0]` and `record[key]` are `T | undefined` — handle it),
@@ -901,9 +911,9 @@ with in-memory results + MD5 password hasher). Run `./scripts/test.sh`, coverage
 
 Layers (each app mirrors this in `tests/`):
 
-1. **Service tests** (`test_services.py`, or inside `test_api.py` when small): call the plain
-   functions in `services.py` directly — domain rules, validation, exceptions. Most cases live
-   here; no HTTP, no auth.
+1. **Unit tests** (inside `test_api.py`, or a topic file such as `test_tags.py`): call the
+   module functions in `api.py` directly — domain rules, validation, the `HttpError` a lookup
+   raises. Most cases live here; no HTTP, no auth. Wrap them in `with acting_as(user):`.
 2. **API tests** (`test_api.py`, auto-marked `api`): the HTTP contract through Django's test
    client — status codes, JSON shape, error `detail`, one happy path per endpoint. Use
    `auth_client`; `client_for(other_user)` for ownership/isolation ("B gets 404 for A's
@@ -933,8 +943,9 @@ Layers (each app mirrors this in `tests/`):
 Conventions:
 
 - Fixtures live in `backend/conftest.py`: `user`, `other_user`, `staff_user`, `client_for`,
-  `auth_client`. Create data through services (`create_dataset(user, ...)`), not raw ORM calls,
-  and inside `with acting_as(user):` (`apps.core.testing`) — services need the tenant context
+  `auth_client`. Create data through the module's own functions
+  (`create_dataset_for(user, ...)` from `apps/datasets/api.py`), not raw ORM calls,
+  and inside `with acting_as(user):` (`apps.core.testing`) — writes need the tenant context
   (see "Multitenancy"); requests get it from the middleware. Every database test runs as the
   runtime role (`SET ROLE app_user`, RLS enforced); the suite itself connects as the migrator.
 - Markers are registered in `pyproject.toml` (`--strict-markers`): `api`, `infra`, `slow`,

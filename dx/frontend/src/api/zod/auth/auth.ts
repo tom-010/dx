@@ -78,7 +78,8 @@ export const LoginResponse = zod
 /**
  * End the session: the refresh token stops working (the access token expires by itself).
  *
- * Public for the same reason as /auth/refresh; always 204, even for a token that is gone.
+ * Public for the same reason as /auth/refresh; always 204, even for a token that is gone —
+ * logging out twice is not an error.
  * @summary Logout
  */
 export const LogoutBody = zod.object({
@@ -104,6 +105,10 @@ export const GetCurrentUserResponse = zod.object({
  *
  * Public: the access token is usually expired by the time this is called; the refresh token
  * in the body is the credential.
+ *
+ * Deliberately no "reuse detection" (ending every session of the user when an old token shows
+ * up): two browser tabs refreshing at the same moment would trigger it constantly, and a
+ * refresh token that leaked via the client's storage implies the client itself is compromised.
  * @summary Refresh Token
  */
 export const RefreshTokenBody = zod.object({

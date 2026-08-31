@@ -11,7 +11,7 @@ from django.test import Client
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.datasets.api import create_dataset_for, set_dataset_tags
+from apps.datasets.api import create_dataset_for, delete_dataset_for, set_dataset_tags
 from apps.datasets.models import Dataset, DatasetId, DatasetTag, Tag
 
 pytestmark = pytest.mark.django_db
@@ -102,7 +102,7 @@ def test_a_retired_tag_name_can_be_used_again(user: User) -> None:
 def test_soft_deleting_a_dataset_takes_its_links_with_it(user: User) -> None:
     with acting_as(user):
         dataset = create_dataset_for(user, name="Orders", tags=["sales"])
-        delete_dataset_in_tests(user, dataset)
+        delete_dataset_for(user, DatasetId(dataset.pk))
 
         assert DatasetTag.objects.count() == 0
         assert Tag.objects.count() == 0

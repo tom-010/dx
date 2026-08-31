@@ -237,6 +237,7 @@ export const getDeleteMediaItemUrl = (mediaItemId: string) => {
 };
 
 /**
+ * Soft delete; the stored object stays (see `delete_document` in apps/documents/api.py).
  * @summary Delete Media Item
  */
 export const deleteMediaItem = async (

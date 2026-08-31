@@ -15,11 +15,13 @@ from watchfiles import Change
 
 from apps.accounts.models import User
 from apps.core import worker_reload
+from apps.core.history import hard_delete
 from apps.core.management.commands import backup, ensure_bucket, hello_world, restore
 from apps.core.storage import BucketStatus
 from apps.core.storage import ensure_bucket as ensure_bucket_fn
+from apps.core.testing import acting_as
+from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
-from apps.datasets.services import create_dataset
 
 runner = CliRunner()
 
@@ -129,8 +131,10 @@ def backup_dir(settings: Settings, tmp_path: Path) -> Path:
 
 
 @pytest.mark.django_db
+@pytest.mark.cross_tenant  # a dump spans tenants: it needs the table owner's role
 def test_backup_and_restore_commands(user: User, backup_dir: Path) -> None:
-    dataset = create_dataset(user, name="keep me")
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="keep me")
 
     created = runner.invoke(backup.command, [])
     assert created.exit_code == 0, created.output
@@ -140,10 +144,12 @@ def test_backup_and_restore_commands(user: User, backup_dir: Path) -> None:
     listed = runner.invoke(backup.command, ["--list"])
     assert dump.name in listed.output
 
-    Dataset.objects.all().delete()
+    with acting_as(user), hard_delete():
+        Dataset.all_objects.all().delete()
     restored = runner.invoke(restore.command, ["--latest", "--yes"])
     assert restored.exit_code == 0, restored.output
-    assert Dataset.objects.get(pk=dataset.pk).name == "keep me"
+    with acting_as(user):
+        assert Dataset.objects.get(pk=dataset.pk).name == "keep me"
 
 
 @pytest.mark.django_db
@@ -187,14 +193,14 @@ def test_run_with_reload_restarts_the_worker_per_change_set() -> None:
         return process
 
     modified = Change.modified
-    changes = [{(modified, "apps/core/services.py")}, {(modified, "config/settings.py")}]
+    changes = [{(modified, "apps/core/tasks.py")}, {(modified, "config/settings.py")}]
 
     code = worker_reload.run_with_reload(spawn, changes, stop_timeout=5, echo=messages.append)
 
     assert len(started) == 3  # initial + one per change set
     assert all(p.returncode == -signal.SIGTERM for p in started)
     assert messages == [
-        "apps/core/services.py changed, restarting worker",
+        "apps/core/tasks.py changed, restarting worker",
         "config/settings.py changed, restarting worker",
     ]
     assert code == 0  # a SIGTERM'd worker is the expected end, not a failure

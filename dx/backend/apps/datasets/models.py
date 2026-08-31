@@ -56,7 +56,7 @@ class Dataset(OwnedModel):
 @tracked
 class Tag(OwnedModel):
     """A label the user puts on datasets. Exists only while something is tagged with it
-    (`services.prune_unused_tags`), so the list stays the list of tags actually in use."""
+    (`api.prune_unused_tags`), so the list stays the list of tags actually in use."""
 
     name = models.CharField(max_length=100)
 

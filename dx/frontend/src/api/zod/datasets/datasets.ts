@@ -7,6 +7,10 @@
 import * as zod from "zod";
 
 /**
+ * The user's datasets, newest first.
+ *
+ * `tag_links` is prefetched because every row renders its tags: the related manager is the
+ * owned one, so the prefetch leaves out soft-deleted links by itself.
  * @summary List Datasets
  */
 export const listDatasetsQueryPageDefault = 1;
@@ -231,6 +235,8 @@ export const ImportDatasetFromDocumentResponse = zod.object({
 });
 
 /**
+ * `objects` already hides deleted rows, so a second DELETE of the same id is a 404,
+ * exactly as a hard delete was.
  * @summary Delete Dataset
  */
 export const DeleteDatasetParams = zod.object({

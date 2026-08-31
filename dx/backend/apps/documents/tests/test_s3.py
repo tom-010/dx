@@ -19,7 +19,7 @@ from storages.backends.s3 import S3Storage
 from apps.accounts.models import User
 from apps.core.storage import ensure_bucket
 from apps.core.testing import acting_as
-from apps.documents.api import delete_document_file_stays, store_documents
+from apps.documents.api import get_document_for, store_documents
 from apps.documents.models import Document, DocumentId
 from config.settings import S3_STORAGE
 
@@ -92,8 +92,8 @@ def test_upload_download_delete_through_object_store(s3: S3Storage, user: User) 
     # Deleting a document is soft, so the objects stay: an earlier version of the row still
     # points at them. Only erasing the tenant removes them (apps/core/tenants.py).
     with acting_as(user):
-        services.delete_document(user, DocumentId(one.pk))
-        services.delete_document(user, DocumentId(two.pk))
+        get_document_for(user, DocumentId(one.pk)).soft_delete()
+        get_document_for(user, DocumentId(two.pk)).soft_delete()
         assert Document.objects.count() == 0
     assert _keys(s3) == sorted(keys)
 

@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("datasets", "0004_datasettag_tag_datasettagevent_datasettag_tag_and_more"),
     ]
