@@ -13,7 +13,7 @@ from apps.accounts.models import User
 from apps.core import lineage
 from apps.core.history import EventRow
 from apps.core.testing import acting_as
-from apps.notes import services
+from apps.notes.api import create_note_for, delete_note_for, merge_notes_for
 from apps.notes.models import Note, NoteId
 
 pytestmark = pytest.mark.django_db
@@ -35,7 +35,7 @@ def source_titles(note: Note) -> list[str]:
 
 
 def merge(user: User, *notes: Note, title: str) -> Note:
-    return services.merge_notes(user, [NoteId(note.pk) for note in notes], title=title)
+    return merge_notes_for(user, [NoteId(note.pk) for note in notes], title=title)
 
 
 # --- Merging ------------------------------------------------------------------------------------
@@ -43,8 +43,8 @@ def merge(user: User, *notes: Note, title: str) -> Note:
 
 def test_merge_records_one_edge_per_source(user: User) -> None:
     with acting_as(user):
-        first = services.create_note(user, title="Monday", body="ran 5k")
-        second = services.create_note(user, title="Tuesday", body="rest day")
+        first = create_note_for(user, title="Monday", body="ran 5k")
+        second = create_note_for(user, title="Tuesday", body="rest day")
         second.body = "rest day (edited)"
         second.save()
 
@@ -59,8 +59,8 @@ def test_merge_records_one_edge_per_source(user: User) -> None:
 def test_merging_leaves_the_sources_alone(user: User) -> None:
     """A merge adds a note; it does not consume the ones it read."""
     with acting_as(user):
-        first = services.create_note(user, title="A")
-        second = services.create_note(user, title="B")
+        first = create_note_for(user, title="A")
+        second = create_note_for(user, title="B")
 
         merge(user, first, second, title="A+B")
 
@@ -70,8 +70,8 @@ def test_merging_leaves_the_sources_alone(user: User) -> None:
 
 def test_the_merge_still_names_the_version_it_read_after_an_edit(user: User) -> None:
     with acting_as(user):
-        first = services.create_note(user, title="Recipe", body="one egg")
-        second = services.create_note(user, title="Notes", body="serves two")
+        first = create_note_for(user, title="Recipe", body="one egg")
+        second = create_note_for(user, title="Notes", body="serves two")
         merged = merge(user, first, second, title="Dinner")
 
         first.title = "Recipe v2"
@@ -90,8 +90,8 @@ def test_the_merge_still_names_the_version_it_read_after_an_edit(user: User) -> 
 
 def test_merge_unions_the_tags_of_its_sources(user: User) -> None:
     with acting_as(user):
-        first = services.create_note(user, title="A", tags="walk, birds")
-        second = services.create_note(user, title="B", tags="Birds, weather")
+        first = create_note_for(user, title="A", tags="walk, birds")
+        second = create_note_for(user, title="B", tags="Birds, weather")
 
         merged = merge(user, first, second, title="A+B")
 
@@ -100,7 +100,7 @@ def test_merge_unions_the_tags_of_its_sources(user: User) -> None:
 
 def test_merge_needs_two_different_notes(auth_client: Client, user: User) -> None:
     with acting_as(user):
-        note = services.create_note(user, title="Only one")
+        note = create_note_for(user, title="Only one")
 
     response = auth_client.post(
         "/api/notes/merge",
@@ -116,9 +116,9 @@ def test_merging_another_tenants_note_is_a_404(
     auth_client: Client, user: User, other_user: User
 ) -> None:
     with acting_as(user):
-        mine = services.create_note(user, title="mine")
+        mine = create_note_for(user, title="mine")
     with acting_as(other_user):
-        theirs = services.create_note(other_user, title="theirs")
+        theirs = create_note_for(other_user, title="theirs")
 
     response = auth_client.post(
         "/api/notes/merge",
@@ -146,9 +146,9 @@ def build_showcase(user: User) -> dict[str, Note]:
     Merging alone is enough for a real graph: Tuesday has two children (branching) and Week has
     two parents that share a grandparent (a diamond).
     """
-    monday = services.create_note(user, title="Monday", body="ran 5k")
-    tuesday = services.create_note(user, title="Tuesday", body="rest day")
-    wednesday = services.create_note(user, title="Wednesday", body="swim")
+    monday = create_note_for(user, title="Monday", body="ran 5k")
+    tuesday = create_note_for(user, title="Tuesday", body="rest day")
+    wednesday = create_note_for(user, title="Wednesday", body="swim")
     early = merge(user, monday, tuesday, title="Early week")
     late = merge(user, tuesday, wednesday, title="Late week")
     week = merge(user, early, late, title="Week")
@@ -207,9 +207,9 @@ def test_the_graph_marks_edges_whose_source_moved_on(user: User) -> None:
 def test_the_graph_depth_is_bounded(user: User) -> None:
     """A page asks for a neighbourhood, not for the tenant's whole history."""
     with acting_as(user):
-        note = services.create_note(user, title="0")
+        note = create_note_for(user, title="0")
         for step in range(1, 5):
-            other = services.create_note(user, title=f"side {step}")
+            other = create_note_for(user, title=f"side {step}")
             note = merge(user, note, other, title=str(step))
 
         near = lineage.graph(note, depth=1)
@@ -224,7 +224,7 @@ def test_the_graph_endpoint_is_tenant_isolated(
     auth_client: Client, user: User, other_user: User
 ) -> None:
     with acting_as(other_user):
-        theirs = services.create_note(other_user, title="theirs")
+        theirs = create_note_for(other_user, title="theirs")
     with acting_as(user):
         notes = build_showcase(user)
 
@@ -238,7 +238,7 @@ def test_the_graph_endpoint_is_tenant_isolated(
 
 def test_the_graph_endpoint_rejects_an_unknown_resource(auth_client: Client, user: User) -> None:
     with acting_as(user):
-        note = services.create_note(user, title="x")
+        note = create_note_for(user, title="x")
     response = auth_client.get(f"/api/lineage/nonsense/{note.pk}")
     assert response.status_code == 404
     assert "nonsense" in response.json()["detail"]
@@ -246,7 +246,7 @@ def test_the_graph_endpoint_rejects_an_unknown_resource(auth_client: Client, use
 
 def test_a_note_with_no_merges_has_an_empty_graph(auth_client: Client, user: User) -> None:
     with acting_as(user):
-        note = services.create_note(user, title="alone")
+        note = create_note_for(user, title="alone")
 
     body = auth_client.get(f"/api/lineage/note/{note.pk}").json()
 
@@ -258,10 +258,10 @@ def test_a_deleted_note_still_appears_in_the_graph(user: User) -> None:
     """Deletes are soft precisely so that this keeps working: the merged note must not lose the
     record of where it came from because a source was tidied away."""
     with acting_as(user):
-        first = services.create_note(user, title="Draft")
-        second = services.create_note(user, title="Keep")
+        first = create_note_for(user, title="Draft")
+        second = create_note_for(user, title="Keep")
         merged = merge(user, first, second, title="Both")
-        services.delete_note(user, NoteId(first.pk))
+        delete_note_for(user, NoteId(first.pk))
 
         graph = lineage.graph(merged, depth=2)
 
@@ -275,8 +275,8 @@ def test_the_history_page_names_the_source_note(auth_client: Client, user: User)
     that cannot borrow `BaseModel.__str__`, so the label goes through the same field preference
     (`apps/core/revisions.py::row_label`) — `title` here, `name` on other models."""
     with acting_as(user):
-        first = services.create_note(user, title="Monday")
-        second = services.create_note(user, title="Tuesday")
+        first = create_note_for(user, title="Monday")
+        second = create_note_for(user, title="Tuesday")
         merged = merge(user, first, second, title="This week")
 
     body = auth_client.get(f"/api/history/note/{merged.pk}").json()

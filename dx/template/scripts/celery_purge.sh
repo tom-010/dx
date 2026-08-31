@@ -1,1 +1,0 @@
-celery -A config purge

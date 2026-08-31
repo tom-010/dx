@@ -33,7 +33,7 @@ which tenant a new row would belong to.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 

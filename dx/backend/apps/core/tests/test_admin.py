@@ -13,6 +13,7 @@ property that makes it able to see other tenants at all.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any, cast
 
 import pytest
 from django.conf import settings
@@ -136,7 +137,7 @@ def test_base_model_admins_read_soft_deleted_rows(staff: User) -> None:
 def test_soft_delete_action_produces_a_version_row(staff: User) -> None:
     with acting_as(staff):
         dataset = create_dataset_for(staff, name="doomed", description="")
-    model_admin = admin.site._registry[Dataset]
+    model_admin = cast(BaseModelAdmin[Dataset], admin.site._registry[Dataset])
     request = _request(staff)
 
     with acting_as(staff):
@@ -163,7 +164,7 @@ def test_restore_action_reports_a_unique_collision_instead_of_raising(staff: Use
         retired = Tag.all_objects.filter(name="sales", deleted_at__isnull=False)
         assert retired.exists()
 
-        model_admin = admin.site._registry[Tag]
+        model_admin = cast(BaseModelAdmin[Tag], admin.site._registry[Tag])
         request = _request(staff)
         model_admin.restore_action(request, retired)
 
@@ -263,7 +264,8 @@ def test_events_admin_queryset_is_scoped(staff: User, other_user: User) -> None:
     model_admin = admin.site._registry[Events]
     assert isinstance(model_admin, TenantEventsAdmin)
     with acting_as(staff):
-        names = {row.pgh_data.get("name") for row in model_admin.get_queryset(_request(staff))}
+        rows = model_admin.get_queryset(_request(staff))
+        names = {cast(dict[str, Any], row.pgh_data).get("name") for row in rows}  # type: ignore[attr-defined]
 
     assert "alice-dataset" in names
     assert "bob-dataset" not in names

@@ -10,7 +10,7 @@ from django.test import Client
 from apps.accounts.models import User
 from apps.core import tasks
 from apps.core.testing import acting_as
-from apps.datasets.models import Dataset
+from apps.datasets.api import create_dataset_for
 
 pytestmark = pytest.mark.django_db
 
@@ -47,10 +47,10 @@ def test_dataset_summary_task_reads_the_callers_data(
     auth_client: Client, user: User, other_user: User
 ) -> None:
     with acting_as(user):
-        Dataset.objects.create(owner=user, name="a", row_count=10)
-        Dataset.objects.create(owner=user, name="b", row_count=5)
+        create_dataset_for(user, name="a", row_count=10)
+        create_dataset_for(user, name="b", row_count=5)
     with acting_as(other_user):
-        Dataset.objects.create(owner=other_user, name="theirs", row_count=100)
+        create_dataset_for(other_user, name="theirs", row_count=100)
 
     response = auth_client.post("/api/tasks/dataset-summary")
 

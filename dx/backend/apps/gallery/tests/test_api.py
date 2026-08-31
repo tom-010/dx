@@ -9,7 +9,7 @@ from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.gallery import services
+from apps.gallery.api import MAX_SIZE, kind_of, media_type_of, store_media_items, validate_upload
 from apps.gallery.models import MediaItem, MediaItemId, MediaKind
 
 pytestmark = pytest.mark.django_db
@@ -87,7 +87,7 @@ def test_items_are_private_to_their_owner(
     user: User, other_user: User, client_for: Callable[[User], Client]
 ) -> None:
     with acting_as(user):
-        (item,) = services.store_media_items(user, [_image()])
+        (item,) = store_media_items(user, [_image()])
 
     bob = client_for(other_user)
     assert bob.get("/api/gallery").json()["items"] == []
@@ -102,7 +102,7 @@ def test_delete_hides_the_row_and_keeps_the_file(
 ) -> None:
     """Soft delete: gone from the API, still in the store (see the documents test)."""
     with acting_as(user):
-        (item,) = services.store_media_items(user, [_video()])
+        (item,) = store_media_items(user, [_video()])
     assert len(list(media_root.rglob("*.mp4"))) == 1
 
     assert auth_client.delete(f"/api/gallery/{item.pk}").status_code == 204
@@ -118,18 +118,18 @@ def test_delete_hides_the_row_and_keeps_the_file(
 def test_service_guesses_type_from_name_when_browser_sends_none() -> None:
     file = SimpleUploadedFile("holiday.webm", MP4, content_type="application/octet-stream")
 
-    assert services.media_type_of(file) == "video/webm"
-    assert services.kind_of(services.media_type_of(file)) == MediaKind.VIDEO
+    assert media_type_of(file) == "video/webm"
+    assert kind_of(media_type_of(file)) == MediaKind.VIDEO
 
 
 def test_service_enforces_size_limit_per_kind() -> None:
     big_image = _image("huge.png")
-    big_image.size = services.MAX_SIZE[MediaKind.IMAGE] + 1
+    big_image.size = MAX_SIZE[MediaKind.IMAGE] + 1
 
-    with pytest.raises(services.InvalidMedia, match="exceeds 25 MiB for images"):
-        services.validate_upload([big_image])
+    with pytest.raises(HttpError, match="exceeds 25 MiB for images"):
+        validate_upload([big_image])
 
 
 def test_service_raises_for_unknown_id(user: User) -> None:
-    with acting_as(user), pytest.raises(services.MediaItemNotFound):
-        services.get_media_item(user, MediaItemId(uuid.uuid4()))
+    with acting_as(user), pytest.raises(HttpError):
+        get_media_item_for(user, MediaItemId(uuid.uuid4()))

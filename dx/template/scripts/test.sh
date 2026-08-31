@@ -1,1 +1,0 @@
-pytest -W ignore::DeprecationWarning -s -m "not api" "${@:1}"

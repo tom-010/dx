@@ -232,6 +232,44 @@ def count_rows(document: Document, options: DatasetOptions) -> int:
     return max(newlines, 0)
 
 
+def import_dataset_for(
+    user: User,
+    document_id: DocumentId,
+    *,
+    name: str | None = None,
+    options: DatasetOptions | None = None,
+    tags: Iterable[str] = (),
+) -> Dataset:
+    """Create a dataset from a document and record what it was built from.
+
+    The lineage edge points at the document's *current version*, not at the document row, so a
+    later rename or re-upload does not rewrite what this dataset was derived from —
+    `stale_derivations(document)` is then how you find the datasets that need rebuilding
+    (`apps/core/lineage.py`).
+
+    Runs in the caller's transaction (the request's), so the dataset, its tags and the edge all
+    land together or not at all, under one history context.
+    """
+    document = get_document_for(user, document_id)
+    if not is_importable(document):
+        raise HttpError(
+            400,
+            f"{document.name} is not delimited text (expected one of "
+            f"{', '.join(IMPORTABLE_SUFFIXES)})",
+        )
+    settings = options or DatasetOptions()
+    dataset = create_dataset_for(
+        user,
+        name=name or document.name.rsplit(".", 1)[0][:200] or "Imported dataset",
+        description=f"Imported from {document.name}",
+        row_count=count_rows(document, settings),
+        options=settings,
+        tags=tags,
+    )
+    lineage.record_derivation(dataset, sources=[document])
+    return dataset
+
+
 # --- Endpoints ----------------------------------------------------------------------------------
 
 
@@ -263,30 +301,17 @@ def create_dataset(request: HttpRequest, payload: DatasetIn) -> Status[Dataset]:
 def import_dataset_from_document(request: HttpRequest, payload: ImportDatasetIn) -> Status[Dataset]:
     """Build a dataset from an uploaded document and record the lineage edge.
 
-    The edge names the document's *current version*, not the document row, so a later rename or
-    re-upload does not rewrite what this dataset was derived from — `stale_derivations(document)`
-    is then how you find the datasets that need rebuilding (`apps/core/lineage.py`).
-
-    Runs in the request's transaction, so the dataset, its tags and the edge all land together
-    or not at all, under one history context.
+    The edge names the document *version* the rows were counted from, so
+    `GET /api/history/dataset/{id}` can show what this was built from even after the document
+    is renamed or replaced (`apps/core/lineage.py`).
     """
-    user = current_user(request)
-    document = get_document_for(user, DocumentId(payload.document_id))
-    if not is_importable(document):
-        raise HttpError(
-            400,
-            f"{document.name} is not delimited text (expected one of "
-            f"{', '.join(IMPORTABLE_SUFFIXES)})",
-        )
-    dataset = create_dataset_for(
-        user,
-        name=payload.name or document.name.rsplit(".", 1)[0][:200] or "Imported dataset",
-        description=f"Imported from {document.name}",
-        row_count=count_rows(document, payload.options),
+    dataset = import_dataset_for(
+        current_user(request),
+        DocumentId(payload.document_id),
+        name=payload.name,
         options=payload.options,
         tags=payload.tags,
     )
-    lineage.record_derivation(dataset, sources=[document])
     return Status(201, dataset)
 
 

@@ -8,7 +8,13 @@ from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.documents import services
+from apps.documents.api import (
+    MAX_DOCUMENT_SIZE,
+    get_document_for,
+    sign_download,
+    store_documents,
+    validate_upload,
+)
 from apps.documents.models import Document, DocumentId
 
 pytestmark = pytest.mark.django_db
@@ -61,11 +67,11 @@ def test_upload_without_files_is_a_validation_error(auth_client: Client) -> None
 
 def test_download_streams_the_file(client: Client, user: User) -> None:
     with acting_as(user):
-        (document,) = services.store_documents(user, [_pdf("download.pdf", b"payload")])
+        (document,) = store_documents(user, [_pdf("download.pdf", b"payload")])
 
     # A signed link works without a bearer token (plain <a href> in the SPA).
     response = client.get(
-        f"/api/documents/{document.pk}/download?sig={services.sign_download(document)}"
+        f"/api/documents/{document.pk}/download?sig={sign_download(document)}"
     )
 
     assert response.status_code == 200
@@ -77,10 +83,10 @@ def test_download_rejects_unsigned_or_foreign_links(
     client: Client, user: User, other_user: User
 ) -> None:
     with acting_as(user):
-        (document,) = services.store_documents(user, [_pdf("secret.pdf")])
-    other_document = services.sign_download(Document(id=uuid.uuid7(), owner_id=user.pk))
+        (document,) = store_documents(user, [_pdf("secret.pdf")])
+    other_document = sign_download(Document(id=uuid.uuid7(), owner_id=user.pk))
     # Same document id, but signed for another owner: the link is valid, the row is not theirs.
-    other_owner = services.sign_download(Document(id=document.pk, owner_id=other_user.pk))
+    other_owner = sign_download(Document(id=document.pk, owner_id=other_user.pk))
     url = f"/api/documents/{document.pk}/download"
 
     assert client.get(url).status_code == 422  # sig missing
@@ -95,8 +101,8 @@ def test_a_still_valid_link_stops_working_once_the_document_is_deleted(
     """Soft delete drops the link even though the bytes are still in the store: the signature
     has not expired, but the row it names is gone from the application's point of view."""
     with acting_as(user):
-        (document,) = services.store_documents(user, [_pdf("gone.pdf", b"payload")])
-        url = f"/api/documents/{document.pk}/download?sig={services.sign_download(document)}"
+        (document,) = store_documents(user, [_pdf("gone.pdf", b"payload")])
+        url = f"/api/documents/{document.pk}/download?sig={sign_download(document)}"
     working = client.get(url)
     assert working.status_code == 200
     # Consume it rather than close(): closing a test-client response fires `request_finished`,
@@ -114,7 +120,7 @@ def test_delete_hides_the_row_and_keeps_the_file(
     """Deletes are soft, so the stored object stays: earlier versions of the document still
     reference it (apps/documents/services.py::delete_document)."""
     with acting_as(user):
-        (document,) = services.store_documents(user, [_pdf("gone.pdf")])
+        (document,) = store_documents(user, [_pdf("gone.pdf")])
     assert len(list(media_root.rglob("*.pdf"))) == 1
 
     assert auth_client.delete(f"/api/documents/{document.pk}").status_code == 204
@@ -131,12 +137,12 @@ def test_delete_hides_the_row_and_keeps_the_file(
 
 def test_service_validates_size_limit() -> None:
     big = SimpleUploadedFile("big.bin", b"x", content_type="application/octet-stream")
-    big.size = services.MAX_DOCUMENT_SIZE + 1
+    big.size = MAX_DOCUMENT_SIZE + 1
 
     with pytest.raises(services.InvalidDocument, match="exceeds"):
-        services.validate_upload([big])
+        validate_upload([big])
 
 
 def test_service_raises_for_unknown_id(user: User) -> None:
     with acting_as(user), pytest.raises(services.DocumentNotFound):
-        services.get_document(user, DocumentId(uuid.uuid7()))
+        get_document_for(user, DocumentId(uuid.uuid7()))

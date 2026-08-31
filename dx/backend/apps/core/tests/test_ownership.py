@@ -17,10 +17,10 @@ from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.datasets.models import Dataset
+from apps.datasets.api import create_dataset_for
 from apps.documents.api import store_documents
 from apps.gallery.api import store_media_items
-from apps.notes.models import Note
+from apps.notes.api import create_note_for
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ def _media_item(user: User) -> uuid.UUID:
 RESOURCES = [
     OwnedResource(
         "datasets",
-        lambda user: Dataset.objects.create(owner=user, name="A's dataset").pk,
+        lambda user: create_dataset_for(user, name="A's dataset").pk,
         "/api/datasets",
         "/api/datasets/{id}",
         updates={"PUT": {"name": "hijacked"}, "PATCH": {"name": "hijacked"}},
@@ -55,7 +55,7 @@ RESOURCES = [
     OwnedResource("gallery", _media_item, "/api/gallery", "/api/gallery/{id}"),
     OwnedResource(
         "notes",
-        lambda user: Note.objects.create(owner=user, title="A's note").pk,
+        lambda user: create_note_for(user, title="A's note").pk,
         "/api/notes",
         "/api/notes/{id}",
         updates={"PUT": {"title": "hijacked"}, "PATCH": {"title": "hijacked"}},

@@ -7,7 +7,7 @@ from django.test import Client
 from apps.accounts.models import User
 from apps.core import history, revisions
 from apps.core.testing import acting_as
-from apps.notes import services
+from apps.notes.api import create_note_for, get_note_for, patch_note_for
 from apps.notes.models import Note, NoteId
 from apps.notes.schemas import NotePatch
 
@@ -33,7 +33,7 @@ def test_create_and_list(auth_client: Client) -> None:
 
 def test_get_put_patch_delete(auth_client: Client, user: User) -> None:
     with acting_as(user):  # services need a tenant context; requests get it from the middleware
-        note = services.create_note(user, title="Temp", body="d")
+        note = create_note_for(user, title="Temp", body="d")
     url = f"/api/notes/{note.pk}"
 
     assert auth_client.get(url).status_code == 200
@@ -54,7 +54,7 @@ def test_other_users_get_404(
     user: User, other_user: User, client_for: Callable[[User], Client]
 ) -> None:
     with acting_as(user):
-        note = services.create_note(user, title="mine")
+        note = create_note_for(user, title="mine")
     other = client_for(other_user)
 
     assert other.get("/api/notes").json() == {"items": [], "count": 0}
@@ -63,8 +63,8 @@ def test_other_users_get_404(
 
 
 def test_service_raises_for_unknown_id(user: User) -> None:
-    with acting_as(user), pytest.raises(services.NoteNotFound):
-        services.get_note(user, NoteId(uuid.uuid7()))
+    with acting_as(user), pytest.raises(HttpError):
+        get_note_for(user, NoteId(uuid.uuid7()))
 
 
 # --- Editing and tags ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ def test_editing_a_note_is_a_new_version(auth_client: Client, user: User) -> Non
     """What the edit form does: one PATCH with all three fields, and the response already
     reports the version the database gave it."""
     with acting_as(user):
-        note = services.create_note(user, title="Draft", body="rough", tags="idea")
+        note = create_note_for(user, title="Draft", body="rough", tags="idea")
 
     edited = auth_client.patch(
         f"/api/notes/{note.pk}",
@@ -94,7 +94,7 @@ def test_editing_a_note_is_a_new_version(auth_client: Client, user: User) -> Non
 
 def test_the_edit_shows_up_in_the_notes_history(auth_client: Client, user: User) -> None:
     with acting_as(user):
-        note = services.create_note(user, title="Draft", tags="idea")
+        note = create_note_for(user, title="Draft", tags="idea")
     auth_client.patch(
         f"/api/notes/{note.pk}", {"tags": "idea, done"}, content_type="application/json"
     )
@@ -117,7 +117,7 @@ def test_the_edit_shows_up_in_the_notes_history(auth_client: Client, user: User)
 )
 def test_tags_are_normalised(user: User, written: str, stored: str) -> None:
     with acting_as(user):
-        note = services.create_note(user, title="x", tags=written)
+        note = create_note_for(user, title="x", tags=written)
     assert note.tags == stored
 
 
@@ -125,7 +125,7 @@ def test_reordering_tags_is_not_a_change(user: User) -> None:
     """Normalising on write is what keeps the version history honest: retyping the same set in
     a different order must not look like an edit."""
     with acting_as(user):
-        note = services.create_note(user, title="x", tags="walk, birds")
+        note = create_note_for(user, title="x", tags="walk, birds")
         services.patch_note(user, NoteId(note.pk), NotePatch(tags="birds,walk"))
         note.refresh_from_db()
 
@@ -137,7 +137,7 @@ def test_reordering_tags_is_not_a_change(user: User) -> None:
 
 def test_tag_list_splits_the_stored_string(user: User) -> None:
     with acting_as(user):
-        note = services.create_note(user, title="x", tags="birds, walk")
+        note = create_note_for(user, title="x", tags="birds, walk")
     assert note.tag_list() == ["birds", "walk"]
 
 

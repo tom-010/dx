@@ -11,13 +11,13 @@ not a 404, so there was nothing to fix up.
 
 from django.conf import settings
 from django.contrib import admin
-from django.urls import path, re_path
+from django.urls import URLPattern, URLResolver, path, re_path
 
 from config.api import api
 from config.media import serve_media
 from config.spa import spa_index
 
-urlpatterns = []
+urlpatterns: list[URLPattern | URLResolver] = []
 
 # The admin is a staff UI over tenant data (apps/core/admin.py) and is not deployed to
 # production; `Env.ADMIN_ENABLED` defaults to DEBUG. When it is off the paths below simply do

@@ -30,7 +30,7 @@ from apps.core import history, lineage, revisions
 from apps.core.history import hard_delete
 from apps.core.models import BaseModel
 from apps.core.testing import acting_as
-from apps.datasets.models import Dataset
+from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
 from apps.documents.models import Document
 from apps.documents.api import store_documents
@@ -199,7 +199,7 @@ def test_history_schema_snapshot_is_current() -> None:
 
 def test_orm_save_versions_and_bumps(user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="first")
+        dataset = create_dataset_for(user, name="first")
         assert dataset.version == 1
 
         dataset.name = "second"
@@ -217,7 +217,7 @@ def test_orm_save_versions_and_bumps(user: User) -> None:
 def test_queryset_update_is_versioned(user: User) -> None:
     """The reason this is trigger-based at all: `.update()` never calls `save()`."""
     with acting_as(user):
-        dataset = create_dataset(user, name="before")
+        dataset = create_dataset_for(user, name="before")
         Dataset.objects.filter(pk=dataset.pk).update(name="after")
         dataset.refresh_from_db()
 
@@ -229,7 +229,7 @@ def test_queryset_update_is_versioned(user: User) -> None:
 def test_raw_sql_update_is_versioned(user: User) -> None:
     """A data migration writing SQL by hand must not be able to skip history either."""
     with acting_as(user):
-        dataset = create_dataset(user, name="before")
+        dataset = create_dataset_for(user, name="before")
         with connection.cursor() as cursor:
             cursor.execute(
                 "UPDATE datasets_dataset SET name = 'raw' WHERE id = %s", [str(dataset.pk)]
@@ -243,7 +243,7 @@ def test_raw_sql_update_is_versioned(user: User) -> None:
 def test_modified_never_predates_created(user: User) -> None:
     """`created` and `modified` must come from the same clock (see BaseModel.Meta)."""
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         Dataset.objects.filter(pk=dataset.pk).update(name="y")
         dataset.refresh_from_db()
     assert dataset.created <= dataset.modified
@@ -252,7 +252,7 @@ def test_modified_never_predates_created(user: User) -> None:
 def test_python_cannot_forge_version_or_modified(user: User) -> None:
     """Both columns belong to the database; assigning them in Python is simply ignored."""
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         dataset.version = 99
         dataset.modified = dataset.created
         dataset.save()
@@ -262,7 +262,7 @@ def test_python_cannot_forge_version_or_modified(user: User) -> None:
 
 def test_event_tables_are_append_only(user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         rows = history.event_rows(Dataset, dataset.pk)
 
         with pytest.raises(Exception, match="append_only"), transaction.atomic():
@@ -273,7 +273,7 @@ def test_event_tables_are_append_only(user: User) -> None:
 
 def test_hard_delete_is_refused(user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         with pytest.raises(Exception, match="Cannot delete rows"), transaction.atomic():
             Dataset.objects.filter(pk=dataset.pk).delete()
 
@@ -284,7 +284,7 @@ def test_hard_delete_is_refused(user: User) -> None:
 
 def test_soft_delete_is_a_version(user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         dataset.soft_delete()
 
         assert Dataset.objects.filter(pk=dataset.pk).count() == 0  # gone from the application
@@ -300,7 +300,7 @@ def test_forward_fk_still_resolves_to_a_soft_deleted_row(user: User) -> None:
     """`_base_manager` must stay unfiltered: `document.owner` is dereferenced in code paths
     nobody wrote, and a soft-deleted row on the far side must not raise there."""
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         dataset.soft_delete()
         fetched = Dataset.all_objects.get(pk=dataset.pk)
         assert fetched.owner == user
@@ -318,7 +318,7 @@ def test_soft_deleted_rows_do_not_reserve_unique_values(user: User) -> None:
 
 def test_task_context_names_the_task_without_identifying_the_tenant(user: User) -> None:
     with acting_as(user), history.history_context("task", task="dataset_summary"):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         event = history.current_event(dataset)
         assert event.pgh_context_id is not None
         context = pghistory.models.Context.objects.get(pk=event.pgh_context_id)
@@ -352,8 +352,8 @@ def test_one_request_groups_its_writes_under_one_context(auth_client: Client, us
 def test_lineage_pins_the_source_version_and_ignores_later_edits(user: User) -> None:
     """The whole point: the FK follows the live row, the edge does not."""
     with acting_as(user):
-        source = create_dataset(user, name="original name")
-        target = create_dataset(user, name="derived")
+        source = create_dataset_for(user, name="original name")
+        target = create_dataset_for(user, name="derived")
         (edge,) = lineage.record_derivation(target, sources=[source])
 
         source.name = "renamed since"
@@ -371,8 +371,8 @@ def test_lineage_pins_the_source_version_and_ignores_later_edits(user: User) -> 
 
 def test_lineage_edges_are_immutable(user: User) -> None:
     with acting_as(user):
-        source = create_dataset(user, name="s")
-        target = create_dataset(user, name="t")
+        source = create_dataset_for(user, name="s")
+        target = create_dataset_for(user, name="t")
         (edge,) = lineage.record_derivation(target, sources=[source])
 
         with pytest.raises(Exception, match="append_only"), transaction.atomic():
@@ -383,9 +383,9 @@ def test_lineage_edges_are_immutable(user: User) -> None:
 
 def test_lineage_records_one_edge_per_source(user: User) -> None:
     with acting_as(user):
-        a = create_dataset(user, name="a")
-        b = create_dataset(user, name="b")
-        target = create_dataset(user, name="t")
+        a = create_dataset_for(user, name="a")
+        b = create_dataset_for(user, name="b")
+        target = create_dataset_for(user, name="t")
         edges = lineage.record_derivation(target, sources=[a, b])
 
         assert {e.source_obj_id for e in edges} == {a.pk, b.pk}
@@ -397,7 +397,7 @@ def test_lineage_records_one_edge_per_source(user: User) -> None:
 
 def test_lineage_needs_a_versioned_source(user: User) -> None:
     with acting_as(user):
-        target = create_dataset(user, name="t")
+        target = create_dataset_for(user, name="t")
         token = ApiToken.objects.create(user=user, name="unversioned")
         with pytest.raises(history.NotTracked, match="not versioned"):
             lineage.record_derivation(target, sources=[token])
@@ -406,8 +406,8 @@ def test_lineage_needs_a_versioned_source(user: User) -> None:
 def test_lineage_points_at_event_models_not_live_models(user: User) -> None:
     """`target_type`/`source_type` name the *event* table: an edge addresses a version."""
     with acting_as(user):
-        source = create_dataset(user, name="s")
-        target = create_dataset(user, name="t")
+        source = create_dataset_for(user, name="s")
+        target = create_dataset_for(user, name="t")
         (edge,) = lineage.record_derivation(target, sources=[source])
     assert edge.source_type == event_type(Dataset)
     assert edge.target_type == event_type(Dataset)
@@ -416,8 +416,8 @@ def test_lineage_points_at_event_models_not_live_models(user: User) -> None:
 def test_lineage_survives_a_soft_deleted_source(user: User) -> None:
     """A source that is deleted afterwards must still resolve — that is why deletes are soft."""
     with acting_as(user):
-        source = create_dataset(user, name="the source")
-        target = create_dataset(user, name="t")
+        source = create_dataset_for(user, name="the source")
+        target = create_dataset_for(user, name="t")
         (edge,) = lineage.record_derivation(target, sources=[source])
         source.soft_delete()
 
@@ -432,7 +432,7 @@ def test_lineage_spans_models(user: User) -> None:
         (document,) = store_documents(
             user, [SimpleUploadedFile("source.pdf", b"%PDF", content_type="application/pdf")]
         )
-        dataset = create_dataset(user, name="imported")
+        dataset = create_dataset_for(user, name="imported")
         (edge,) = lineage.record_derivation(dataset, sources=[document])
 
         document.name = "renamed.pdf"
@@ -446,8 +446,8 @@ def test_lineage_spans_models(user: User) -> None:
 
 def test_recording_a_derivation_needs_a_tenant_context(user: User) -> None:
     with acting_as(user):
-        source = create_dataset(user, name="s")
-        target = create_dataset(user, name="t")
+        source = create_dataset_for(user, name="s")
+        target = create_dataset_for(user, name="t")
     with pytest.raises(Exception, match="tenant"):
         lineage.record_derivation(target, sources=[source])
 
@@ -469,7 +469,7 @@ def test_event_tables_are_covered_by_the_tenant_policy() -> None:
 def test_unversioned_replays_rows_without_touching_the_chain(user: User) -> None:
     """What `loaddata` relies on: restoring a row must not bump it or write history again."""
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         before = history.event_rows(Dataset, dataset.pk).count()
 
         with history.unversioned():
@@ -498,7 +498,7 @@ def test_lineage_is_not_a_base_model() -> None:
 
 def test_history_endpoint_groups_saves_and_diffs_them(auth_client: Client, user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="first", description="")
+        dataset = create_dataset_for(user, name="first", description="")
     response = auth_client.patch(
         f"/api/datasets/{dataset.pk}",
         data={"name": "second", "description": "now with a description"},
@@ -534,7 +534,7 @@ def test_history_endpoint_shows_the_soft_delete_as_a_version(
     auth_client: Client, user: User
 ) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="doomed")
+        dataset = create_dataset_for(user, name="doomed")
     assert auth_client.delete(f"/api/datasets/{dataset.pk}").status_code == 204
 
     body = auth_client.get(f"/api/history/dataset/{dataset.pk}").json()
@@ -549,8 +549,8 @@ def test_history_endpoint_links_to_the_source_version_it_consumed(
     auth_client: Client, user: User
 ) -> None:
     with acting_as(user):
-        source = create_dataset(user, name="the source")
-        derived = create_dataset(user, name="derived")
+        source = create_dataset_for(user, name="the source")
+        derived = create_dataset_for(user, name="derived")
         lineage.record_derivation(derived, sources=[source])
         source.name = "renamed since"
         source.save()
@@ -568,7 +568,7 @@ def test_history_endpoint_is_tenant_isolated(
     auth_client: Client, user: User, other_user: User, client_for: Callable[[User], Client]
 ) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="mine")
+        dataset = create_dataset_for(user, name="mine")
 
     assert auth_client.get(f"/api/history/dataset/{dataset.pk}").status_code == 200
     theirs = client_for(other_user)
@@ -583,7 +583,7 @@ def test_history_endpoint_rejects_an_unknown_resource(auth_client: Client, user:
 
 def test_history_endpoint_requires_authentication(client: Client, user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="mine")
+        dataset = create_dataset_for(user, name="mine")
     assert client.get(f"/api/history/dataset/{dataset.pk}").status_code == 401
 
 
@@ -597,7 +597,7 @@ def test_a_row_written_under_an_unknown_schema_tag_is_not_diffed(user: User) -> 
     """The point of `pgh_schema`: a row we cannot describe is reported as unknown, never as a
     change from a value the object never held."""
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         history.event_rows(Dataset, dataset.pk)  # written under the current tag
         with history.unversioned(), connection.cursor() as cursor:
             cursor.execute(
@@ -618,7 +618,7 @@ def test_one_save_spanning_two_tables_is_one_revision(auth_client: Client, user:
     """The case the context id exists for: a PATCH that renames a dataset *and* adds a tag
     writes DatasetEvent and DatasetTagEvent, and the page shows one revision, not two."""
     with acting_as(user):
-        dataset = create_dataset(user, name="before")
+        dataset = create_dataset_for(user, name="before")
 
     response = auth_client.patch(
         f"/api/datasets/{dataset.pk}",
@@ -645,7 +645,7 @@ def test_one_save_spanning_two_tables_is_one_revision(auth_client: Client, user:
 
 def test_removing_a_tag_shows_as_a_deleted_child_row(auth_client: Client, user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="x", tags=["sales"])
+        dataset = create_dataset_for(user, name="x", tags=["sales"])
 
     auth_client.patch(
         f"/api/datasets/{dataset.pk}", data={"tags": []}, content_type="application/json"
@@ -664,9 +664,9 @@ def test_child_rows_of_another_tenant_never_appear(
     auth_client: Client, user: User, other_user: User
 ) -> None:
     with acting_as(other_user):
-        create_dataset(other_user, name="theirs", tags=["secret"])
+        create_dataset_for(other_user, name="theirs", tags=["secret"])
     with acting_as(user):
-        mine = create_dataset(user, name="mine", tags=["mine"])
+        mine = create_dataset_for(user, name="mine", tags=["mine"])
 
     body = auth_client.get(f"/api/history/dataset/{mine.pk}").json()
     descriptions = [r["description"] for group in body["groups"] for r in group["revisions"]]
@@ -681,7 +681,7 @@ def test_a_field_added_after_a_version_is_reported_as_unknown(user: User) -> Non
     """The reason `pgh_schema` is on every row: `description` did not exist under the older tag,
     so its value there is a backfilled default and must not be shown as a change."""
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         Dataset.objects.filter(pk=dataset.pk).update(description="added later")
 
         current = history.tracked_fields()
@@ -714,7 +714,7 @@ def test_archived_values_of_dropped_fields_are_shown(user: User) -> None:
     """`pgh_archive` is written by a drop-column migration (apps/core/history.py) and frozen at
     that moment; the page renders it beside the diff instead of losing the value."""
     with acting_as(user):
-        dataset = create_dataset(user, name="x")
+        dataset = create_dataset_for(user, name="x")
         with history.unversioned(), connection.cursor() as cursor:
             cursor.execute(
                 "UPDATE datasets_datasetevent"
@@ -743,7 +743,7 @@ def test_a_saved_instance_reports_the_version_the_database_gave_it(user: User) -
     """`version` and `modified` are written by a trigger, so the instance the API serialises
     back has to read them again — otherwise every write response reports the previous state."""
     with acting_as(user):
-        dataset = create_dataset(user, name="first")
+        dataset = create_dataset_for(user, name="first")
         before = dataset.modified
 
         dataset.name = "second"
@@ -757,7 +757,7 @@ def test_a_saved_instance_reports_the_version_the_database_gave_it(user: User) -
 
 def test_the_write_endpoints_report_the_new_version(auth_client: Client, user: User) -> None:
     with acting_as(user):
-        dataset = create_dataset(user, name="first")
+        dataset = create_dataset_for(user, name="first")
 
     patched = auth_client.patch(
         f"/api/datasets/{dataset.pk}", data={"name": "second"}, content_type="application/json"

@@ -19,7 +19,7 @@ from storages.backends.s3 import S3Storage
 from apps.accounts.models import User
 from apps.core.storage import ensure_bucket
 from apps.core.testing import acting_as
-from apps.documents import services
+from apps.documents.api import delete_document_file_stays, store_documents
 from apps.documents.models import Document, DocumentId
 from config.settings import S3_STORAGE
 
@@ -71,7 +71,7 @@ def _keys(storage: S3Storage) -> list[str]:
 
 def test_upload_download_delete_through_object_store(s3: S3Storage, user: User) -> None:
     with acting_as(user):
-        one, two = services.store_documents(
+        one, two = store_documents(
             user,
             [
                 SimpleUploadedFile("a.txt", b"hello", content_type="text/plain"),
