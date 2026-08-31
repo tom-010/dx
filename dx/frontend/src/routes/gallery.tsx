@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import type { JSX } from "react";
 import {
   getListMediaItemsQueryKey,
@@ -119,6 +119,14 @@ function MediaGrid({
                   {new Date(item.created).toLocaleDateString()}
                 </p>
               </div>
+              <Button asChild variant="ghost" size="sm">
+                <Link
+                  to="/history/$resource/$objectId"
+                  params={{ resource: "mediaitem", objectId: item.id }}
+                >
+                  History
+                </Link>
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

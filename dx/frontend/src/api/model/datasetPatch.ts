@@ -14,4 +14,5 @@ export interface DatasetPatch {
   name?: string | null;
   options?: DatasetOptions | null;
   row_count?: number | null;
+  tags?: string[] | null;
 }

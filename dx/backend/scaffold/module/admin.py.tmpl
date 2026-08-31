@@ -1,11 +1,19 @@
+"""Admin page for the ${name} module.
+
+`OwnedModelAdmin` (apps/core/admin.py) is not optional: it soft-deletes instead of offering the
+hard-delete button the database rejects, reads through `all_objects` so deleted rows stay
+restorable, and routes every queryset through `scope_to_tenant`. A plain `ModelAdmin` here fails
+`apps/core/tests/test_admin.py`.
+"""
+
 from django.contrib import admin
 
+from apps.core.admin import OwnedModelAdmin
 from apps.${name}.models import ${Model}
 
 
 @admin.register(${Model})
-class ${Model}Admin(admin.ModelAdmin[${Model}]):
-    list_display = ["name", "owner", "created"]
-    list_filter = ["owner"]
-    search_fields = ["name"]
-    readonly_fields = ["id", "created", "modified"]
+class ${Model}Admin(OwnedModelAdmin[${Model}]):
+    list_display = ["name", "version", "created", "deleted_at"]
+    list_filter = ["deleted_at"]
+    search_fields = ["name", "description"]

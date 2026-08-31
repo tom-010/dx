@@ -4,6 +4,7 @@ import pytest
 from django.test import Client
 
 from apps.accounts.models import User
+from apps.core.testing import acting_as
 from apps.datasets import services
 from apps.datasets.models import Dataset, DatasetId, DatasetOptions
 from apps.datasets.schemas import DatasetPatch
@@ -32,8 +33,9 @@ def test_create_and_list(auth_client: Client) -> None:
 
 
 def test_list_is_paginated(auth_client: Client, user: User) -> None:
-    for i in range(5):
-        services.create_dataset(user, name=f"ds{i}")
+    with acting_as(user):
+        for i in range(5):
+            services.create_dataset(user, name=f"ds{i}")
 
     page = auth_client.get("/api/datasets?page=2&page_size=2").json()
 
@@ -65,7 +67,8 @@ def test_options_are_a_typed_json_field(auth_client: Client, user: User) -> None
         content_type="application/json",
     ).json()
 
-    dataset = services.get_dataset(user, DatasetId(uuid.UUID(created["id"])))
+    with acting_as(user):
+        dataset = services.get_dataset(user, DatasetId(uuid.UUID(created["id"])))
     assert dataset.options == DatasetOptions(delimiter="\t", has_header=False)
 
     invalid = auth_client.post(
@@ -77,7 +80,8 @@ def test_options_are_a_typed_json_field(auth_client: Client, user: User) -> None
 
 
 def test_get_put_patch_delete(auth_client: Client, user: User) -> None:
-    dataset = services.create_dataset(user, name="Temp", description="d", row_count=1)
+    with acting_as(user):
+        dataset = services.create_dataset(user, name="Temp", description="d", row_count=1)
     url = f"/api/datasets/{dataset.pk}"
 
     assert auth_client.get(url).status_code == 200
@@ -97,17 +101,20 @@ def test_get_put_patch_delete(auth_client: Client, user: User) -> None:
 
 
 def test_service_scopes_to_the_user(user: User, other_user: User) -> None:
-    dataset = services.create_dataset(user, name="mine")
+    with acting_as(user):
+        dataset = services.create_dataset(user, name="mine")
 
-    with pytest.raises(services.DatasetNotFound):
-        services.get_dataset(other_user, DatasetId(dataset.pk))
-    with pytest.raises(services.DatasetNotFound):
-        services.patch_dataset(other_user, DatasetId(dataset.pk), DatasetPatch(name="x"))
-    with pytest.raises(services.DatasetNotFound):
-        services.delete_dataset(other_user, DatasetId(dataset.pk))
-    assert Dataset.objects.get(pk=dataset.pk).name == "mine"
+    with acting_as(other_user):
+        with pytest.raises(services.DatasetNotFound):
+            services.get_dataset(other_user, DatasetId(dataset.pk))
+        with pytest.raises(services.DatasetNotFound):
+            services.patch_dataset(other_user, DatasetId(dataset.pk), DatasetPatch(name="x"))
+        with pytest.raises(services.DatasetNotFound):
+            services.delete_dataset(other_user, DatasetId(dataset.pk))
+    with acting_as(user):
+        assert Dataset.objects.get(pk=dataset.pk).name == "mine"
 
 
 def test_service_raises_for_unknown_id(user: User) -> None:
-    with pytest.raises(services.DatasetNotFound):
+    with acting_as(user), pytest.raises(services.DatasetNotFound):
         services.get_dataset(user, DatasetId(uuid.uuid7()))

@@ -28,7 +28,11 @@ x-app: &app
   environment:
     DEBUG: "false"
     ALLOWED_HOSTS: '["${DOMAIN:?}"]'
-    DATABASE_URL: ${DATABASE_URL:-postgres://dx:${POSTGRES_PASSWORD:?}@db:5432/dx}
+    # Runtime role `app_user` (row-level security applies). The entrypoint migrates as the table
+    # owner `app_migrator`; `app_admin` (shell_admin) is deliberately not configured here.
+    DATABASE_URL: ${DATABASE_URL:-postgres://app_user:${DB_APP_PASSWORD:?}@db:5432/dx}
+    DB_MIGRATOR_USER: ${DB_MIGRATOR_USER:-app_migrator}
+    DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?}
     CACHE_URL: ${CACHE_URL:-redis://redis:6379/1}
     CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
     CELERY_EAGER: "false"
@@ -75,7 +79,9 @@ services:
     <<: *app
     command: ["celery", "-A", "config", "worker", "--loglevel=info", "--concurrency=${CELERY_CONCURRENCY:-2}"]
     healthcheck:
-      test: ["CMD", "celery", "-A", "config", "inspect", "ping", "--timeout=5"]
+      # `inspect ping` is a broadcast over the shared broker: without `-d`, *any* worker
+      # answering would mark this container healthy. Node names default to celery@<hostname>.
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME --timeout=5"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -84,18 +90,40 @@ services:
       app:
         condition: service_healthy  # migrations applied
 
-  # Periodic tasks (CELERY_BEAT_SCHEDULE, e.g. the nightly backup). Exactly one instance; its
-  # state file (last run times) is disposable, so it lives in /tmp.
+  # Periodic tasks (CELERY_BEAT_SCHEDULE) plus the `maintenance` queue they land on: the nightly
+  # backup dumps every tenant, so this one process connects as the table owner (DB_ROLE=migrator)
+  # — the regular `worker` never consumes that queue and stays `app_user`. Exactly one instance
+  # (embedded beat); its schedule file (last run times) is disposable, so it lives in /tmp.
   beat:
     <<: *app
-    command: ["celery", "-A", "config", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
-    # No HTTP here, so the image's HEALTHCHECK does not apply; beat exits on failure and is restarted.
+    command: ["celery", "-A", "config", "worker", "-B", "-Q", "maintenance", "--concurrency=1", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    environment:
+      DEBUG: "false"
+      ALLOWED_HOSTS: '["${DOMAIN:?}"]'
+      DATABASE_URL: ${DATABASE_URL:-postgres://app_user:${DB_APP_PASSWORD:?}@db:5432/dx}
+      DB_MIGRATOR_USER: ${DB_MIGRATOR_USER:-app_migrator}
+      DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?}
+      DB_ROLE: migrator
+      CACHE_URL: ${CACHE_URL:-redis://redis:6379/1}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_EAGER: "false"
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
     healthcheck:
-      disable: true
+      # Scoped to this container (see the worker service): the ordinary worker would otherwise
+      # answer for it, and a wedged maintenance worker — the only consumer of the maintenance
+      # queue — would keep the stack "healthy" while the nightly backup silently stops.
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME --timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     depends_on:
       app:
         condition: service_healthy
 
+  # docker/postgres/10-roles.sh creates the application roles on a fresh volume. For a volume
+  # from before it, run it once: ./scripts/prod.sh exec -T db sh /docker-entrypoint-initdb.d/10-roles.sh
+  # (idempotent; it also hands tables created by `dx` to app_migrator).
   db:
     image: postgres:18-alpine
     restart: unless-stopped
@@ -104,9 +132,15 @@ services:
       POSTGRES_USER: dx
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
       POSTGRES_DB: dx
+      APP_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?}
+      APP_USER_PASSWORD: ${DB_APP_PASSWORD:?}
+      # Optional and deliberately not in .env.prod (that file is every service's env_file):
+      # pass it on the command line when (re)setting it, or ALTER ROLE app_admin by hand.
+      APP_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-}
     volumes:
       # Postgres 18 images keep data under /var/lib/postgresql (not .../data).
       - pgdata:/var/lib/postgresql
+      - ./postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dx -d dx"]
       interval: 10s

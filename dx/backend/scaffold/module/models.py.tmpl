@@ -3,11 +3,17 @@ from typing import NewType
 
 from django.db import models
 
+from apps.core.history import tracked
 from apps.core.models import OwnedModel
 
 ${Model}Id = NewType("${Model}Id", uuid.UUID)
 
 
+# Every write is captured in ${Model}Event by a database trigger (apps/core/history.py).
+# Removing @tracked means listing the model in HISTORY_EXEMPT with a reason — a test fails
+# otherwise. Never use a plain ManyToManyField here: declare an owned `through=` model, or the
+# join rows change with no version row behind them.
+@tracked
 class ${Model}(OwnedModel):
     """TODO: describe what a ${model} is."""
 

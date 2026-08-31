@@ -429,6 +429,31 @@ wheels = [
 ]
 
 [[package]]
+name = "django-pghistory"
+version = "3.9.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+    { name = "django-pgtrigger" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9e/7e/594930ce9cc8ddd9a586ef126f745d9516e307ef48a35a8566da54ca53e8/django_pghistory-3.9.2.tar.gz", hash = "sha256:1d07b75b61501a209330e7fb43fad2b2482f7f0399a36fa91aa7600a03025921", size = 31401, upload-time = "2026-02-17T16:08:21.304Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/5f/58a0551e951e4b67063e35d3393aeaab2f77bca24b0706ffcd977474e34c/django_pghistory-3.9.2-py3-none-any.whl", hash = "sha256:1623633af429837567dd11469823b9bb3c3f908cc117d60f097d23f3f0622fa2", size = 39929, upload-time = "2026-02-17T16:08:19.894Z" },
+]
+
+[[package]]
+name = "django-pgtrigger"
+version = "4.17.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/45/3d/ea55015e2e2a8e2230c6a056768512a9660573f8926f87671f166d455936/django_pgtrigger-4.17.0.tar.gz", hash = "sha256:55d297a756b5b6a8e0c533d3323fda1589c699e7d14aa3fff7fa7d774c46363c", size = 32200, upload-time = "2025-12-04T15:46:06.587Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/47/13c0c23c134cd0f0b0addfbc3ef1477f90d891184d21689f9074b794b00c/django_pgtrigger-4.17.0-py3-none-any.whl", hash = "sha256:06048cdeb57e20987fd0bf7dd673512a1413a08868eea248d70dbb970e967175", size = 36326, upload-time = "2025-12-04T15:46:05.427Z" },
+]
+
+[[package]]
 name = "django-pydantic-field"
 version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -440,6 +465,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/42/3d/d2390f1383eb60b25c7b68b3493af566831b0db540e47ed85a395727bae2/django_pydantic_field-0.5.4.tar.gz", hash = "sha256:3c884299ea777e8221e4c0ff222e078960ba3576a3b6970636629524e5d6cf39", size = 22013, upload-time = "2026-02-22T13:47:30.633Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/88/1acbef013f172f9f03836d3c03639ae5604a46e9f1a921c6e623e60f8594/django_pydantic_field-0.5.4-py3-none-any.whl", hash = "sha256:5c080b5f0ea17ae11b5305d649778a87437c61a403894933337fe3e295f627a9", size = 36963, upload-time = "2026-02-22T13:47:29.613Z" },
+]
+
+[[package]]
+name = "django-scopes"
+version = "2.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e1/03/8032bb05788e91a7cbe7dcfa796b9692add0bd82a7fec3011ad8cec33eb9/django_scopes-2.1.0.tar.gz", hash = "sha256:dedd74c8ba09a5dad607d0f9e9a9407d92aaf94eea6a963f1ec11c98f007bbb3", size = 15599, upload-time = "2026-07-24T11:06:37.905Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/60/64e5561647399f06cdea4a6500db358647e0aae957dd59152380e1064017/django_scopes-2.1.0-py3-none-any.whl", hash = "sha256:c44b9ee8a00ab2755e9a4e96c2b1b1ee4d0d0cc762f68c24fbeb1c023d219d6d", size = 12737, upload-time = "2026-07-24T11:06:36.747Z" },
 ]
 
 [[package]]
@@ -517,7 +554,9 @@ dependencies = [
     { name = "django-click" },
     { name = "django-cors-headers" },
     { name = "django-ninja" },
+    { name = "django-pghistory" },
     { name = "django-pydantic-field" },
+    { name = "django-scopes" },
     { name = "django-storages", extra = ["s3"] },
     { name = "django-structlog" },
     { name = "django-stubs-ext" },
@@ -551,7 +590,9 @@ requires-dist = [
     { name = "django-click", specifier = ">=2.5.0" },
     { name = "django-cors-headers", specifier = ">=4.9.0" },
     { name = "django-ninja", specifier = ">=1.6" },
+    { name = "django-pghistory", specifier = ">=3.9" },
     { name = "django-pydantic-field", specifier = ">=0.5.4" },
+    { name = "django-scopes", specifier = ">=2.1.0" },
     { name = "django-storages", extras = ["s3"], specifier = ">=1.14.6" },
     { name = "django-structlog", specifier = ">=10.1.0" },
     { name = "django-stubs-ext", specifier = ">=6.1.0" },

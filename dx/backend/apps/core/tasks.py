@@ -1,26 +1,39 @@
-"""Sample Celery tasks — thin wrappers around `services.py` (no logic here, only plumbing).
+"""Celery tasks, plus `tenant_task` — the one sanctioned way to define a task that touches
+owned data.
 
-Trigger them from the frontend (`/tasks`) or the API (`POST /api/tasks/...`), follow them with
-`GET /api/tasks/{id}/events` (SSE) or poll `GET /api/tasks/{id}`. Pattern for real tasks: put the
-work in a service function, wrap it here, add an endpoint (and, if useful, a management command)
-that enqueues it.
+A worker has no request and no token, so it is where a tenant leak would actually happen.
+`tenant_task` takes the owner's id as the first argument and runs the function inside the
+tenant context (`apps/core/db.py`): the database variable for row-level security and the ORM
+scope. `apps/core/tests/test_tenancy.py` refuses `@shared_task` in tenant apps.
+
+Sample tasks: trigger them from the frontend (`/tasks`) or the API (`POST /api/tasks/...`),
+follow them with `GET /api/tasks/{id}/events` (SSE) or poll `GET /api/tasks/{id}`. Pattern for
+real tasks: write the task here, add an endpoint in `apps/core/api.py` (and, if useful, a
+management command) that enqueues it.
 """
 
 # Celery inspects task signatures at runtime; keep `Task[P, R]` (celery-types) a string.
 from __future__ import annotations
 
+import functools
 import time
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Concatenate, Literal, ParamSpec, TypeVar
 
-from celery import Task, shared_task
+from celery import Task, current_task, shared_task
 from celery.result import AsyncResult
 from django.conf import settings
 from django.core import signing
+from django_scopes import scope
 from kombu.exceptions import OperationalError
 
-from apps.core import backups, services
+from apps.accounts.models import User
+from apps.datasets.models import Dataset
+from apps.core import backups
+from apps.core.db import pin_session_tenant, tenant_context, unpin_session_tenant
+from apps.core.history import history_context
 from config.celery import WithRetry
 
 # Custom state reported by long-running tasks via `update_state`.
@@ -39,37 +52,113 @@ TaskState = Literal[
     "IGNORED",
 ]
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def tenant_task(
+    *task_args: object, **task_kwargs: object
+) -> Callable[[Callable[Concatenate[uuid.UUID, _P], _R]], Task[Any, _R]]:
+    """`@tenant_task(...)` — `@shared_task(...)` for functions that read or write owned data.
+
+    The wrapped function takes the owner's user id as its first positional argument (a UUID;
+    Celery's JSON serializer may hand it over as a string). Pass ids, never model instances.
+
+    Worker: a pinned session-level context (a long task should not hold one transaction open),
+    cleared again when the task returns, so a reused connection can never carry a stale tenant.
+    Eager mode (tests, CELERY_EAGER): the transaction-scoped context, because the task runs
+    inline in the caller's connection.
+
+    Both also open a pghistory context naming the task, so the version rows a background job
+    writes say where they came from. With most of the work in this app happening off-request,
+    that is the common path, not the edge case (apps/core/history.py).
+    """
+
+    def decorator(fn: Callable[Concatenate[uuid.UUID, _P], _R]) -> Task[Any, _R]:
+        @functools.wraps(fn)
+        def inner(owner_id: uuid.UUID | str, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+            owner = uuid.UUID(str(owner_id))
+            if current_task.request.is_eager:
+                return run_as_tenant_eagerly(fn, owner, *args, **kwargs)
+            return run_as_tenant_in_worker(fn, owner, *args, **kwargs)
+
+        # celery-types' overloads want literal keyword arguments; this is a pass-through.
+        make_task: Callable[..., Any] = shared_task
+        task: Task[Any, _R] = make_task(*task_args, **task_kwargs)(inner)
+        return task
+
+    return decorator
+
+
+def run_as_tenant_eagerly[**P, R](
+    fn: Callable[Concatenate[uuid.UUID, P], R], owner: uuid.UUID, *args: P.args, **kwargs: P.kwargs
+) -> R:
+    """Eager mode: the task runs inline on the caller's connection — transaction-scoped context."""
+    with tenant_context(owner), history_context("task", task=fn.__name__):
+        return fn(owner, *args, **kwargs)
+
+
+def run_as_tenant_in_worker[**P, R](
+    fn: Callable[Concatenate[uuid.UUID, P], R], owner: uuid.UUID, *args: P.args, **kwargs: P.kwargs
+) -> R:
+    """Worker: session-level context instead of one long transaction — pinned, so a reconnect
+    mid-task restores it rather than silently losing the tenant, and cleared afterwards so the
+    next task on this worker cannot inherit it."""
+    pin_session_tenant(owner)
+    try:
+        with scope(user=owner), history_context("task", task=fn.__name__):
+            return fn(owner, *args, **kwargs)
+    finally:
+        unpin_session_tenant()
+
+
+# --- Sample tasks ------------------------------------------------------------------------------
+
+
+class DemoFailure(Exception):
+    """Raised on purpose by the `fail` sample task."""
+
 
 @shared_task
 def add(a: int, b: int) -> int:
-    return services.add(a, b)
+    return a + b
 
 
 @shared_task(bind=True)
 def count(self: Task[Any, int], n: int = 10, delay: float = 0.5) -> int:
-    def report(current: int, total: int) -> None:
+    """Slow loop that reports progress after each step (demo for long-running work)."""
+    for current in range(1, n + 1):
+        time.sleep(delay)
         # In eager mode there is no worker/result store to report to; the caller gets the
         # final result anyway.
         if not self.request.is_eager:
-            self.update_state(state=PROGRESS, meta={"current": current, "total": total})
+            self.update_state(state=PROGRESS, meta={"current": current, "total": n})
+    return n
 
-    return services.count_to(n, delay, report)
 
-
-@shared_task(bind=True, base=WithRetry)
-def dataset_summary(self: Task[Any, dict[str, int]]) -> dict[str, int]:
-    """Touches the database — shows that tasks use the ORM like any other code."""
-    return services.dataset_summary()
+@tenant_task(base=WithRetry)
+def dataset_summary(owner_id: uuid.UUID) -> dict[str, int]:
+    """Touches owned data — shows the `tenant_task` pattern: the owner's id comes in and the
+    context is set up around the function, so the ORM scope and the policy are both in place."""
+    datasets = Dataset.objects.for_user(User.objects.get(pk=owner_id))
+    return {
+        "datasets": datasets.count(),
+        "rows": sum(datasets.values_list("row_count", flat=True)),
+    }
 
 
 @shared_task
 def fail() -> None:
-    raise services.DemoFailure("This task fails on purpose")
+    raise DemoFailure("This task fails on purpose")
 
 
 @shared_task(bind=True, base=WithRetry)
 def backup_database(self: Task[Any, str]) -> str:
-    """Nightly dump to the backup storage (CELERY_BEAT_SCHEDULE); keeps BACKUP_KEEP dumps."""
+    """Nightly dump to the backup storage (CELERY_BEAT_SCHEDULE); keeps BACKUP_KEEP dumps.
+
+    Routed to the `maintenance` queue (CELERY_TASK_ROUTES): it needs cross-tenant database
+    credentials, which only the maintenance worker has (`./scripts/celery.sh maintenance`).
+    """
     backup = backups.create_backup()
     backups.prune_backups(settings.BACKUP_KEEP)
     return backup.name

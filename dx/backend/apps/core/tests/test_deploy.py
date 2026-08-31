@@ -38,3 +38,19 @@ def test_check_deploy_passes_with_a_production_environment() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_entrypoint_gates_every_deploy_on_the_rls_policies() -> None:
+    """Invariant: `migrate` → `rls_sync` → `rls_sync --check`, as the table owner. The check
+    exits non-zero on drift, so a container with unprotected tables never starts serving."""
+    entrypoint = (BASE_DIR.parent / "docker" / "entrypoint.sh").read_text()
+    steps = [
+        "DB_ROLE=migrator python manage.py migrate --noinput",
+        "DB_ROLE=migrator python manage.py rls_sync",
+        "DB_ROLE=migrator python manage.py rls_sync --check",
+    ]
+
+    positions = [entrypoint.find(step) for step in steps]
+
+    assert all(position > 0 for position in positions), f"missing step: {steps}"
+    assert positions == sorted(positions), "the RLS steps must run after migrate, in order"

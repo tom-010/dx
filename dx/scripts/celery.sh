@@ -5,6 +5,9 @@
 #   ./scripts/celery.sh -- -c 4    # same, extra args go to `celery worker`
 #   ./scripts/celery.sh worker     # plain worker, no reload (extra args go to celery: -c 4)
 #   ./scripts/celery.sh beat       # periodic tasks (file-based schedule; see CELERY_BEAT_SCHEDULE)
+#   ./scripts/celery.sh maintenance # beat + the `maintenance` queue (nightly backup) in one process,
+#                                  # connected as the table owner (DB_ROLE=migrator) — what the
+#                                  # prod `beat` service runs; the dev worker never sees that queue
 #   ./scripts/celery.sh flower     # web UI on http://localhost:5555 (flower is fetched on demand)
 #   ./scripts/celery.sh purge      # drop all queued tasks
 #   ./scripts/celery.sh ping       # is a worker alive?
@@ -39,6 +42,10 @@ case "$cmd" in
   dev)     logged celery.log uv run python manage.py celery_dev "$@" ;;
   worker)  logged celery.log uv run celery -A config worker --loglevel=info "$@" ;;
   beat)    logged celery-beat.log uv run celery -A config beat --loglevel=info "$@" ;;
+  maintenance)
+           export DB_ROLE="${DB_ROLE:-migrator}"
+           logged celery-maintenance.log uv run celery -A config worker -B -Q maintenance \
+             --concurrency=1 --loglevel=info --schedule="$(cd .. && pwd)/logs/celerybeat-schedule" "$@" ;;
   flower)  exec uv run --with flower celery -A config flower "$@" ;;
   purge)   exec uv run celery -A config purge -f "$@" ;;
   ping)    exec uv run celery -A config inspect ping "$@" ;;

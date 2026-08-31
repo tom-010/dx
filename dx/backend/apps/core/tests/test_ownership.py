@@ -16,9 +16,11 @@ from django.test import Client
 from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
-from apps.datasets.services import create_dataset
-from apps.documents.services import store_documents
-from apps.gallery.services import store_media_items
+from apps.core.testing import acting_as
+from apps.datasets.models import Dataset
+from apps.documents.api import store_documents
+from apps.gallery.api import store_media_items
+from apps.notes.models import Note
 
 
 @dataclass(frozen=True)
@@ -44,13 +46,20 @@ def _media_item(user: User) -> uuid.UUID:
 RESOURCES = [
     OwnedResource(
         "datasets",
-        lambda user: create_dataset(user, name="A's dataset").pk,
+        lambda user: Dataset.objects.create(owner=user, name="A's dataset").pk,
         "/api/datasets",
         "/api/datasets/{id}",
         updates={"PUT": {"name": "hijacked"}, "PATCH": {"name": "hijacked"}},
     ),
     OwnedResource("documents", _document, "/api/documents", "/api/documents/{id}"),
     OwnedResource("gallery", _media_item, "/api/gallery", "/api/gallery/{id}"),
+    OwnedResource(
+        "notes",
+        lambda user: Note.objects.create(owner=user, title="A's note").pk,
+        "/api/notes",
+        "/api/notes/{id}",
+        updates={"PUT": {"title": "hijacked"}, "PATCH": {"title": "hijacked"}},
+    ),
 ]
 
 
@@ -69,7 +78,8 @@ def test_other_users_cannot_see_or_touch_it(
     auth_client: Client,
     client_for: Callable[[User], Client],
 ) -> None:
-    object_id = resource.create(user)
+    with acting_as(user):
+        object_id = resource.create(user)
     item = resource.item.format(id=object_id)
     other = client_for(other_user)
 

@@ -15,4 +15,6 @@ export interface DatasetOut {
   name: string;
   options: DatasetOptions;
   row_count: number;
+  tags: string[];
+  version: number;
 }

@@ -4,17 +4,28 @@
   401 checks.
 - `auth_client` acts as `user`; `client_for(other_user)` builds a second identity for
   ownership/isolation tests ("B must not see A's things").
+- `apps.core.testing.acting_as(user)` opens the tenant context (ORM scope + database
+  variable) for code called directly, outside a request: `with acting_as(user):
+  create_dataset(user, ...)`. Requests get it from the middleware.
+- Every database test runs as the runtime role `app_user` (`SET ROLE` on the test connection),
+  so row-level security is enforced exactly as in production; the policies are created on the
+  test database right after the migrations. `@pytest.mark.cross_tenant` keeps the owner's
+  view for the backup/restore tooling.
 - Files named `test_api.py` / `test_commands.py` get the `api` / `infra` marker automatically,
   so `pytest -m "not api"` runs only the fast service/unit tests.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import pytest
+from django.conf import settings
+from django.db import DatabaseError, connection, connections
 from django.test import Client
+from pytest_django import DjangoDbBlocker
 
 from apps.accounts.models import User
-from apps.accounts.services import issue_access_token
+from apps.accounts.api import issue_access_token
+from apps.core import rls
 
 AUTO_MARKERS = {"test_api.py": "api", "test_commands.py": "infra"}
 
@@ -24,6 +35,46 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         marker = AUTO_MARKERS.get(item.path.name)
         if marker is not None:
             item.add_marker(marker)
+
+
+@pytest.fixture(scope="session")
+def django_db_setup(django_db_setup: None, django_db_blocker: DjangoDbBlocker) -> None:
+    """Row-level security on the test database: policies + grants are DDL outside the
+    migrations (`manage.py rls_sync` in a deployment)."""
+    with django_db_blocker.unblock():
+        rls.sync()
+
+
+@pytest.fixture(autouse=True)
+def rls_enforced(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Database tests act as `app_user`, the role the policies apply to. The suite connects as
+    the table owner (it has to create and migrate the database), which would bypass them."""
+    uses_db = request.node.get_closest_marker("django_db") is not None or any(
+        name in request.fixturenames for name in ("db", "transactional_db")
+    )
+    if not uses_db or request.node.get_closest_marker("cross_tenant") is not None:
+        yield
+        return
+    request.getfixturevalue("db")  # the test transaction must be open before switching roles
+    with connection.cursor() as cursor:
+        cursor.execute(f"SET ROLE {rls.APP_ROLE}")
+    yield
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("RESET ROLE")
+    except DatabaseError:
+        pass  # aborted transaction: the rollback undoes the SET ROLE anyway
+
+
+@pytest.fixture(autouse=True)
+def close_audit_connection() -> Iterator[None]:
+    """The admin's cross-tenant alias is a second session on the same database, and pytest-django
+    cannot drop the test database while one is open. Nothing else closes it: the alias is outside
+    the test transaction by design (that is what makes it see other tenants)."""
+    yield
+    alias = settings.AUDIT_DB_ALIAS
+    if alias in settings.DATABASES:
+        connections[alias].close()
 
 
 @pytest.fixture

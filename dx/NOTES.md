@@ -27,6 +27,7 @@ Kriterien hinter allen Entscheidungen, in Prioritätsreihenfolge:
 | Formulare           | react-hook-form + generierte Zod-Schemas                                          |
 | Backend             | Django + **django-ninja** (Pydantic, RPC-förmige Endpoints)                       |
 | Datenbank           | PostgreSQL                                                                        |
+| Multitenancy        | Single DB/schema, row-level: `owner` FK + django-scopes + Postgres RLS (§11, English) |
 | API-Vertrag         | OpenAPI (aus ninja) → **orval** → typisierter TS-Client                           |
 | Auth                | Token-basiert, einheitlich für Web + Native; Authorization in der Service-Schicht |
 | Background-Jobs     | Postgres-basiert, kein Redis (Auswahl offen, Abschnitt 10)                        |
@@ -158,3 +159,35 @@ Ziel: Initial-Load **~200–400 KB (Brotli)**, unabhängig von der Repo-Größe.
 3.  **Offline-Scope festlegen (Produkt):** Welche Entitäten offline editierbar? Danach Konfliktpolicy je Entität + Rejection-UI.
 4.  **Erster vertikaler Slice (1 Woche):** Import → Validierung → Persistenz → Export, inklusive orval-Loop und einem Background-Job. Validiert Typ-Pipeline und Dev-Loop, bevor mehr gebaut wird.
 5.  **Reihenfolge:** Als reine Vite-Web-App starten; Capacitor erst andocken, wenn die Kern-Screens stehen (das Wrappen von `dist` ist ~ein Tag Arbeit).
+
+## 11. Multitenancy (decision 2026-08-29, English)
+
+**Tenant == user. One database, one schema, row-level isolation enforced twice** — details and
+the operational rules live in `CLAUDE.md` "Multitenancy".
+
+| Layer | Technology | Role |
+|---|---|---|
+| Data model | `owner` FK on the abstract `OwnedModel` | scoping and per-tenant extraction are mechanical |
+| ORM guard | `OwnedManager` on django-scopes' state | an unscoped query raises instead of returning the wrong rows (developer ergonomics, CI failure) |
+| Database guard | PostgreSQL row-level security, one generated policy per owned table | the actual guarantee: application bugs cannot leak data |
+| Request context | bearer token verified once in middleware → `SET LOCAL app.user_id` inside the request transaction | stateless, safe with PgBouncer transaction pooling |
+| Roles | `app_migrator` (owner), `app_user` (runtime, subject to RLS), `app_admin` (`BYPASSRLS`) | RLS only binds a role that is not the table owner |
+
+Scale assumptions: ~1,000 tenants today, 10,000 expected; tenants never share anything.
+
+**Rejected alternatives (do not revisit):**
+
+- *Schema-per-tenant* (`django-tenants`, `django-pgschemas`): 10,000 tenants × ~40 tables ≈
+  2.4 M `pg_class` entries; every deploy runs DDL 10,000 times and a partial failure leaves a
+  heterogeneous fleet; `SET search_path` is session state (incompatible with transaction
+  pooling); none of the routing modes fits a single-domain stateless JWT setup, and header
+  routing would be client-controlled — a privilege-escalation hole.
+- *Database-per-tenant*: connection-count explosion, migrations × 10,000.
+- *Manual `.filter(owner=...)` as the only guard*: explicitly rejected by the project owner
+  (it stays as the explicit `for_user()` half, never as the guarantee).
+- *`django-guardian`*: per-object ACLs are opt-in; multitenancy needs default-deny.
+
+**Future scaling (not built now):** a single hot table → `PARTITION BY HASH (owner_id)`
+(no application change); genuine horizontal scale-out → Citus on exactly this data model;
+one tenant needing physical isolation → extract that owner's rows into a separate database and
+route it — the clean `owner` FK makes this a day of work.

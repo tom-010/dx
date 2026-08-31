@@ -18,8 +18,9 @@ from storages.backends.s3 import S3Storage
 
 from apps.accounts.models import User
 from apps.core.storage import ensure_bucket
+from apps.core.testing import acting_as
 from apps.documents import services
-from apps.documents.models import DocumentId
+from apps.documents.models import Document, DocumentId
 from config.settings import S3_STORAGE
 
 if TYPE_CHECKING:
@@ -69,13 +70,14 @@ def _keys(storage: S3Storage) -> list[str]:
 
 
 def test_upload_download_delete_through_object_store(s3: S3Storage, user: User) -> None:
-    one, two = services.store_documents(
-        user,
-        [
-            SimpleUploadedFile("a.txt", b"hello", content_type="text/plain"),
-            SimpleUploadedFile("a.txt", b"hello again", content_type="text/plain"),
-        ],
-    )
+    with acting_as(user):
+        one, two = services.store_documents(
+            user,
+            [
+                SimpleUploadedFile("a.txt", b"hello", content_type="text/plain"),
+                SimpleUploadedFile("a.txt", b"hello again", content_type="text/plain"),
+            ],
+        )
 
     # Links point at Django, never at the store.
     assert one.file.url.startswith(f"/media/{one.file.name}?sig=")
@@ -87,8 +89,16 @@ def test_upload_download_delete_through_object_store(s3: S3Storage, user: User) 
     with two.file.open("rb") as stream:
         assert stream.read() == b"hello again"
 
-    services.delete_document(user, DocumentId(one.pk))
-    services.delete_document(user, DocumentId(two.pk))
+    # Deleting a document is soft, so the objects stay: an earlier version of the row still
+    # points at them. Only erasing the tenant removes them (apps/core/tenants.py).
+    with acting_as(user):
+        services.delete_document(user, DocumentId(one.pk))
+        services.delete_document(user, DocumentId(two.pk))
+        assert Document.objects.count() == 0
+    assert _keys(s3) == sorted(keys)
+
+    for key in keys:
+        s3.delete(key)
     assert _keys(s3) == []
     # Bucket versioning: deletes only wrote delete markers; the bytes are still recoverable.
     versions = s3.connection.meta.client.list_object_versions(Bucket=s3.bucket_name)

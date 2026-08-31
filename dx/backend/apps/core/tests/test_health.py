@@ -25,12 +25,14 @@ def test_ready_runs_every_check(client: Client) -> None:
     assert [c["name"] for c in body["checks"]] == [
         "database",
         "migrations",
+        "rls",
         "celery",
         "storage:default",
         "storage:backups",
     ]
     assert all(c["ok"] for c in body["checks"])
-    assert body["checks"][2]["detail"] == "eager mode, no broker"  # tests run eagerly
+    assert body["checks"][3]["detail"] == "eager mode, no broker"  # tests run eagerly
+    assert body["checks"][2]["detail"].endswith("role app_user")
 
 
 @pytest.mark.django_db

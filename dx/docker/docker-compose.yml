@@ -3,17 +3,26 @@
 name: dx
 
 services:
+  # `dx` is the bootstrap superuser (dev migrator: creates the test database, runs migrations).
+  # docker/postgres/10-roles.sh adds the application roles — app_migrator (owns the tables),
+  # app_user (the runtime role row-level security applies to; DATABASE_URL), app_admin
+  # (BYPASSRLS for shell_admin) — on a fresh volume, and ./scripts/db.sh re-runs it on every
+  # start for existing volumes. Dev passwords = role names.
   db:
     image: postgres:18-alpine
     environment:
       POSTGRES_USER: dx
       POSTGRES_PASSWORD: dx
       POSTGRES_DB: dx
+      APP_MIGRATOR_PASSWORD: app_migrator
+      APP_USER_PASSWORD: app_user
+      APP_ADMIN_PASSWORD: app_admin
     ports:
       - "5432:5432"
     volumes:
       # Postgres 18 images keep data under /var/lib/postgresql (not .../data).
       - pgdata:/var/lib/postgresql
+      - ./postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dx -d dx"]
       interval: 5s
@@ -66,7 +75,10 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     environment: &app_env
-      DATABASE_URL: postgres://dx:dx@db:5432/dx
+      # Runtime role for gunicorn/workers; the entrypoint migrates as the owner (DB_MIGRATOR_*).
+      DATABASE_URL: postgres://app_user:app_user@db:5432/dx
+      DB_MIGRATOR_USER: dx
+      DB_MIGRATOR_PASSWORD: dx
       CACHE_URL: redis://redis:6379/1
       CELERY_BROKER_URL: redis://redis:6379/0
       S3_ENDPOINT_URL: http://s3:9000
@@ -104,7 +116,8 @@ services:
     command: ["celery", "-A", "config", "worker", "--loglevel=info", "--concurrency=2"]
     environment: *app_env
     healthcheck:
-      test: ["CMD", "celery", "-A", "config", "inspect", "ping", "--timeout=5"]
+      # -d: `inspect ping` is a broadcast, so without it any worker on the broker answers.
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME --timeout=5"]
       interval: 15s
       timeout: 10s
       retries: 5

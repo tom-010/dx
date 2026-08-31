@@ -8,6 +8,7 @@ from django.test import Client
 from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
+from apps.core.testing import acting_as
 from apps.gallery import services
 from apps.gallery.models import MediaItem, MediaItemId, MediaKind
 
@@ -62,14 +63,15 @@ def test_upload_images_and_videos(auth_client: Client, client: Client, media_roo
     assert [item["name"] for item in listed.json()["items"]] == ["clip.mp4", "photo.png"]
 
 
-def test_upload_rejects_non_media(auth_client: Client) -> None:
+def test_upload_rejects_non_media(auth_client: Client, user: User) -> None:
     pdf = SimpleUploadedFile("report.pdf", b"%PDF-1.4", content_type="application/pdf")
 
     response = auth_client.post("/api/gallery/upload", {"files": [_image(), pdf]})
 
     assert response.status_code == 422
     assert response.json() == {"detail": "report.pdf is not an image or video"}
-    assert MediaItem.objects.count() == 0  # the whole batch is rejected
+    with acting_as(user):
+        assert MediaItem.objects.count() == 0  # the whole batch is rejected
 
 
 def test_upload_rejects_empty_file(auth_client: Client) -> None:
@@ -84,22 +86,33 @@ def test_upload_rejects_empty_file(auth_client: Client) -> None:
 def test_items_are_private_to_their_owner(
     user: User, other_user: User, client_for: Callable[[User], Client]
 ) -> None:
-    (item,) = services.store_media_items(user, [_image()])
+    with acting_as(user):
+        (item,) = services.store_media_items(user, [_image()])
 
     bob = client_for(other_user)
     assert bob.get("/api/gallery").json()["items"] == []
     assert bob.get(f"/api/gallery/{item.pk}").status_code == 404
     assert bob.delete(f"/api/gallery/{item.pk}").status_code == 404
-    assert MediaItem.objects.count() == 1
+    with acting_as(user):
+        assert MediaItem.objects.count() == 1
 
 
-def test_delete_removes_file_and_row(auth_client: Client, user: User, media_root: Path) -> None:
-    (item,) = services.store_media_items(user, [_video()])
+def test_delete_hides_the_row_and_keeps_the_file(
+    auth_client: Client, user: User, media_root: Path
+) -> None:
+    """Soft delete: gone from the API, still in the store (see the documents test)."""
+    with acting_as(user):
+        (item,) = services.store_media_items(user, [_video()])
     assert len(list(media_root.rglob("*.mp4"))) == 1
 
     assert auth_client.delete(f"/api/gallery/{item.pk}").status_code == 204
     assert auth_client.get(f"/api/gallery/{item.pk}").status_code == 404
-    assert len(list(media_root.rglob("*.mp4"))) == 0
+    assert auth_client.get("/api/gallery").json()["items"] == []
+    assert len(list(media_root.rglob("*.mp4"))) == 1
+
+    with acting_as(user):
+        assert MediaItem.objects.count() == 0
+        assert MediaItem.all_objects.get(pk=item.pk).deleted_at is not None
 
 
 def test_service_guesses_type_from_name_when_browser_sends_none() -> None:
@@ -118,5 +131,5 @@ def test_service_enforces_size_limit_per_kind() -> None:
 
 
 def test_service_raises_for_unknown_id(user: User) -> None:
-    with pytest.raises(services.MediaItemNotFound):
+    with acting_as(user), pytest.raises(services.MediaItemNotFound):
         services.get_media_item(user, MediaItemId(uuid.uuid4()))

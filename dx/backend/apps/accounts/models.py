@@ -6,7 +6,7 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
 
-from apps.core.models import BaseModel
+from apps.core.models import ActiveManager, BaseModel
 
 ApiTokenId = NewType("ApiTokenId", uuid.UUID)
 RefreshTokenId = NewType("RefreshTokenId", uuid.UUID)
@@ -39,18 +39,33 @@ class ApiToken(BaseModel):
     Unlike the JWTs from `POST /api/auth/login` these never expire; revoke them instead.
     """
 
+    # Direct `BaseModel` subclasses declare the manager pair themselves (see BaseModel).
+    objects = ActiveManager()
+    all_objects = models.Manager()
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_tokens")
     name = models.CharField(max_length=255, help_text="What the token is used for")
-    token = models.CharField(max_length=64, unique=True, default=generate_token, editable=False)
+    token = models.CharField(max_length=64, default=generate_token, editable=False)
     is_active = models.BooleanField(default=True)
     last_used = models.DateTimeField(null=True, blank=True)
+
+    class Meta(BaseModel.Meta):
+        # Conditional, not `unique=True`: rows are only ever soft-deleted, and a plain unique
+        # index would let a deleted row reserve its value forever.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["token"],
+                condition=models.Q(deleted_at__isnull=True),
+                name="uniq_active_api_token",
+            )
+        ]
 
     def __str__(self) -> str:
         return f"{self.user} - {self.name}"
 
     def revoke(self) -> None:
         self.is_active = False
-        self.save(update_fields=["is_active", "modified"])
+        self.save(update_fields=["is_active"])  # `modified` is set by the bump_version trigger
 
     def touch(self) -> None:
         self.last_used = timezone.now()
@@ -65,6 +80,9 @@ class RefreshToken(BaseModel):
     revokes the row and creates a new one on every refresh — a refresh token is single-use.
     """
 
+    objects = ActiveManager()
+    all_objects = models.Manager()
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="refresh_tokens")
     expires = models.DateTimeField()
     is_active = models.BooleanField(default=True)
@@ -74,4 +92,4 @@ class RefreshToken(BaseModel):
 
     def revoke(self) -> None:
         self.is_active = False
-        self.save(update_fields=["is_active", "modified"])
+        self.save(update_fields=["is_active"])  # `modified` is set by the bump_version trigger

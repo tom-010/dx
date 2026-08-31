@@ -28,7 +28,21 @@ def test_database_url_maps_to_django_with_psycopg_options() -> None:
         "OPTIONS": {"sslmode": "require"},
         "CONN_MAX_AGE": 60,
         "CONN_HEALTH_CHECKS": True,
+        "ATOMIC_REQUESTS": False,
     }
+
+
+def test_database_credentials_follow_the_role() -> None:
+    url = PostgresDsn("postgres://app_user:runtime@db/dx")
+    env = IsolatedEnv(DATABASE_URL=url, DB_MIGRATOR_USER="app_migrator", DB_MIGRATOR_PASSWORD="m")
+
+    assert env.database_credentials() is None  # DB_ROLE=app: the URL's own
+    assert env.database_credentials("migrator") == ("app_migrator", "m")
+    with pytest.raises(ValueError, match="DB_ADMIN_USER"):
+        env.database_credentials("admin")
+
+    database = django_database(url, credentials=env.database_credentials("migrator"))
+    assert (database["USER"], database["PASSWORD"], database["NAME"]) == ("app_migrator", "m", "dx")
 
 
 def test_email_url_unset_prints_to_the_console() -> None:

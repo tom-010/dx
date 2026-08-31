@@ -1,5 +1,6 @@
 """`/media/<key>?sig=…` — uploads served by Django from the default storage (config/media.py)."""
 
+import uuid
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,8 @@ from django.test import Client
 from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
-from apps.documents import services
+from apps.core.testing import acting_as
+from apps.documents.api import store_documents
 from apps.documents.models import Document
 from config.media import media_url, sign_media
 
@@ -22,9 +24,10 @@ def media_root(settings: Settings, tmp_path: Path) -> Path:
 
 
 def _upload(user: User, name: str = "pic.png", content: bytes = b"\x89PNG demo") -> Document:
-    (document,) = services.store_documents(
-        user, [SimpleUploadedFile(name, content, content_type="image/png")]
-    )
+    with acting_as(user):
+        (document,) = store_documents(
+            user, [SimpleUploadedFile(name, content, content_type="image/png")]
+        )
     return document
 
 
@@ -62,7 +65,7 @@ def test_media_links_expire(client: Client, settings: Settings, user: User) -> N
 
 
 def test_media_returns_404_for_missing_object(client: Client) -> None:
-    response = client.get(media_url("documents/2026/08/gone.png"))
+    response = client.get(media_url(f"documents/{uuid.uuid7()}/2026/08/gone.png"))
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}

@@ -1,65 +1,103 @@
-"""HTTP surface for ${name}: thin ninja router delegating to services."""
+"""${name}: schemas, logic and the ninja router in one module.
+
+Reads go through `${Model}.objects.for_user(user)`, so another user's ${model} does not exist
+from the caller's point of view: 404, never 403. Callers need an active tenant context (the
+middleware opens it per request, `acting_as(user)` in tests) — see CLAUDE.md "Multitenancy".
+
+Functions shared by several operations take the acting `user` and carry a `_for` suffix where a
+route already owns the plain name (the route name is the OpenAPI operation id, `config/api.py`).
+"""
 
 import uuid
 
 from django.db.models import QuerySet
 from django.http import HttpRequest
-from ninja import Router, Status
+from ninja import Field, ModelSchema, Router, Status
 from ninja.errors import HttpError
 from ninja.pagination import PageNumberPagination, paginate
 
-from apps.accounts.auth import current_user
-from apps.${name} import services
+from apps.accounts.api import current_user
+from apps.accounts.models import User
+from apps.core.schemas import StrictSchema
 from apps.${name}.models import ${Model}, ${Model}Id
-from apps.${name}.schemas import ${Model}In, ${Model}Out, ${Model}Patch
 
 router = Router(tags=["${name}"])
+
+
+class ${Model}Out(ModelSchema):
+    id: uuid.UUID
+    description: str
+
+    class Meta:
+        model = ${Model}
+        fields = ["id", "name", "description", "created", "modified"]
+
+
+class ${Model}In(StrictSchema):
+    """Create (POST) and full update (PUT)."""
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+
+
+class ${Model}Patch(StrictSchema):
+    """Partial update (PATCH): only the fields that are present change."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+
+
+def get_${model}_for(user: User, ${model}_id: ${Model}Id) -> ${Model}:
+    """One ${model}, or a 404 — another user's ${model} does not exist from here."""
+    try:
+        return ${Model}.objects.for_user(user).get(pk=${model}_id)
+    except ${Model}.DoesNotExist:
+        raise HttpError(404, "${Model} not found") from None
+
+
+# --- Endpoints ----------------------------------------------------------------------------------
 
 
 @router.get("/${name}", response=list[${Model}Out])
 @paginate(PageNumberPagination)
 def list_${plural}(request: HttpRequest) -> QuerySet[${Model}]:
-    return services.list_${plural}(current_user(request))
+    return ${Model}.objects.for_user(current_user(request))
 
 
 @router.post("/${name}", response={201: ${Model}Out})
 def create_${model}(request: HttpRequest, payload: ${Model}In) -> Status[${Model}]:
-    ${model} = services.create_${model}(
-        current_user(request), name=payload.name, description=payload.description
+    ${model} = ${Model}.objects.create(
+        owner=current_user(request), name=payload.name, description=payload.description
     )
     return Status(201, ${model})
 
 
 @router.get("/${name}/{${model}_id}", response=${Model}Out)
 def get_${model}(request: HttpRequest, ${model}_id: uuid.UUID) -> ${Model}:
-    try:
-        return services.get_${model}(current_user(request), ${Model}Id(${model}_id))
-    except services.${Model}NotFound:
-        raise HttpError(404, "${Model} not found") from None
+    return get_${model}_for(current_user(request), ${Model}Id(${model}_id))
 
 
 @router.put("/${name}/{${model}_id}", response=${Model}Out)
 def update_${model}(request: HttpRequest, ${model}_id: uuid.UUID, payload: ${Model}In) -> ${Model}:
-    try:
-        return services.update_${model}(current_user(request), ${Model}Id(${model}_id), payload)
-    except services.${Model}NotFound:
-        raise HttpError(404, "${Model} not found") from None
+    ${model} = get_${model}_for(current_user(request), ${Model}Id(${model}_id))
+    ${model}.set_payload(payload)
+    ${model}.save()
+    return ${model}
 
 
 @router.patch("/${name}/{${model}_id}", response=${Model}Out)
 def patch_${model}(
     request: HttpRequest, ${model}_id: uuid.UUID, payload: ${Model}Patch
 ) -> ${Model}:
-    try:
-        return services.patch_${model}(current_user(request), ${Model}Id(${model}_id), payload)
-    except services.${Model}NotFound:
-        raise HttpError(404, "${Model} not found") from None
+    ${model} = get_${model}_for(current_user(request), ${Model}Id(${model}_id))
+    ${model}.set_payload_partial(payload)
+    ${model}.save()
+    return ${model}
 
 
 @router.delete("/${name}/{${model}_id}", response={204: None})
 def delete_${model}(request: HttpRequest, ${model}_id: uuid.UUID) -> Status[None]:
-    try:
-        services.delete_${model}(current_user(request), ${Model}Id(${model}_id))
-    except services.${Model}NotFound:
-        raise HttpError(404, "${Model} not found") from None
+    """Soft delete (apps/core/models.py): the row keeps its place in the version chain, and
+    `objects` stops returning it — so a second delete is a 404 exactly as before."""
+    get_${model}_for(current_user(request), ${Model}Id(${model}_id)).soft_delete()
     return Status(204, None)

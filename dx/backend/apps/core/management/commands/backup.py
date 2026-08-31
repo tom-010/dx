@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.filesize import decimal
 from rich.table import Table
 
-from apps.core import backups
+from apps.core import backups, rls
 
 console = Console()
 
@@ -35,7 +35,10 @@ def command(list_only: bool, prune: bool) -> None:
         console.print(table)
         return
 
-    backup = backups.create_backup()
+    try:
+        backup = backups.create_backup()
+    except rls.CrossTenantAccessRequired as exc:
+        raise click.ClickException(str(exc)) from None
     console.print(f"[green]✓[/green] wrote [bold]{backup.name}[/bold] ({decimal(backup.size)})")
     if prune:
         deleted = backups.prune_backups(settings.BACKUP_KEEP)

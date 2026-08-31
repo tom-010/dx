@@ -20,6 +20,7 @@ import type {
   DatasetIn,
   DatasetOut,
   DatasetPatch,
+  ImportDatasetIn,
   ListDatasetsParams,
   PagedDatasetOut,
 } from "../model";
@@ -238,6 +239,110 @@ export const useCreateDataset = <
   TContext
 > => {
   return useMutation(getCreateDatasetMutationOptions(options));
+};
+export const getImportDatasetFromDocumentUrl = () => {
+  return `/api/datasets/import-document`;
+};
+
+/**
+ * Build a dataset from an uploaded document and record the lineage edge.
+ *
+ * The edge names the document *version* the rows were counted from, so
+ * `GET /api/history/dataset/{id}` can show what this was built from even after the document
+ * is renamed or replaced (`apps/core/lineage.py`).
+ * @summary Import Dataset From Document
+ */
+export const importDatasetFromDocument = async (
+  importDatasetIn: ImportDatasetIn,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<DatasetOut> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+  return customFetch<DatasetOut>(getImportDatasetFromDocumentUrl(), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(importDatasetIn),
+  });
+};
+
+export const getImportDatasetFromDocumentMutationOptions = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importDatasetFromDocument>>,
+    TError,
+    ImportDatasetFromDocumentMutationVariables,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof importDatasetFromDocument>>,
+  TError,
+  ImportDatasetFromDocumentMutationVariables,
+  TContext
+> => {
+  const mutationKey = ["importDatasetFromDocument"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof importDatasetFromDocument>>,
+    ImportDatasetFromDocumentMutationVariables
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return importDatasetFromDocument(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ImportDatasetFromDocumentMutationResult = NonNullable<
+  Awaited<ReturnType<typeof importDatasetFromDocument>>
+>;
+export type ImportDatasetFromDocumentMutationBody = ImportDatasetIn;
+export type ImportDatasetFromDocumentMutationError = unknown;
+export type ImportDatasetFromDocumentMutationVariables = {
+  data: ImportDatasetIn;
+};
+
+/**
+ * @summary Import Dataset From Document
+ */
+export const useImportDatasetFromDocument = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importDatasetFromDocument>>,
+    TError,
+    ImportDatasetFromDocumentMutationVariables,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof importDatasetFromDocument>>,
+  TError,
+  ImportDatasetFromDocumentMutationVariables,
+  TContext
+> => {
+  return useMutation(getImportDatasetFromDocumentMutationOptions(options));
 };
 export const getDeleteDatasetUrl = (datasetId: string) => {
   return `/api/datasets/${datasetId}`;

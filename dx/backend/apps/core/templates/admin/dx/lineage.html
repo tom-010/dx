@@ -1,0 +1,77 @@
+{% extends "admin/base_site.html" %}
+{% load admin_urls %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; <a href="{% url opts|admin_urlname:'change' object_id|admin_urlquote %}">{{ original|truncatewords:"18" }}</a>
+    &rsaquo; Lineage
+  </div>
+{% endblock %}
+
+{% block content %}
+  <h1>Lineage of {{ original }}</h1>
+  <p class="help">
+    Currently at version {{ current_version }}. An edge names the <em>version</em> of a source that
+    was used, not the source row, so renaming something later never rewrites what was consumed.
+  </p>
+
+  {% if not tracked %}
+    <p class="errornote">{{ not_tracked_hint }}</p>
+  {% else %}
+    <h2>Derived from</h2>
+    {% if upstream %}
+      <table>
+        <thead>
+          <tr>
+            <th>This version</th><th>Source</th><th>Version used</th><th>State</th><th>Recorded</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in upstream %}
+            <tr>
+              <td>v{{ row.target_version }}</td>
+              <td>{{ row.source_link }}</td>
+              <td>v{{ row.source_version }}</td>
+              <td>{% if row.source_is_current %}current{% else %}superseded{% endif %}</td>
+              <td>{{ row.created }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="help">Nothing — this object was not built from anything the app tracks.</p>
+    {% endif %}
+
+    <h2>Used to build</h2>
+    {% if downstream %}
+      <table>
+        <thead>
+          <tr><th>Derived object</th><th>Built from</th><th>State</th><th>Recorded</th></tr>
+        </thead>
+        <tbody>
+          {% for row in downstream %}
+            <tr{% if row.is_stale %} class="errornote" style="background:#fff3cd"{% endif %}>
+              <td>{{ row.target_link }}</td>
+              <td>v{{ row.source_version }}</td>
+              <td>
+                {% if row.is_stale %}
+                  stale — built from v{{ row.source_version }}, now at v{{ current_version }}
+                {% else %}
+                  up to date
+                {% endif %}
+              </td>
+              <td>{{ row.created }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="help">Nothing has been derived from this object yet.</p>
+    {% endif %}
+  {% endif %}
+
+  <p><a href="{% url opts|admin_urlname:'change' object_id|admin_urlquote %}">&larr; Back to {{ original }}</a></p>
+{% endblock %}

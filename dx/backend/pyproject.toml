@@ -9,7 +9,9 @@ dependencies = [
     "django-click>=2.5.0",
     "django-cors-headers>=4.9.0",
     "django-ninja>=1.6",
+    "django-pghistory>=3.9",
     "django-pydantic-field>=0.5.4",
+    "django-scopes>=2.1.0",
     "django-storages[s3]>=1.14.6",
     "django-structlog>=10.1.0",
     "django-stubs-ext>=6.1.0",
@@ -93,6 +95,7 @@ markers = [
     "api: HTTP-level tests through the Django test client (auto-applied to test_api.py)",
     "infra: dev tooling such as management commands (auto-applied to test_commands.py)",
     "slow: takes seconds; deselect with -m 'not slow'",
+    "cross_tenant: keep the table owner's database role (no RLS) — backup/restore tooling only",
 ]
 # Warnings are bugs waiting to happen: fail on them, allow-list third-party noise explicitly.
 filterwarnings = ["error"]

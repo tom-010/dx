@@ -80,6 +80,43 @@
         "title": "ApiTokenOut",
         "type": "object"
       },
+      "ChangeOut": {
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "new": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New"
+          },
+          "old": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old"
+          }
+        },
+        "required": [
+          "field",
+          "old",
+          "new"
+        ],
+        "title": "ChangeOut",
+        "type": "object"
+      },
       "CheckOut": {
         "properties": {
           "detail": {
@@ -151,6 +188,14 @@
             "minimum": 0,
             "title": "Row Count",
             "type": "integer"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 25,
+            "title": "Tags",
+            "type": "array"
           }
         },
         "required": [
@@ -216,6 +261,17 @@
           "row_count": {
             "title": "Row Count",
             "type": "integer"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
           }
         },
         "required": [
@@ -223,6 +279,8 @@
           "description",
           "row_count",
           "options",
+          "tags",
+          "version",
           "name",
           "created",
           "modified"
@@ -279,6 +337,21 @@
               }
             ],
             "title": "Row Count"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
           }
         },
         "title": "DatasetPatch",
@@ -325,6 +398,73 @@
         "title": "DocumentOut",
         "type": "object"
       },
+      "EdgeOut": {
+        "properties": {
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "is_stale": {
+            "description": "The source has changed since this edge was recorded",
+            "title": "Is Stale",
+            "type": "boolean"
+          },
+          "source_id": {
+            "format": "uuid",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_version": {
+            "title": "Source Version",
+            "type": "integer"
+          },
+          "target_id": {
+            "format": "uuid",
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "target_id",
+          "source_version",
+          "is_stale",
+          "created"
+        ],
+        "title": "EdgeOut",
+        "type": "object"
+      },
+      "GraphOut": {
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeOut"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeOut"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "root_id": {
+            "format": "uuid",
+            "title": "Root Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root_id",
+          "nodes",
+          "edges"
+        ],
+        "title": "GraphOut",
+        "type": "object"
+      },
       "HealthOut": {
         "properties": {
           "status": {
@@ -337,6 +477,82 @@
           "status"
         ],
         "title": "HealthOut",
+        "type": "object"
+      },
+      "HistoryOut": {
+        "properties": {
+          "current_version": {
+            "title": "Current Version",
+            "type": "integer"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/RevisionGroupOut"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "object_id",
+          "current_version",
+          "groups"
+        ],
+        "title": "HistoryOut",
+        "type": "object"
+      },
+      "ImportDatasetIn": {
+        "additionalProperties": false,
+        "description": "Build a dataset from an uploaded document (`POST /api/datasets/import-document`).",
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "options": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DatasetOptions"
+              }
+            ]
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 25,
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document_id"
+        ],
+        "title": "ImportDatasetIn",
         "type": "object"
       },
       "Input": {
@@ -430,6 +646,195 @@
         "title": "MediaItemOut",
         "type": "object"
       },
+      "MergeNotesIn": {
+        "additionalProperties": false,
+        "description": "Join several notes into a new one (`POST /api/notes/merge`).",
+        "properties": {
+          "note_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 2,
+            "title": "Note Ids",
+            "type": "array"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_ids",
+          "title"
+        ],
+        "title": "MergeNotesIn",
+        "type": "object"
+      },
+      "NodeOut": {
+        "description": "One object in the graph — the live row, not a version of it.",
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "depth": {
+            "description": "Steps from the object asked about: negative upstream (what it came from), positive downstream (what came from it)",
+            "title": "Depth",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "object_id",
+          "model",
+          "label",
+          "version",
+          "deleted",
+          "depth"
+        ],
+        "title": "NodeOut",
+        "type": "object"
+      },
+      "NoteIn": {
+        "additionalProperties": false,
+        "description": "Create (POST) and full update (PUT).",
+        "properties": {
+          "body": {
+            "default": "",
+            "title": "Body",
+            "type": "string"
+          },
+          "tags": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Tags",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "NoteIn",
+        "type": "object"
+      },
+      "NoteOut": {
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "modified": {
+            "format": "date-time",
+            "title": "Modified",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Comma-separated, normalised on write",
+            "title": "Tags",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "title": "Title",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "body",
+          "tags",
+          "version",
+          "title",
+          "created",
+          "modified"
+        ],
+        "title": "NoteOut",
+        "type": "object"
+      },
+      "NotePatch": {
+        "additionalProperties": false,
+        "description": "Partial update (PATCH): only the fields that are present change.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "NotePatch",
+        "type": "object"
+      },
       "PagedDatasetOut": {
         "properties": {
           "count": {
@@ -491,6 +896,27 @@
           "count"
         ],
         "title": "PagedMediaItemOut",
+        "type": "object"
+      },
+      "PagedNoteOut": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NoteOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "count"
+        ],
+        "title": "PagedNoteOut",
         "type": "object"
       },
       "ReadyOut": {
@@ -567,6 +993,205 @@
           "password"
         ],
         "title": "RegisterIn",
+        "type": "object"
+      },
+      "RevisionGroupOut": {
+        "description": "One save: everything a single request or task wrote, however many tables it touched.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "context_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Id"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/RevisionOut"
+            },
+            "title": "Revisions",
+            "type": "array"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "context_id",
+          "source",
+          "at",
+          "revisions"
+        ],
+        "title": "RevisionGroupOut",
+        "type": "object"
+      },
+      "RevisionOut": {
+        "properties": {
+          "archived": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of fields dropped since (pgh_archive)",
+            "title": "Archived",
+            "type": "object"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeOut"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "context_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Id"
+          },
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "What a child row points at, in words",
+            "title": "Description",
+            "type": "string"
+          },
+          "is_related": {
+            "description": "A child row written in the same save (an explicit m2m through model, say) rather than a version of the object itself",
+            "title": "Is Related",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          },
+          "pgh_id": {
+            "format": "uuid",
+            "title": "Pgh Id",
+            "type": "string"
+          },
+          "schema_known": {
+            "description": "False when the row predates the recorded field sets: its values cannot be diffed reliably (apps/core/history.py, SCHEMA_TAG)",
+            "title": "Schema Known",
+            "type": "boolean"
+          },
+          "schema_tag": {
+            "title": "Schema Tag",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceOut"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "unknown_fields": {
+            "description": "Fields not tracked at both ends of the comparison — not a change",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown Fields",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pgh_id",
+          "object_id",
+          "model",
+          "version",
+          "label",
+          "at",
+          "schema_tag",
+          "schema_known",
+          "deleted",
+          "changes",
+          "unknown_fields",
+          "archived",
+          "context_id",
+          "sources",
+          "is_related",
+          "description"
+        ],
+        "title": "RevisionOut",
+        "type": "object"
+      },
+      "SourceOut": {
+        "description": "A lineage edge: the exact source *version* this revision was built from.",
+        "properties": {
+          "is_stale": {
+            "description": "The source has been changed since this was derived",
+            "title": "Is Stale",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          },
+          "pgh_id": {
+            "format": "uuid",
+            "title": "Pgh Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "label",
+          "object_id",
+          "version",
+          "pgh_id",
+          "is_stale"
+        ],
+        "title": "SourceOut",
         "type": "object"
       },
       "TaskOut": {
@@ -1072,6 +1697,44 @@
         ]
       }
     },
+    "/api/datasets/import-document": {
+      "post": {
+        "description": "Build a dataset from an uploaded document and record the lineage edge.\n\nThe edge names the document *version* the rows were counted from, so\n`GET /api/history/dataset/{id}` can show what this was built from even after the document\nis renamed or replaced (`apps/core/lineage.py`).",
+        "operationId": "import_dataset_from_document",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportDatasetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetOut"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Import Dataset From Document",
+        "tags": [
+          "datasets"
+        ]
+      }
+    },
     "/api/datasets/{dataset_id}": {
       "delete": {
         "operationId": "delete_dataset",
@@ -1414,7 +2077,7 @@
     },
     "/api/documents/{document_id}/download": {
       "get": {
-        "description": "Streams the stored file as an attachment (binary response, not part of the JSON contract).\n\nPublic but signed: use the `download_url` from `DocumentOut`, links expire after an hour.",
+        "description": "Streams the stored file as an attachment (binary response, not part of the JSON contract).\n\nPublic but signed: use the `download_url` from `DocumentOut`, links expire after an hour.\nThe signature names the owner; their tenant context is opened just for the lookup.",
         "operationId": "download_document",
         "parameters": [
           {
@@ -1650,6 +2313,400 @@
         ]
       }
     },
+    "/api/history/{resource}/{object_id}": {
+      "get": {
+        "description": "Every version of one object, newest first, grouped into the saves that produced them.\n\n`resource` is the model name in lower case (`dataset`, `document`, `mediaitem`); the tracked\nmodels are the ones with history (`apps/core/history.py`). Another tenant's object is a 404,\nlike everywhere else — the event tables carry the same row-level security policy.",
+        "operationId": "get_history",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource",
+            "required": true,
+            "schema": {
+              "title": "Resource",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get History",
+        "tags": [
+          "history"
+        ]
+      }
+    },
+    "/api/lineage/{resource}/{object_id}": {
+      "get": {
+        "description": "What this object was built from and what was built from it, transitively.\n\n`resource` is the model name in lower case, as for the revision history. Edges point at a\n*version* of a source, so an edge marked `is_stale` says the source has moved on since —\nthe derived object was built from something that no longer reads that way.",
+        "operationId": "get_lineage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource",
+            "required": true,
+            "schema": {
+              "title": "Resource",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "default": 3,
+              "title": "Depth",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get Lineage",
+        "tags": [
+          "history"
+        ]
+      }
+    },
+    "/api/notes": {
+      "get": {
+        "operationId": "list_notes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedNoteOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Notes",
+        "tags": [
+          "notes"
+        ]
+      },
+      "post": {
+        "operationId": "create_note",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create Note",
+        "tags": [
+          "notes"
+        ]
+      }
+    },
+    "/api/notes/merge": {
+      "post": {
+        "description": "Join several notes into a new one, with an edge to the current version of each source.\n\nRegistered before `/notes/{note_id}` so \"merge\" is not read as an id.",
+        "operationId": "merge_notes",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeNotesIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Merge Notes",
+        "tags": [
+          "notes"
+        ]
+      }
+    },
+    "/api/notes/{note_id}": {
+      "delete": {
+        "operationId": "delete_note",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Note Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Delete Note",
+        "tags": [
+          "notes"
+        ]
+      },
+      "get": {
+        "operationId": "get_note",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Note Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get Note",
+        "tags": [
+          "notes"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_note",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Note Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Patch Note",
+        "tags": [
+          "notes"
+        ]
+      },
+      "put": {
+        "operationId": "update_note",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Note Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update Note",
+        "tags": [
+          "notes"
+        ]
+      }
+    },
     "/api/ready": {
       "get": {
         "description": "Readiness: database reachable and migrated, Celery broker up, storage buckets present.\n503 with the failing checks otherwise — gate load balancers / compose on this. Public.",
@@ -1761,7 +2818,7 @@
     },
     "/api/tasks/dataset-summary": {
       "post": {
-        "description": "Task that reads the database (dataset and row counts).",
+        "description": "Task that reads the database (the caller's dataset and row counts) — a `tenant_task`:\nthe worker runs it inside the caller's tenant context.",
         "operationId": "run_dataset_summary",
         "parameters": [],
         "responses": {

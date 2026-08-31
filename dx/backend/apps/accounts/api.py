@@ -1,18 +1,41 @@
-"""HTTP surface for authentication and personal API tokens (tag `auth`)."""
+"""Authentication and personal API tokens (tag `auth`): schemas, token handling, endpoints.
 
+Three kinds of bearer token resolve to a user (`authenticate_bearer`): a personal API token
+(`tk_…`), the fixed token from the environment (CI), and the short-lived access JWT issued by
+`POST /api/auth/login`. `BearerAuth` guards every API operation (installed globally in
+`config/api.py`); public operations opt out with `auth=None`.
+
+`apps.core.middleware.TenantMiddleware` verifies the same header before the view and opens the
+tenant context with it; `BearerAuth` recognises that (request.user is a `User` whose pk is the
+active context) and does not verify the token a second time. A token the middleware rejected is
+verified once more here, which yields the same answer: 401.
+"""
+
+import secrets
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 
+import jwt
+from django.conf import settings
+from django.contrib.auth import authenticate
 from django.http import HttpRequest
 from ninja import Field, ModelSchema, Router, Schema, Status
 from ninja.errors import HttpError
+from ninja.security import HttpBearer
 
-from apps.accounts import services
-from apps.accounts.auth import current_user
-from apps.accounts.models import ApiToken, ApiTokenId, User
+from apps.accounts.models import API_TOKEN_PREFIX, ApiToken, ApiTokenId, RefreshToken, User
+from apps.core.db import current_user_id
+from apps.core.history import hard_delete
 from apps.core.schemas import StrictSchema
+from config.env import env
 
 router = Router(tags=["auth"])
+
+JWT_ALGORITHM = "HS256"
+# The `token_type` claim keeps the two JWT kinds apart: a refresh token must never pass as an
+# access token (it lives for weeks) and vice versa.
+TokenType = Literal["access", "refresh"]
 
 
 class LoginIn(StrictSchema):
@@ -64,29 +87,165 @@ class ApiTokenOut(ModelSchema):
         fields = ["id", "name", "token", "created", "last_used"]
 
 
+# --- JWTs: access + refresh ---------------------------------------------------------------------
+#
+# Login issues a pair. The access token is stateless (HS256 with SECRET_KEY), carried on every
+# request and verified without a database hit, so it stays short-lived: it cannot be revoked.
+# The refresh token lives for weeks but is tied to a `RefreshToken` row: /auth/refresh swaps it
+# for a new pair and revokes the old row (single-use), /auth/logout revokes it. A stolen refresh
+# token therefore stops working as soon as it is rotated or the session is ended, while a stolen
+# access token dies with ACCESS_TOKEN_LIFETIME_MINUTES.
+
+
+def _encode(payload: dict[str, object]) -> str:
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def _decode(token: str, token_type: TokenType) -> dict[str, object] | None:
+    """Verified claims of a JWT of the given kind; None for anything invalid or expired."""
+    try:
+        payload: dict[str, object] = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[JWT_ALGORITHM]
+        )
+    except jwt.InvalidTokenError:
+        return None
+    return payload if payload.get("token_type") == token_type else None
+
+
+def issue_access_token(user: User, *, lifetime: timedelta | None = None) -> str:
+    """Short-lived JWT for `Authorization: Bearer` (default ACCESS_TOKEN_LIFETIME_MINUTES)."""
+    now = datetime.now(UTC)
+    payload = {
+        "token_type": "access",
+        "sub": str(user.pk),
+        "username": user.username,
+        "jti": str(uuid.uuid7()),  # unique per token (two issued in one second would collide)
+        "iat": now,
+        "exp": now + (lifetime or timedelta(minutes=env.ACCESS_TOKEN_LIFETIME_MINUTES)),
+    }
+    return _encode(payload)
+
+
+def issue_refresh_token(user: User) -> str:
+    """JWT bound to a new `RefreshToken` row (REFRESH_TOKEN_LIFETIME_DAYS)."""
+    now = datetime.now(UTC)
+    session = RefreshToken.objects.create(
+        user=user, expires=now + timedelta(days=env.REFRESH_TOKEN_LIFETIME_DAYS)
+    )
+    payload = {
+        "token_type": "refresh",
+        "sub": str(user.pk),
+        "jti": str(session.pk),
+        "iat": now,
+        "exp": session.expires,
+    }
+    return _encode(payload)
+
+
+def issue_tokens(user: User) -> TokenOut:
+    """A fresh login: access + refresh token. Also drops the user's expired sessions."""
+    # A real delete, not a soft one: an expired session is a spent credential, and keeping a
+    # row per login forever would grow without bound. RefreshToken is exempt from versioning
+    # for the same reason (apps/core/history.py::HISTORY_EXEMPT).
+    with hard_delete():
+        RefreshToken.objects.filter(user=user, expires__lt=datetime.now(UTC)).delete()
+    return TokenOut(access_token=issue_access_token(user), refresh_token=issue_refresh_token(user))
+
+
+def user_from_access_token(token: str) -> User | None:
+    payload = _decode(token, "access")
+    if payload is None:
+        return None
+    try:
+        return User.objects.get(pk=uuid.UUID(str(payload["sub"])), is_active=True)
+    except KeyError, ValueError, User.DoesNotExist:
+        return None
+
+
+def session_from_refresh_token(token: str) -> RefreshToken | None:
+    """The live session a refresh token names, or None when it is malformed, expired, revoked or
+    the user is inactive — every one of those means the client has to log in again."""
+    payload = _decode(token, "refresh")
+    if payload is None:
+        return None
+    try:
+        session = RefreshToken.objects.select_related("user").get(
+            pk=uuid.UUID(str(payload["jti"])), user__is_active=True
+        )
+    except KeyError, ValueError, RefreshToken.DoesNotExist:
+        return None
+    return session if session.is_active and session.expires > datetime.now(UTC) else None
+
+
+def user_from_api_token(token: str) -> User | None:
+    try:
+        api_token = ApiToken.objects.select_related("user").get(
+            token=token, is_active=True, user__is_active=True
+        )
+    except ApiToken.DoesNotExist:
+        return None
+    api_token.touch()
+    return api_token.user
+
+
+def user_from_fixed_token(token: str) -> User | None:
+    """`API_FIXED_TOKEN` from the environment authenticates as the first active superuser."""
+    fixed = env.API_FIXED_TOKEN
+    if not fixed or not secrets.compare_digest(token, fixed):
+        return None
+    return User.objects.filter(is_superuser=True, is_active=True).order_by("date_joined").first()
+
+
+def authenticate_bearer(token: str) -> User | None:
+    """Resolve any bearer token: personal API token (`tk_...`), fixed CI token, or access JWT."""
+    if token.startswith(API_TOKEN_PREFIX):
+        return user_from_api_token(token)
+    return user_from_fixed_token(token) or user_from_access_token(token)
+
+
+class BearerAuth(HttpBearer):
+    def authenticate(self, request: HttpRequest, token: str) -> User | None:
+        # A session user (admin cookie) never counts: only the middleware's verified bearer user
+        # matches the active tenant context.
+        user = request.user
+        if isinstance(user, User) and current_user_id.get() == user.pk:
+            return user
+        verified = authenticate_bearer(token)
+        if verified is not None:
+            request.user = verified
+        return verified
+
+
+def current_user(request: HttpRequest) -> User:
+    """The authenticated user of an operation guarded by `BearerAuth`."""
+    user = request.user
+    if not isinstance(user, User):  # pragma: no cover - guarded by BearerAuth
+        raise AssertionError("current_user() called on an unauthenticated request")
+    return user
+
+
+# --- Endpoints ----------------------------------------------------------------------------------
+
+
 @router.post("/auth/login", response=TokenOut, auth=None)
 def login(request: HttpRequest, credentials: LoginIn) -> TokenOut:
-    try:
-        user = services.login(credentials.username, credentials.password)
-    except services.InvalidCredentials:
-        raise HttpError(401, "Invalid username or password") from None
-    return _token_pair(services.issue_tokens(user))
-
-
-def _token_pair(pair: services.TokenPair) -> TokenOut:
-    return TokenOut(access_token=pair.access_token, refresh_token=pair.refresh_token)
+    user = authenticate(username=credentials.username, password=credentials.password)
+    if not isinstance(user, User):
+        raise HttpError(401, "Invalid username or password")
+    return issue_tokens(user)
 
 
 @router.post("/auth/register", response={201: TokenOut}, auth=None)
 def register(request: HttpRequest, payload: RegisterIn) -> Status[TokenOut]:
     """Self-service sign-up; only available when `REGISTRATION_OPEN=true`."""
-    try:
-        user = services.register(**payload.model_dump())
-    except services.RegistrationClosed:
-        raise HttpError(403, "Registration is closed") from None
-    except services.UserAlreadyExists as exc:
-        raise HttpError(409, str(exc)) from None
-    return Status(201, _token_pair(services.issue_tokens(user)))
+    if not env.REGISTRATION_OPEN:
+        raise HttpError(403, "Registration is closed")
+    if User.objects.filter(username=payload.username).exists():
+        raise HttpError(409, "Username already taken")
+    if payload.email and User.objects.filter(email=payload.email).exists():
+        raise HttpError(409, "Email already registered")
+    user = User.objects.create_user(**payload.model_dump())
+    return Status(201, issue_tokens(user))
 
 
 @router.get("/auth/me", response=UserOut)
@@ -100,37 +259,48 @@ def refresh_token(request: HttpRequest, payload: RefreshTokenIn) -> TokenOut:
 
     Public: the access token is usually expired by the time this is called; the refresh token
     in the body is the credential.
+
+    Deliberately no "reuse detection" (ending every session of the user when an old token shows
+    up): two browser tabs refreshing at the same moment would trigger it constantly, and a
+    refresh token that leaked via the client's storage implies the client itself is compromised.
     """
-    try:
-        return _token_pair(services.rotate_refresh_token(payload.refresh_token))
-    except services.InvalidRefreshToken:
-        raise HttpError(401, "Invalid or expired refresh token") from None
+    session = session_from_refresh_token(payload.refresh_token)
+    if session is None:
+        raise HttpError(401, "Invalid or expired refresh token")
+    session.revoke()  # single-use
+    return issue_tokens(session.user)
 
 
 @router.post("/auth/logout", response={204: None}, auth=None)
 def logout(request: HttpRequest, payload: RefreshTokenIn) -> Status[None]:
     """End the session: the refresh token stops working (the access token expires by itself).
 
-    Public for the same reason as /auth/refresh; always 204, even for a token that is gone.
+    Public for the same reason as /auth/refresh; always 204, even for a token that is gone —
+    logging out twice is not an error.
     """
-    services.revoke_refresh_token(payload.refresh_token)
+    session = session_from_refresh_token(payload.refresh_token)
+    if session is not None:
+        session.revoke()
     return Status(204, None)
 
 
 @router.get("/auth/api-tokens", response=list[ApiTokenOut])
 def list_api_tokens(request: HttpRequest) -> list[ApiToken]:
-    return services.list_api_tokens(current_user(request))
+    return list(ApiToken.objects.filter(user=current_user(request), is_active=True))
 
 
 @router.post("/auth/api-tokens", response={201: ApiTokenOut})
 def create_api_token(request: HttpRequest, payload: ApiTokenIn) -> Status[ApiToken]:
-    return Status(201, services.create_api_token(current_user(request), payload.name))
+    return Status(201, ApiToken.objects.create(user=current_user(request), name=payload.name))
 
 
 @router.delete("/auth/api-tokens/{token_id}", response={204: None})
 def revoke_api_token(request: HttpRequest, token_id: uuid.UUID) -> Status[None]:
     try:
-        services.revoke_api_token(current_user(request), ApiTokenId(token_id))
-    except services.ApiTokenNotFound:
+        api_token = ApiToken.objects.get(
+            pk=ApiTokenId(token_id), user=current_user(request), is_active=True
+        )
+    except ApiToken.DoesNotExist:
         raise HttpError(404, "API token not found") from None
+    api_token.revoke()
     return Status(204, None)

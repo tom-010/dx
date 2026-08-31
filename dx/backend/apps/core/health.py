@@ -1,8 +1,9 @@
 """Health checks behind `GET /api/health` (liveness) and `GET /api/ready` (readiness).
 
 Liveness answers as long as the process serves requests; readiness runs `readiness()` and is
-what orchestrators/compose should gate on: the database is reachable *and* migrated, the Celery
-broker answers (unless tasks run eagerly), and the object store buckets exist.
+what orchestrators/compose should gate on: the database is reachable *and* migrated, row-level
+security is in place and applies to this connection, the Celery broker answers (unless tasks
+run eagerly), and the object store buckets exist.
 """
 
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from django.core.files.storage import storages
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 
+from apps.core import rls
 from apps.core.storage import bucket_exists, s3_storage
 from config.celery import app as celery_app
 
@@ -43,6 +45,23 @@ def check_migrations() -> Check:
     return Check("migrations", True)
 
 
+def check_rls() -> Check:
+    """Every table holding tenant data — owned models, their history, the lineage graph —
+    carries its policy, and the process runs as a role the policies apply to: a web process
+    connected as the table owner or a superuser would see every tenant."""
+    try:
+        problems = rls.verify()
+        bypass = rls.connection_bypasses_rls()
+        role = rls.current_role()
+    except Exception as exc:  # noqa: BLE001
+        return Check("rls", False, f"{type(exc).__name__}: {exc}")
+    if problems:
+        return Check("rls", False, "; ".join(problems))
+    if bypass is not None:
+        return Check("rls", False, f"{bypass} — row-level security does not apply (DB_ROLE)")
+    return Check("rls", True, f"{len(rls.isolated_tables())} tables, role {role}")
+
+
 def check_broker() -> Check:
     if settings.CELERY_TASK_ALWAYS_EAGER:
         return Check("celery", True, "eager mode, no broker")
@@ -71,6 +90,7 @@ def readiness() -> list[Check]:
     return [
         check_database(),
         check_migrations(),
+        check_rls(),
         check_broker(),
         check_storage("default"),
         check_storage("backups"),

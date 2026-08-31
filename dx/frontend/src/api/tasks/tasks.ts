@@ -237,7 +237,8 @@ export const getRunDatasetSummaryUrl = () => {
 };
 
 /**
- * Task that reads the database (dataset and row counts).
+ * Task that reads the database (the caller's dataset and row counts) — a `tenant_task`:
+ * the worker runs it inside the caller's tenant context.
  * @summary Run Dataset Summary
  */
 export const runDatasetSummary = async (

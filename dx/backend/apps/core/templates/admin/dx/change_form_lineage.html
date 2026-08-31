@@ -1,0 +1,13 @@
+{% extends "admin/change_form.html" %}
+{% load admin_urls %}
+
+{# Adds a "Lineage" button next to pghistory's "Events" one (which comes from that app's own
+   override of admin/change_form_object_tools.html — this template only appends to the list). #}
+{% block object-tools-items %}
+  <li>
+    <a href="{% url opts|admin_urlname:'lineage' original.pk|admin_urlquote %}" class="lineage-admin">
+      Lineage
+    </a>
+  </li>
+  {{ block.super }}
+{% endblock %}

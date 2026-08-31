@@ -1,13 +1,16 @@
 """Core router: infrastructure endpoints that are not tied to a feature."""
 
+import uuid
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Literal
 
 from django.http import HttpRequest, StreamingHttpResponse
 from ninja import Field, Router, Schema, Status
 from ninja.errors import HttpError
 
-from apps.core import health, tasks
+from apps.accounts.api import current_user
+from apps.core import health, lineage, revisions, tasks
 
 router = Router(tags=["core"])
 
@@ -111,8 +114,10 @@ def run_count(request: HttpRequest, payload: CountIn) -> TaskOut:
 
 @tasks_router.post("/tasks/dataset-summary", response=TaskOut)
 def run_dataset_summary(request: HttpRequest) -> TaskOut:
-    """Task that reads the database (dataset and row counts)."""
-    return _task_out(tasks.status_of(tasks.dataset_summary.delay()))
+    """Task that reads the database (the caller's dataset and row counts) — a `tenant_task`:
+    the worker runs it inside the caller's tenant context."""
+    owner_id = current_user(request).pk
+    return _task_out(tasks.status_of(tasks.dataset_summary.delay(owner_id)))
 
 
 @tasks_router.post("/tasks/fail", response=TaskOut)
@@ -153,3 +158,144 @@ def stream_task_events(request: HttpRequest, task_id: str, sig: str) -> Streamin
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"  # nginx: do not buffer the stream
     return response
+
+
+# --- Revision history (apps/core/revisions.py) ---------------------------------------------------
+
+history_router = Router(tags=["history"])
+
+
+class ChangeOut(Schema):
+    field: str
+    old: str | None
+    new: str | None
+
+
+class SourceOut(Schema):
+    """A lineage edge: the exact source *version* this revision was built from."""
+
+    model: str
+    label: str
+    object_id: uuid.UUID
+    version: int
+    pgh_id: uuid.UUID
+    is_stale: bool = Field(description="The source has been changed since this was derived")
+
+
+class RevisionOut(Schema):
+    pgh_id: uuid.UUID
+    object_id: uuid.UUID
+    model: str
+    version: int
+    label: str
+    at: datetime
+    schema_tag: str
+    schema_known: bool = Field(
+        description="False when the row predates the recorded field sets: its values cannot be "
+        "diffed reliably (apps/core/history.py, SCHEMA_TAG)"
+    )
+    deleted: bool
+    changes: list[ChangeOut]
+    unknown_fields: list[str] = Field(
+        description="Fields not tracked at both ends of the comparison — not a change"
+    )
+    archived: dict[str, str] = Field(description="Values of fields dropped since (pgh_archive)")
+    context_id: uuid.UUID | None
+    sources: list[SourceOut]
+    is_related: bool = Field(
+        description="A child row written in the same save (an explicit m2m through model, say) "
+        "rather than a version of the object itself"
+    )
+    description: str = Field(description="What a child row points at, in words")
+
+
+class RevisionGroupOut(Schema):
+    """One save: everything a single request or task wrote, however many tables it touched."""
+
+    context_id: uuid.UUID | None
+    source: str
+    at: datetime
+    revisions: list[RevisionOut]
+
+
+class HistoryOut(Schema):
+    model: str
+    object_id: uuid.UUID
+    current_version: int
+    groups: list[RevisionGroupOut]
+
+
+@history_router.get("/history/{resource}/{object_id}", response=HistoryOut)
+def get_history(request: HttpRequest, resource: str, object_id: uuid.UUID) -> HistoryOut:
+    """Every version of one object, newest first, grouped into the saves that produced them.
+
+    `resource` is the model name in lower case (`dataset`, `document`, `mediaitem`); the tracked
+    models are the ones with history (`apps/core/history.py`). Another tenant's object is a 404,
+    like everywhere else — the event tables carry the same row-level security policy.
+    """
+    user = current_user(request)
+    model = revisions.resource_model(resource)
+    if model is None:
+        raise HttpError(404, f"No versioned resource named {resource!r}")
+    obj = model.all_objects.for_user(user).filter(pk=object_id).first()
+    if obj is None:
+        raise HttpError(404, f"{model.__name__} {object_id} not found")
+
+    groups = revisions.group_by_context(revisions.revisions_of(obj))
+    return HistoryOut(
+        model=model.__name__,
+        object_id=obj.pk,
+        current_version=obj.version,
+        groups=[RevisionGroupOut.from_orm(group) for group in groups],
+    )
+
+
+# --- Lineage graph (apps/core/lineage.py) --------------------------------------------------------
+
+
+class NodeOut(Schema):
+    """One object in the graph — the live row, not a version of it."""
+
+    object_id: uuid.UUID
+    model: str
+    label: str
+    version: int
+    deleted: bool
+    depth: int = Field(
+        description="Steps from the object asked about: negative upstream (what it came from), "
+        "positive downstream (what came from it)"
+    )
+
+
+class EdgeOut(Schema):
+    source_id: uuid.UUID
+    target_id: uuid.UUID
+    source_version: int
+    is_stale: bool = Field(description="The source has changed since this edge was recorded")
+    created: datetime
+
+
+class GraphOut(Schema):
+    root_id: uuid.UUID
+    nodes: list[NodeOut]
+    edges: list[EdgeOut]
+
+
+@history_router.get("/lineage/{resource}/{object_id}", response=GraphOut)
+def get_lineage(
+    request: HttpRequest, resource: str, object_id: uuid.UUID, depth: int = 3
+) -> GraphOut:
+    """What this object was built from and what was built from it, transitively.
+
+    `resource` is the model name in lower case, as for the revision history. Edges point at a
+    *version* of a source, so an edge marked `is_stale` says the source has moved on since —
+    the derived object was built from something that no longer reads that way.
+    """
+    user = current_user(request)
+    model = revisions.resource_model(resource)
+    if model is None:
+        raise HttpError(404, f"No versioned resource named {resource!r}")
+    obj = model.all_objects.for_user(user).filter(pk=object_id).first()
+    if obj is None:
+        raise HttpError(404, f"{model.__name__} {object_id} not found")
+    return GraphOut.from_orm(lineage.graph(obj, depth=depth))

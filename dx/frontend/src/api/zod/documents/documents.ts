@@ -83,6 +83,7 @@ export const GetDocumentResponse = zod.object({
  * Streams the stored file as an attachment (binary response, not part of the JSON contract).
  *
  * Public but signed: use the `download_url` from `DocumentOut`, links expire after an hour.
+ * The signature names the owner; their tenant context is opened just for the lookup.
  * @summary Download Document
  */
 export const DownloadDocumentParams = zod.object({

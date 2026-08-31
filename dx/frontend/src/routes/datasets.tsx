@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { type ChangeEvent, type FormEvent, type JSX, useState } from "react";
 import {
   getListDatasetsQueryKey,
@@ -119,6 +119,7 @@ function CreateDatasetForm({
   const [description, setDescription] = useState("");
   const [rowCount, setRowCount] = useState("");
   const [delimiter, setDelimiter] = useState(",");
+  const [tags, setTags] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
@@ -128,6 +129,12 @@ function CreateDatasetForm({
       name: name.trim(),
       description: description.trim(),
       row_count: rowCount === "" ? undefined : Number(rowCount),
+      // Tags live in an owned join model on the backend, so they travel with the dataset and
+      // land in the same revision as the rest of this form.
+      tags: tags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter((tag) => tag !== ""),
       // `options` is a typed JSON column on the backend (DatasetOptions); the same pydantic
       // model shows up here as a nested object in the generated types and Zod schema.
       options: { delimiter },
@@ -145,6 +152,7 @@ function CreateDatasetForm({
     setDescription("");
     setRowCount("");
     setDelimiter(",");
+    setTags("");
   }
 
   return (
@@ -153,7 +161,7 @@ function CreateDatasetForm({
       className="flex flex-col gap-4 rounded-lg border p-4"
     >
       <h2 className="font-medium">New dataset</h2>
-      <div className="grid gap-4 sm:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-5">
         <div className="flex flex-col gap-2">
           <Label htmlFor="dataset-name">Name</Label>
           <Input
@@ -185,6 +193,17 @@ function CreateDatasetForm({
             value={rowCount}
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               setRowCount(event.target.value)
+            }
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="dataset-tags">Tags</Label>
+          <Input
+            id="dataset-tags"
+            value={tags}
+            placeholder="sales, 2026"
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              setTags(event.target.value)
             }
           />
         </div>
@@ -242,6 +261,7 @@ function DatasetTable({
           <TableHead>Name</TableHead>
           <TableHead>Description</TableHead>
           <TableHead className="text-right">Rows</TableHead>
+          <TableHead>Tags</TableHead>
           <TableHead>Delimiter</TableHead>
           <TableHead>Created</TableHead>
           <TableHead className="w-24" />
@@ -261,6 +281,18 @@ function DatasetTable({
             <TableCell className="text-right tabular-nums">
               {dataset.row_count.toLocaleString()}
             </TableCell>
+            <TableCell>
+              <div className="flex flex-wrap gap-1">
+                {dataset.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded bg-muted px-2 py-0.5 text-muted-foreground text-xs"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </TableCell>
             <TableCell className="font-mono text-muted-foreground">
               {dataset.options.delimiter === "\t"
                 ? "tab"
@@ -270,6 +302,14 @@ function DatasetTable({
               {new Date(dataset.created).toLocaleString()}
             </TableCell>
             <TableCell className="text-right">
+              <Button asChild variant="ghost" size="sm">
+                <Link
+                  to="/history/$resource/$objectId"
+                  params={{ resource: "dataset", objectId: dataset.id }}
+                >
+                  History
+                </Link>
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

@@ -40,8 +40,6 @@ def test_render_module_writes_compilable_python(tmp_path: Path) -> None:
         "apps.py",
         "migrations/__init__.py",
         "models.py",
-        "schemas.py",
-        "services.py",
         "tests/__init__.py",
         "tests/test_api.py",
     ]
@@ -85,3 +83,20 @@ def test_register_module_fails_without_needle(tmp_path: Path) -> None:
 
     with pytest.raises(scaffold.ScaffoldError, match="needle"):
         scaffold.register_module(scaffold.module_spec("reports"), settings_file, tmp_path / "x")
+
+
+def test_generated_tests_write_inside_a_tenant_context(tmp_path: Path) -> None:
+    """Writes raise outside a tenant context, so the scaffold's own tests must open one —
+    otherwise every new module starts with a red suite (CLAUDE.md "Multitenancy")."""
+    scaffold.render_module(scaffold.module_spec("reports"), tmp_path / "apps")
+    generated = (tmp_path / "apps" / "reports" / "tests" / "test_api.py").read_text()
+
+    assert "from apps.core.testing import acting_as" in generated
+    lines = generated.splitlines()
+    calls = [i for i, line in enumerate(lines) if "Report.objects.create(" in line]
+
+    assert len(calls) == 2
+    for index in calls:
+        preceding = "\n".join(lines[max(index - 2, 0) : index + 1])
+        assert "acting_as(user)" in preceding, f"no tenant context: {lines[index].strip()}"
+    assert "with acting_as(user), pytest.raises(HttpError):" in generated

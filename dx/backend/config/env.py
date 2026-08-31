@@ -13,6 +13,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRETS_DIR = Path("/run/secrets")
 # Django's convention for generated dev keys; `Env` refuses it once DEBUG is off.
 DEV_SECRET_KEY = "django-insecure-dev-only-change-me"
+# Which database credentials a process uses, see `Env.DB_ROLE`.
+DbRole = Literal["app", "migrator", "admin"]
 
 
 class Env(BaseSettings):
@@ -53,8 +55,26 @@ class Env(BaseSettings):
     SECURE_HSTS_SECONDS: int = 3600
 
     # --- Database. Matches the dev database in docker/docker-compose.yml. Query parameters
-    # become psycopg connection options, e.g. `?sslmode=require` for a managed Postgres.
-    DATABASE_URL: PostgresDsn = PostgresDsn("postgres://dx:dx@localhost:5432/dx")
+    # become psycopg connection options, e.g. `?sslmode=require` for a managed Postgres. The
+    # credentials in the URL are the *runtime* role `app_user`, which row-level security applies
+    # to (CLAUDE.md "Multitenancy"; docker/postgres/10-roles.sh creates the roles).
+    DATABASE_URL: PostgresDsn = PostgresDsn("postgres://app_user:app_user@localhost:5432/dx")
+    # Which credentials this process connects with (host/port/database always come from
+    # DATABASE_URL): "app" = the URL's own (RLS enforced), "migrator" = DB_MIGRATOR_* (owns the
+    # tables: migrate, rls_sync, backups, the test suite), "admin" = DB_ADMIN_* (BYPASSRLS:
+    # `manage.py shell_admin`). The web process and the workers always run as "app".
+    # The Django admin is a staff UI over tenant data (apps/core/admin.py), not part of the
+    # product: mounted with DEBUG, absent otherwise unless this says so explicitly. Off also
+    # removes the interactive API docs, which need an admin session to log in with.
+    ADMIN_ENABLED: bool | None = None
+    DB_ROLE: DbRole = "app"
+    # Dev default: the compose superuser `dx`. Production: app_migrator (docker/.env.prod.example).
+    DB_MIGRATOR_USER: str | None = "dx"
+    DB_MIGRATOR_PASSWORD: str | None = "dx"
+    # No default on purpose — these must not exist in the web/worker environment. Dev: put
+    # DB_ADMIN_USER=app_admin / DB_ADMIN_PASSWORD=app_admin into backend/.env.
+    DB_ADMIN_USER: str | None = None
+    DB_ADMIN_PASSWORD: str | None = None
     # Keep connections open between requests for this many seconds (0 = one per request; use 0
     # behind a transaction-pooling pgbouncer).
     DB_CONN_MAX_AGE: int = 60
@@ -128,6 +148,42 @@ class Env(BaseSettings):
     def https_only(self) -> bool:
         return self.HTTPS_ONLY if self.HTTPS_ONLY is not None else not self.DEBUG
 
+    def database_credentials(self, role: DbRole | None = None) -> tuple[str, str] | None:
+        """(user, password) for `role` (default DB_ROLE); None = the DATABASE_URL's own.
+
+        Raises when a role is requested whose credentials are not configured, so a deploy step
+        started with the wrong environment fails before it touches the database.
+        """
+        role = role or self.DB_ROLE
+        if role == "app":
+            return None
+        user, password = {
+            "migrator": (self.DB_MIGRATOR_USER, self.DB_MIGRATOR_PASSWORD),
+            "admin": (self.DB_ADMIN_USER, self.DB_ADMIN_PASSWORD),
+        }[role]
+        if not user or password is None:
+            raise ValueError(
+                f"DB_ROLE={role} needs DB_{role.upper()}_USER and DB_{role.upper()}_PASSWORD"
+            )
+        return user, password
+
+    @property
+    def admin_enabled(self) -> bool:
+        """Whether `/admin/` is mounted at all (default: only with DEBUG)."""
+        return self.ADMIN_ENABLED if self.ADMIN_ENABLED is not None else self.DEBUG
+
+    def audit_credentials(self) -> tuple[str, str] | None:
+        """(user, password) for the admin's cross-tenant alias, or None when it is not set up.
+
+        Same role as `manage.py shell_admin` (`DB_ADMIN_*`, BYPASSRLS). Unset — the production
+        default — is a supported state, not an error: `apps/core/admin.py` then shows a superuser
+        their own tenant like any other staff user. Deploying the credential is what turns
+        cross-tenant visibility on, so the decision stays with the environment.
+        """
+        if not self.DB_ADMIN_USER or self.DB_ADMIN_PASSWORD is None:
+            return None
+        return self.database_credentials("admin")
+
     @model_validator(mode="after")
     def production_guards(self) -> Self:
         """Refuse to start with a known secret rather than serve with it."""
@@ -139,24 +195,34 @@ class Env(BaseSettings):
         return self
 
 
-def django_database(url: PostgresDsn, *, conn_max_age: int = 0) -> dict[str, Any]:
+def django_database(
+    url: PostgresDsn, *, conn_max_age: int = 0, credentials: tuple[str, str] | None = None
+) -> dict[str, Any]:
     """Translate a Postgres DSN into Django's DATABASES entry format.
 
     Query parameters (`?sslmode=require&connect_timeout=5`) are handed to psycopg as OPTIONS.
+    `credentials` replaces the user/password of the URL (`Env.database_credentials()`).
     """
     host = url.hosts()[0]
+    # pydantic keeps credentials percent-encoded.
+    user, password = credentials or (
+        unquote(host["username"] or ""),
+        unquote(host["password"] or ""),
+    )
     return {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": (url.path or "/").lstrip("/"),
-        # pydantic keeps credentials percent-encoded.
-        "USER": unquote(host["username"] or ""),
-        "PASSWORD": unquote(host["password"] or ""),
+        "USER": user,
+        "PASSWORD": password,
         "HOST": host["host"] or "",
         "PORT": host["port"] or "",
         "OPTIONS": dict(url.query_params()),
         "CONN_MAX_AGE": conn_max_age,
         # Verify a reused connection before each request: survives database restarts/failovers.
         "CONN_HEALTH_CHECKS": True,
+        # The tenant middleware owns the request transaction (`SET LOCAL` has to run inside it,
+        # before the view); Django's per-view transactions would start too late. Keep off.
+        "ATOMIC_REQUESTS": False,
     }
 
 

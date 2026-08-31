@@ -1,6 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import type { JSX } from "react";
+import {
+  getListDatasetsQueryKey,
+  useImportDatasetFromDocument,
+} from "@/api/datasets/datasets";
 import {
   getListDocumentsQueryKey,
   useDeleteDocument,
@@ -37,6 +41,14 @@ function DocumentsPage(): JSX.Element {
   const remove = useDeleteDocument({
     mutation: { onSuccess: invalidateList },
   });
+  // Importing builds a dataset from this document and records where it came from; the datasets
+  // list has to be refetched because a new one appeared there.
+  const importDocument = useImportDatasetFromDocument({
+    mutation: {
+      onSuccess: (): Promise<void> =>
+        queryClient.invalidateQueries({ queryKey: getListDatasetsQueryKey() }),
+    },
+  });
 
   return (
     <div className="flex flex-col gap-8">
@@ -59,9 +71,35 @@ function DocumentsPage(): JSX.Element {
             Failed to load documents: {errorMessage(documents.error)}
           </p>
         )}
+        {importDocument.isError && (
+          <p className="text-destructive text-sm">
+            Import failed: {errorMessage(importDocument.error)}
+          </p>
+        )}
+        {importDocument.isSuccess && (
+          <p className="text-muted-foreground text-sm">
+            Imported <strong>{importDocument.data.name}</strong> —{" "}
+            {importDocument.data.row_count.toLocaleString()} rows.{" "}
+            <Link
+              to="/history/$resource/$objectId"
+              params={{ resource: "dataset", objectId: importDocument.data.id }}
+              className="underline underline-offset-4"
+            >
+              See what it was built from
+            </Link>
+          </p>
+        )}
         {documents.isSuccess && (
           <DocumentTable
             documents={documents.data.items}
+            onImport={(documentId: string): void =>
+              importDocument.mutate({ data: { document_id: documentId } })
+            }
+            importingId={
+              importDocument.isPending
+                ? importDocument.variables.data.document_id
+                : null
+            }
             onDelete={(documentId: string): void =>
               remove.mutate({ documentId })
             }
@@ -82,12 +120,16 @@ type DocumentTableProps = {
   documents: DocumentOut[];
   onDelete: (id: string) => void;
   deletingId: string | null;
+  onImport: (id: string) => void;
+  importingId: string | null;
 };
 
 function DocumentTable({
   documents,
   onDelete,
   deletingId,
+  onImport,
+  importingId,
 }: DocumentTableProps): JSX.Element {
   if (documents.length === 0) {
     return (
@@ -105,7 +147,7 @@ function DocumentTable({
           <TableHead>Type</TableHead>
           <TableHead className="text-right">Size</TableHead>
           <TableHead>Uploaded</TableHead>
-          <TableHead className="w-40" />
+          <TableHead className="w-56" />
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -126,6 +168,23 @@ function DocumentTable({
                 <a href={document.download_url} download={document.name}>
                   Download
                 </a>
+              </Button>
+              <Button asChild variant="ghost" size="sm">
+                <Link
+                  to="/history/$resource/$objectId"
+                  params={{ resource: "document", objectId: document.id }}
+                >
+                  History
+                </Link>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(): void => onImport(document.id)}
+                disabled={importingId === document.id}
+                title="Create a dataset from this file"
+              >
+                {importingId === document.id ? "Importing..." : "Import"}
               </Button>
               <Button
                 variant="ghost"

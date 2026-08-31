@@ -36,6 +36,7 @@ const navItems = [
   { to: "/datasets", label: "Datasets", exact: false },
   { to: "/documents", label: "Documents", exact: false },
   { to: "/gallery", label: "Gallery", exact: false },
+  { to: "/notes", label: "Notes", exact: false },
   { to: "/tasks", label: "Tasks", exact: false },
 ] as const;
 

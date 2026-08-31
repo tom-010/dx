@@ -10,8 +10,10 @@ runs unattended create a personal API token instead (`POST /api/auth/api-tokens`
 from datetime import timedelta
 
 import djclick as click
+from django.contrib.auth import authenticate
 
-from apps.accounts import services
+from apps.accounts.api import issue_access_token
+from apps.accounts.models import User
 
 
 @click.command()
@@ -20,9 +22,8 @@ from apps.accounts import services
 @click.option("--minutes", "-m", type=int, default=None, help="Lifetime; default: the setting")
 def command(username: str, password: str, minutes: int | None) -> None:
     """Print a JWT access token for a user. Output is the bare token (no newline)."""
-    try:
-        user = services.login(username, password)
-    except services.InvalidCredentials:
-        raise click.ClickException("Invalid credentials") from None
+    user = authenticate(username=username, password=password)
+    if not isinstance(user, User):
+        raise click.ClickException("Invalid credentials")
     lifetime = timedelta(minutes=minutes) if minutes is not None else None
-    click.echo(services.issue_access_token(user, lifetime=lifetime), nl=False)
+    click.echo(issue_access_token(user, lifetime=lifetime), nl=False)

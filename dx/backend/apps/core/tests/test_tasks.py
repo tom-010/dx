@@ -8,18 +8,11 @@ from django.http import StreamingHttpResponse
 from django.test import Client
 
 from apps.accounts.models import User
-from apps.core import services, tasks
-from apps.datasets.services import create_dataset
+from apps.core import tasks
+from apps.core.testing import acting_as
+from apps.datasets.models import Dataset
 
 pytestmark = pytest.mark.django_db
-
-
-def test_services_are_plain_functions() -> None:
-    seen: list[tuple[int, int]] = []
-
-    assert services.add(2, 3) == 5
-    assert services.count_to(3, 0, lambda current, total: seen.append((current, total))) == 3
-    assert seen == [(1, 3), (2, 3), (3, 3)]
 
 
 def test_run_add_returns_the_result_inline(auth_client: Client) -> None:
@@ -50,9 +43,14 @@ def test_run_count_validates_and_runs(auth_client: Client) -> None:
     assert response.json()["result"] == 3
 
 
-def test_dataset_summary_task_reads_the_database(auth_client: Client, user: User) -> None:
-    create_dataset(user, name="a", row_count=10)
-    create_dataset(user, name="b", row_count=5)
+def test_dataset_summary_task_reads_the_callers_data(
+    auth_client: Client, user: User, other_user: User
+) -> None:
+    with acting_as(user):
+        Dataset.objects.create(owner=user, name="a", row_count=10)
+        Dataset.objects.create(owner=user, name="b", row_count=5)
+    with acting_as(other_user):
+        Dataset.objects.create(owner=other_user, name="theirs", row_count=100)
 
     response = auth_client.post("/api/tasks/dataset-summary")
 

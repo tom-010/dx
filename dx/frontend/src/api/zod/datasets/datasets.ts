@@ -51,6 +51,8 @@ export const ListDatasetsResponse = zod.object({
           "Import settings of a dataset — a typed JSON column (django-pydantic-field, NOTES.md §5).\n\nStored as `jsonb`, validated on load and save, and part of the API contract (nested object\nin `DatasetOut`\/`DatasetIn`, so the frontend gets a typed `DatasetOptions` as well).\nEvolve it like any pydantic model: new fields need a default so old rows still load.",
         ),
       row_count: zod.int(),
+      tags: zod.array(zod.string()),
+      version: zod.int(),
     }),
   ),
 });
@@ -68,6 +70,8 @@ export const createDatasetBodyOptionsOneEncodingDefault = `utf-8`;
 export const createDatasetBodyOptionsOneHasHeaderDefault = true;
 export const createDatasetBodyRowCountDefault = 0;
 export const createDatasetBodyRowCountMin = 0;
+
+export const createDatasetBodyTagsMax = 25;
 
 export const CreateDatasetBody = zod
   .object({
@@ -95,6 +99,7 @@ export const CreateDatasetBody = zod
       .int()
       .min(createDatasetBodyRowCountMin)
       .default(createDatasetBodyRowCountDefault),
+    tags: zod.array(zod.string()).max(createDatasetBodyTagsMax).optional(),
   })
   .describe(
     "Create (POST) and full update (PUT): every field, omitted ones take the defaults.",
@@ -132,6 +137,97 @@ export const CreateDatasetResponse = zod.object({
       "Import settings of a dataset — a typed JSON column (django-pydantic-field, NOTES.md §5).\n\nStored as `jsonb`, validated on load and save, and part of the API contract (nested object\nin `DatasetOut`\/`DatasetIn`, so the frontend gets a typed `DatasetOptions` as well).\nEvolve it like any pydantic model: new fields need a default so old rows still load.",
     ),
   row_count: zod.int(),
+  tags: zod.array(zod.string()),
+  version: zod.int(),
+});
+
+/**
+ * Build a dataset from an uploaded document and record the lineage edge.
+ *
+ * The edge names the document *version* the rows were counted from, so
+ * `GET /api/history/dataset/{id}` can show what this was built from even after the document
+ * is renamed or replaced (`apps/core/lineage.py`).
+ * @summary Import Dataset From Document
+ */
+export const importDatasetFromDocumentBodyNameOneMax = 200;
+
+export const importDatasetFromDocumentBodyOptionsOneDelimiterDefault = `,`;
+export const importDatasetFromDocumentBodyOptionsOneDelimiterMax = 1;
+
+export const importDatasetFromDocumentBodyOptionsOneEncodingDefault = `utf-8`;
+export const importDatasetFromDocumentBodyOptionsOneHasHeaderDefault = true;
+export const importDatasetFromDocumentBodyTagsMax = 25;
+
+export const ImportDatasetFromDocumentBody = zod
+  .object({
+    document_id: zod.uuid(),
+    name: zod
+      .union([
+        zod.string().min(1).max(importDatasetFromDocumentBodyNameOneMax),
+        zod.null(),
+      ])
+      .optional(),
+    options: zod
+      .object({
+        delimiter: zod
+          .string()
+          .min(1)
+          .max(importDatasetFromDocumentBodyOptionsOneDelimiterMax)
+          .default(importDatasetFromDocumentBodyOptionsOneDelimiterDefault),
+        encoding: zod
+          .string()
+          .default(importDatasetFromDocumentBodyOptionsOneEncodingDefault),
+        has_header: zod
+          .boolean()
+          .default(importDatasetFromDocumentBodyOptionsOneHasHeaderDefault),
+      })
+      .describe(
+        "Import settings of a dataset — a typed JSON column (django-pydantic-field, NOTES.md §5).\n\nStored as `jsonb`, validated on load and save, and part of the API contract (nested object\nin `DatasetOut`\/`DatasetIn`, so the frontend gets a typed `DatasetOptions` as well).\nEvolve it like any pydantic model: new fields need a default so old rows still load.",
+      )
+      .optional(),
+    tags: zod
+      .array(zod.string())
+      .max(importDatasetFromDocumentBodyTagsMax)
+      .optional(),
+  })
+  .describe(
+    "Build a dataset from an uploaded document (`POST \/api\/datasets\/import-document`).",
+  );
+
+export const importDatasetFromDocumentResponseNameMax = 200;
+
+export const importDatasetFromDocumentResponseOptionsDelimiterDefault = `,`;
+export const importDatasetFromDocumentResponseOptionsDelimiterMax = 1;
+
+export const importDatasetFromDocumentResponseOptionsEncodingDefault = `utf-8`;
+export const importDatasetFromDocumentResponseOptionsHasHeaderDefault = true;
+
+export const ImportDatasetFromDocumentResponse = zod.object({
+  created: zod.iso.datetime({ offset: true }),
+  description: zod.string(),
+  id: zod.uuid(),
+  modified: zod.iso.datetime({ offset: true }),
+  name: zod.string().max(importDatasetFromDocumentResponseNameMax),
+  options: zod
+    .object({
+      delimiter: zod
+        .string()
+        .min(1)
+        .max(importDatasetFromDocumentResponseOptionsDelimiterMax)
+        .default(importDatasetFromDocumentResponseOptionsDelimiterDefault),
+      encoding: zod
+        .string()
+        .default(importDatasetFromDocumentResponseOptionsEncodingDefault),
+      has_header: zod
+        .boolean()
+        .default(importDatasetFromDocumentResponseOptionsHasHeaderDefault),
+    })
+    .describe(
+      "Import settings of a dataset — a typed JSON column (django-pydantic-field, NOTES.md §5).\n\nStored as `jsonb`, validated on load and save, and part of the API contract (nested object\nin `DatasetOut`\/`DatasetIn`, so the frontend gets a typed `DatasetOptions` as well).\nEvolve it like any pydantic model: new fields need a default so old rows still load.",
+    ),
+  row_count: zod.int(),
+  tags: zod.array(zod.string()),
+  version: zod.int(),
 });
 
 /**
@@ -180,6 +276,8 @@ export const GetDatasetResponse = zod.object({
       "Import settings of a dataset — a typed JSON column (django-pydantic-field, NOTES.md §5).\n\nStored as `jsonb`, validated on load and save, and part of the API contract (nested object\nin `DatasetOut`\/`DatasetIn`, so the frontend gets a typed `DatasetOptions` as well).\nEvolve it like any pydantic model: new fields need a default so old rows still load.",
     ),
   row_count: zod.int(),
+  tags: zod.array(zod.string()),
+  version: zod.int(),
 });
 
 /**
@@ -198,6 +296,8 @@ export const patchDatasetBodyOptionsOneDelimiterMax = 1;
 export const patchDatasetBodyOptionsOneEncodingDefault = `utf-8`;
 export const patchDatasetBodyOptionsOneHasHeaderDefault = true;
 export const patchDatasetBodyRowCountOneMin = 0;
+
+export const patchDatasetBodyTagsOneMax = 25;
 
 export const PatchDatasetBody = zod
   .object({
@@ -229,6 +329,12 @@ export const PatchDatasetBody = zod
       .optional(),
     row_count: zod
       .union([zod.int().min(patchDatasetBodyRowCountOneMin), zod.null()])
+      .optional(),
+    tags: zod
+      .union([
+        zod.array(zod.string()).max(patchDatasetBodyTagsOneMax),
+        zod.null(),
+      ])
       .optional(),
   })
   .describe("Partial update (PATCH): only the fields that are present change.");
@@ -265,6 +371,8 @@ export const PatchDatasetResponse = zod.object({
       "Import settings of a dataset — a typed JSON column (django-pydantic-field, NOTES.md §5).\n\nStored as `jsonb`, validated on load and save, and part of the API contract (nested object\nin `DatasetOut`\/`DatasetIn`, so the frontend gets a typed `DatasetOptions` as well).\nEvolve it like any pydantic model: new fields need a default so old rows still load.",
     ),
   row_count: zod.int(),
+  tags: zod.array(zod.string()),
+  version: zod.int(),
 });
 
 /**
@@ -285,6 +393,8 @@ export const updateDatasetBodyOptionsOneEncodingDefault = `utf-8`;
 export const updateDatasetBodyOptionsOneHasHeaderDefault = true;
 export const updateDatasetBodyRowCountDefault = 0;
 export const updateDatasetBodyRowCountMin = 0;
+
+export const updateDatasetBodyTagsMax = 25;
 
 export const UpdateDatasetBody = zod
   .object({
@@ -312,6 +422,7 @@ export const UpdateDatasetBody = zod
       .int()
       .min(updateDatasetBodyRowCountMin)
       .default(updateDatasetBodyRowCountDefault),
+    tags: zod.array(zod.string()).max(updateDatasetBodyTagsMax).optional(),
   })
   .describe(
     "Create (POST) and full update (PUT): every field, omitted ones take the defaults.",
@@ -349,4 +460,6 @@ export const UpdateDatasetResponse = zod.object({
       "Import settings of a dataset — a typed JSON column (django-pydantic-field, NOTES.md §5).\n\nStored as `jsonb`, validated on load and save, and part of the API contract (nested object\nin `DatasetOut`\/`DatasetIn`, so the frontend gets a typed `DatasetOptions` as well).\nEvolve it like any pydantic model: new fields need a default so old rows still load.",
     ),
   row_count: zod.int(),
+  tags: zod.array(zod.string()),
+  version: zod.int(),
 });

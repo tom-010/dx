@@ -8,7 +8,7 @@ import djclick as click
 from django.conf import settings
 from rich.console import Console
 
-from apps.core import backups
+from apps.core import backups, rls
 
 console = Console()
 
@@ -33,4 +33,6 @@ def command(name: str | None, latest: bool, yes: bool) -> None:
         backups.restore_backup(name)
     except backups.BackupNotFound:
         raise click.ClickException(f"no such backup: {name}") from None
+    except rls.CrossTenantAccessRequired as exc:
+        raise click.ClickException(str(exc)) from None
     console.print(f"[green]✓[/green] restored [bold]{name}[/bold] into {database}")

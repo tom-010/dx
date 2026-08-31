@@ -19,4 +19,6 @@ export interface DatasetIn {
   options?: DatasetOptions;
   /** @minimum 0 */
   row_count?: number;
+  /** @maxItems 25 */
+  tags?: string[];
 }

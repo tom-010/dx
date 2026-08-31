@@ -20,6 +20,9 @@ django_stubs_ext.monkeypatch()
 SECRET_KEY = env.SECRET_KEY
 SECRET_KEY_FALLBACKS = env.SECRET_KEY_FALLBACKS
 DEBUG = env.DEBUG
+# `/admin/` is only mounted when this is on (config/urls.py). The admin shows tenant data, so
+# production does not serve it: administer through `manage.py shell_as` / `shell_admin`.
+ADMIN_ENABLED = env.admin_enabled
 # Container health checks (Docker HEALTHCHECK, compose) reach the app via loopback; those names
 # are always allowed next to the public ones — they cannot be used for host-header poisoning.
 # While DEBUG with an empty list, Django allows them by itself.
@@ -52,6 +55,9 @@ SECURE_HSTS_PRELOAD = HTTPS_ONLY
 # Application definition
 
 INSTALLED_APPS = [
+    # Above django.contrib.admin on purpose: its template overrides add the "Events" buttons to
+    # every tracked model's admin pages, and the first app that defines a template path wins.
+    "pghistory.admin",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -61,12 +67,16 @@ INSTALLED_APPS = [
     "ninja",  # management commands (export_openapi_schema)
     "corsheaders",
     "django_structlog",
+    "django_scopes",  # ORM tenant scope (apps/core/models.py::OwnedManager)
+    "pgtrigger",  # database triggers as model Meta (apps/core/models.py::BaseModel)
+    "pghistory",  # trigger-captured version history (apps/core/history.py)
     # Feature modules live under apps/<feature>/
     "apps.core",
     "apps.accounts",
     "apps.datasets",
     "apps.documents",
     "apps.gallery",
+    "apps.notes",
     # needle: installed-apps (manage.py startmodule inserts new modules above this line)
 ]
 
@@ -83,6 +93,19 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Groups everything one request writes under a single pghistory context id, so the revision
+    # page can show "one save" instead of a row per table. Before TenantMiddleware on purpose:
+    # it swaps in a request class that re-binds the context whenever `request.user` is assigned,
+    # which is what TenantMiddleware does once it has verified the bearer token.
+    "apps.core.history.HistoryMiddleware",
+    # Verifies the bearer token once and runs the rest of the request inside a transaction with
+    # the tenant context set (`SET LOCAL app.user_id` + ORM scope) — after AuthenticationMiddleware
+    # (which would overwrite request.user), before anything that reads owned data.
+    "apps.core.middleware.TenantMiddleware",
+    # The same context for `/admin/`, resolved from the admin session instead of a bearer token
+    # (apps/core/admin.py). Without it every admin page over owned data is empty: the ORM scope
+    # is missing and the policies fail closed.
+    "apps.core.admin.AdminTenantMiddleware",
     # Binds request_id/user_id/ip to every log line of a request (config/logging.py).
     "django_structlog.middlewares.RequestMiddleware",
 ]
@@ -114,7 +137,76 @@ WSGI_APPLICATION = "config.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {"default": django_database(env.DATABASE_URL, conn_max_age=env.DB_CONN_MAX_AGE)}
+# DB_ROLE picks the credentials: the runtime role `app_user` by default (row-level security
+# applies), the table owner for migrations/backups, BYPASSRLS for shell_admin (config/env.py).
+DATABASES = {
+    "default": django_database(
+        env.DATABASE_URL,
+        conn_max_age=env.DB_CONN_MAX_AGE,
+        credentials=env.database_credentials(),
+    )
+}
+
+# Cross-tenant reads for the Django admin (apps/core/admin.py). A *second* alias, so the default
+# connection stays `app_user` and the readiness probe's `rls` check keeps failing a web process
+# that could bypass the policies. Present only when DB_ADMIN_* is configured: without it a
+# superuser sees their own tenant like everybody else, which is the safe default.
+AUDIT_DB_ALIAS = "audit"
+_audit_credentials = env.audit_credentials()
+if _audit_credentials is not None:
+    DATABASES[AUDIT_DB_ALIAS] = {
+        **django_database(
+            env.DATABASE_URL, conn_max_age=env.DB_CONN_MAX_AGE, credentials=_audit_credentials
+        ),
+        # One database, two roles: never give this alias a test database of its own.
+        "TEST": {"MIRROR": "default"},
+    }
+
+
+# Multitenancy (tenant == user; CLAUDE.md "Multitenancy"). Two enforcement layers ride on
+# `apps.core.models.OwnedModel`: the ORM scope (`OwnedManager`, django-scopes state) and
+# Postgres row-level security (apps/core/rls.py, `manage.py rls_sync`). The request context
+# comes from `apps.core.middleware.TenantMiddleware`, tasks use `apps.core.tasks.tenant_task`.
+
+# The infrastructure apps hold shared tables (users, tokens, sessions); every other app under
+# apps/ is a tenant app: all of its concrete models must inherit OwnedModel (apps/core/checks.py,
+# tenant.E001). A new module is a tenant app by default — nothing to register.
+SHARED_APPS = ["apps.core", "apps.accounts"]
+TENANT_APPS = [app for app in INSTALLED_APPS if app.startswith("apps.") and app not in SHARED_APPS]
+# Models inside tenant apps that are deliberately unowned ("app_label.Model"). Keep this empty;
+# add an entry only after a security review.
+SHARED_MODELS: list[str] = []
+# The Postgres session variable the RLS policies compare `owner_id` against (apps/core/db.py).
+TENANT_GUC = "app.user_id"
+
+
+# Version history (django-pghistory; CLAUDE.md "Versioning and lineage"). Every write to a
+# tracked table is mirrored into its event table by a Postgres trigger, so bulk writes, raw SQL
+# and data migrations cannot produce a current state with no version row behind it.
+
+# Event tables are append-only: pgtrigger rejects UPDATE and DELETE on them. Lineage edges point
+# at event rows, and a lineage graph whose nodes can be edited or vanish is not a lineage graph.
+PGHISTORY_APPEND_ONLY = True
+# `pghistory_context` is a single shared table with no owner column: every tenant can read every
+# row (its upsert function needs SELECT and UPDATE on it). Nothing tenant-identifying may go into
+# the metadata — no user id, no resolved URL with object ids in it. See apps/core/history.py.
+PGHISTORY_MIDDLEWARE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+# Every event table is generated from this base, so they all share one column set — which is
+# what lets the aggregate `Events` page union them (apps/core/history.py::Event). Set here
+# rather than passed per model: a table generated with a different base would union badly.
+PGHISTORY_BASE_MODEL = "apps.core.history.Event"
+
+# The admin's aggregate events page (`pghistory.admin`, CLAUDE.md "Admin").
+# It unions *every* event table, so its cost grows with the number of tracked models and we
+# track all of them: show nothing until the page is filtered or reached from another admin page.
+PGHISTORY_ADMIN_ALL_EVENTS = False
+# Scoped to one tenant unless a superuser has cross-tenant access (apps/core/admin.py).
+PGHISTORY_ADMIN_CLASS = "apps.core.admin.TenantEventsAdmin"
+# `version` is the authoritative order of the version chain, but the aggregate model cannot
+# carry it as a column (pghistory only lets a proxy field read `pgh_context`), so the page
+# orders by write time and shows the version inside `pgh_diff`.
+PGHISTORY_ADMIN_ORDERING = ["-pgh_created_at"]
+PGHISTORY_ADMIN_LIST_DISPLAY = ["pgh_created_at", "pgh_obj_model", "pgh_obj_id", "pgh_diff"]
 
 
 # Cache — Valkey/Redis, shared by every gunicorn and Celery process (settings_test.py: in-memory)
@@ -258,14 +350,19 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     # longer than the longest task (the `count` sample allows 600 × 10 s), otherwise it runs twice.
     "visibility_timeout": 2 * 60 * 60,
 }
-# Periodic tasks (`./scripts/celery.sh beat`). File-based on purpose: the schedule is code,
-# reviewed and deployed like code. Times are in CELERY_TIMEZONE (UTC).
+# Periodic tasks (`./scripts/celery.sh maintenance`). File-based on purpose: the schedule is
+# code, reviewed and deployed like code. Times are in CELERY_TIMEZONE (UTC).
 CELERY_BEAT_SCHEDULE = {
     "nightly-database-backup": {
         "task": "apps.core.tasks.backup_database",
         "schedule": crontab(hour=3, minute=0),
     },
 }
+# Cross-tenant maintenance (the backup dumps every user's rows) runs on its own queue, consumed
+# only by the maintenance worker that connects as the table owner (`celery worker -B -Q
+# maintenance` with DB_ROLE=migrator — docker/docker-compose.prod.yml `beat`). The regular
+# workers run as `app_user` and never see these tasks; row-level security would hide the data.
+CELERY_TASK_ROUTES = {"apps.core.tasks.backup_database": {"queue": "maintenance"}}
 
 
 # Email — EMAIL_URL (console output when unset; production needs smtp://…, see config/env.py)

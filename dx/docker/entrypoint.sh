@@ -3,7 +3,8 @@
 # database, prepare it for the web process, then run the container command — gunicorn by
 # default, `celery -A config worker|beat` for the other services.
 #   MIGRATE_ON_START=false   skip bucket creation + migrations here (several web replicas: run
-#                            `manage.py migrate` once as a release step instead).
+#                            the migrate → rls_sync → rls_sync --check sequence once as a release
+#                            step instead, as DB_ROLE=migrator).
 set -eu
 
 # Django's deployment checklist: SECRET_KEY strength, ALLOWED_HOSTS, HTTPS settings, mailer, …
@@ -22,8 +23,13 @@ until python manage.py shell -c "from django.db import connection; connection.en
 done
 
 # Only the web process prepares the database; workers start once it is healthy (compose).
+# Schema changes run as the table owner (DB_MIGRATOR_*): migrate, then the row-level security
+# policies for new tables, then the drift check that gates the deploy. gunicorn itself keeps
+# DB_ROLE=app (`app_user`, subject to RLS) — /api/ready refuses anything else.
 if [ "${1:-}" = "gunicorn" ] && [ "${MIGRATE_ON_START:-true}" = "true" ]; then
   python manage.py ensure_bucket
-  python manage.py migrate --noinput
+  DB_ROLE=migrator python manage.py migrate --noinput
+  DB_ROLE=migrator python manage.py rls_sync
+  DB_ROLE=migrator python manage.py rls_sync --check
 fi
 exec "$@"

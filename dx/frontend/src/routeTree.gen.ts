@@ -14,7 +14,10 @@ import { Route as DatasetsRouteImport } from "./routes/datasets";
 import { Route as DocumentsRouteImport } from "./routes/documents";
 import { Route as GalleryRouteImport } from "./routes/gallery";
 import { Route as LoginRouteImport } from "./routes/login";
+import { Route as NotesRouteImport } from "./routes/notes";
 import { Route as TasksRouteImport } from "./routes/tasks";
+import { Route as HistoryResourceObjectIdRouteImport } from "./routes/history.$resource.$objectId";
+import { Route as LineageResourceObjectIdRouteImport } from "./routes/lineage.$resource.$objectId";
 
 const IndexRoute = IndexRouteImport.update({
   id: "/",
@@ -41,9 +44,24 @@ const LoginRoute = LoginRouteImport.update({
   path: "/login",
   getParentRoute: () => rootRouteImport,
 } as any);
+const NotesRoute = NotesRouteImport.update({
+  id: "/notes",
+  path: "/notes",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const TasksRoute = TasksRouteImport.update({
   id: "/tasks",
   path: "/tasks",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const HistoryResourceObjectIdRoute = HistoryResourceObjectIdRouteImport.update({
+  id: "/history/$resource/$objectId",
+  path: "/history/$resource/$objectId",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const LineageResourceObjectIdRoute = LineageResourceObjectIdRouteImport.update({
+  id: "/lineage/$resource/$objectId",
+  path: "/lineage/$resource/$objectId",
   getParentRoute: () => rootRouteImport,
 } as any);
 
@@ -53,7 +71,10 @@ export interface FileRoutesByFullPath {
   "/documents": typeof DocumentsRoute;
   "/gallery": typeof GalleryRoute;
   "/login": typeof LoginRoute;
+  "/notes": typeof NotesRoute;
   "/tasks": typeof TasksRoute;
+  "/history/$resource/$objectId": typeof HistoryResourceObjectIdRoute;
+  "/lineage/$resource/$objectId": typeof LineageResourceObjectIdRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
@@ -61,7 +82,10 @@ export interface FileRoutesByTo {
   "/documents": typeof DocumentsRoute;
   "/gallery": typeof GalleryRoute;
   "/login": typeof LoginRoute;
+  "/notes": typeof NotesRoute;
   "/tasks": typeof TasksRoute;
+  "/history/$resource/$objectId": typeof HistoryResourceObjectIdRoute;
+  "/lineage/$resource/$objectId": typeof LineageResourceObjectIdRoute;
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
@@ -70,14 +94,34 @@ export interface FileRoutesById {
   "/documents": typeof DocumentsRoute;
   "/gallery": typeof GalleryRoute;
   "/login": typeof LoginRoute;
+  "/notes": typeof NotesRoute;
   "/tasks": typeof TasksRoute;
+  "/history/$resource/$objectId": typeof HistoryResourceObjectIdRoute;
+  "/lineage/$resource/$objectId": typeof LineageResourceObjectIdRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
   fullPaths:
-    "/" | "/datasets" | "/documents" | "/gallery" | "/login" | "/tasks";
+    | "/"
+    | "/datasets"
+    | "/documents"
+    | "/gallery"
+    | "/login"
+    | "/notes"
+    | "/tasks"
+    | "/history/$resource/$objectId"
+    | "/lineage/$resource/$objectId";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/datasets" | "/documents" | "/gallery" | "/login" | "/tasks";
+  to:
+    | "/"
+    | "/datasets"
+    | "/documents"
+    | "/gallery"
+    | "/login"
+    | "/notes"
+    | "/tasks"
+    | "/history/$resource/$objectId"
+    | "/lineage/$resource/$objectId";
   id:
     | "__root__"
     | "/"
@@ -85,7 +129,10 @@ export interface FileRouteTypes {
     | "/documents"
     | "/gallery"
     | "/login"
-    | "/tasks";
+    | "/notes"
+    | "/tasks"
+    | "/history/$resource/$objectId"
+    | "/lineage/$resource/$objectId";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
@@ -94,7 +141,10 @@ export interface RootRouteChildren {
   DocumentsRoute: typeof DocumentsRoute;
   GalleryRoute: typeof GalleryRoute;
   LoginRoute: typeof LoginRoute;
+  NotesRoute: typeof NotesRoute;
   TasksRoute: typeof TasksRoute;
+  HistoryResourceObjectIdRoute: typeof HistoryResourceObjectIdRoute;
+  LineageResourceObjectIdRoute: typeof LineageResourceObjectIdRoute;
 }
 
 declare module "@tanstack/react-router" {
@@ -134,11 +184,32 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof LoginRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/notes": {
+      id: "/notes";
+      path: "/notes";
+      fullPath: "/notes";
+      preLoaderRoute: typeof NotesRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/tasks": {
       id: "/tasks";
       path: "/tasks";
       fullPath: "/tasks";
       preLoaderRoute: typeof TasksRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/history/$resource/$objectId": {
+      id: "/history/$resource/$objectId";
+      path: "/history/$resource/$objectId";
+      fullPath: "/history/$resource/$objectId";
+      preLoaderRoute: typeof HistoryResourceObjectIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/lineage/$resource/$objectId": {
+      id: "/lineage/$resource/$objectId";
+      path: "/lineage/$resource/$objectId";
+      fullPath: "/lineage/$resource/$objectId";
+      preLoaderRoute: typeof LineageResourceObjectIdRouteImport;
       parentRoute: typeof rootRouteImport;
     };
   }
@@ -150,7 +221,10 @@ const rootRouteChildren: RootRouteChildren = {
   DocumentsRoute: DocumentsRoute,
   GalleryRoute: GalleryRoute,
   LoginRoute: LoginRoute,
+  NotesRoute: NotesRoute,
   TasksRoute: TasksRoute,
+  HistoryResourceObjectIdRoute: HistoryResourceObjectIdRoute,
+  LineageResourceObjectIdRoute: LineageResourceObjectIdRoute,
 };
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
