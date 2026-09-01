@@ -1,0 +1,30 @@
+"""`manage.py ${name}` — one line saying what this does.
+
+Conventions: `.claude/rules/management-commands.md`; `hello_world` is the reference
+implementation. Logic that is more than plumbing goes to a module next to the models it works
+on; long work is enqueued as a Celery task instead of run here.
+"""
+
+import djclick as click
+import structlog
+from rich.console import Console
+
+from apps.core.db import all_tenants
+
+console = Console()
+log = structlog.get_logger(__name__)
+
+
+@click.command()
+@click.option("--dry-run", is_flag=True, help="Say what would happen, change nothing.")
+def command(dry_run: bool) -> None:
+    """What `manage.py ${name}` does, in one line — this text is its --help."""
+    # Commands are database tasks, not requests: no tenant filtering by default. Reading owned
+    # rows across tenants also needs credentials the policies do not apply to
+    # (`DB_ROLE=migrator manage.py ${name}`), or row-level security hides all of them; call
+    # `apps.core.rls.require_cross_tenant_access()` to say so instead of finding nothing.
+    with all_tenants():
+        console.print(f"[bold]${name}[/bold] ran (dry run: {dry_run})")
+
+    # Structured log line: key/value pairs, no f-strings (config/logging.py).
+    log.info("${name}_ran", dry_run=dry_run)

@@ -3,8 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <!-- viewport-fit=cover: the app draws under the notch/home indicator and pads itself
+         with env(safe-area-inset-*) — see the pt-safe/pb-safe utilities in src/index.css. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>dx</title>
   </head>
   <body>
     <div id="root"></div>

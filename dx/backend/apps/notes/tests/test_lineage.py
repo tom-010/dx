@@ -4,14 +4,11 @@ This is what the notes app exists to show: a merge records *which version* of ea
 read, so the graph keeps telling the truth after those sources are edited.
 """
 
-from typing import Protocol, cast
-
 import pytest
 from django.test import Client
 
 from apps.accounts.models import User
 from apps.core import lineage
-from apps.core.history import EventRow
 from apps.core.testing import acting_as
 from apps.notes.api import create_note_for, get_note_for, merge_notes_for
 from apps.notes.models import Note, NoteId
@@ -19,19 +16,9 @@ from apps.notes.models import Note, NoteId
 pytestmark = pytest.mark.django_db
 
 
-class NoteEventRow(EventRow, Protocol):
-    """A `NoteEvent` row; event models are generated, so the fields we read are spelled out."""
-
-    title: str
-    body: str
-    tags: str
-
-
 def source_titles(note: Note) -> list[str]:
     """The titles of `note`'s sources *as they read when it was merged from them*."""
-    return sorted(
-        cast(NoteEventRow, edge.resolve_source()).title for edge in lineage.sources_of(note)
-    )
+    return sorted(source.to_object().title for source in note.sources(Note))
 
 
 def merge(user: User, *notes: Note, title: str) -> Note:
@@ -79,12 +66,9 @@ def test_the_merge_still_names_the_version_it_read_after_an_edit(user: User) -> 
         first.save()
 
         assert source_titles(merged) == ["Notes", "Recipe"]  # not "Recipe v2"
-        was = next(
-            cast(NoteEventRow, edge.resolve_source())
-            for edge in lineage.sources_of(merged)
-            if edge.source_obj_id == first.pk
-        )
-        assert was.body == "one egg"
+        was = next(v for v in merged.sources(Note) if v.object_id == first.pk)
+        assert was.to_object().body == "one egg"
+        assert was.is_current() is False  # the source has moved on since the merge
         assert lineage.stale_derivations(first).count() == 1
 
 

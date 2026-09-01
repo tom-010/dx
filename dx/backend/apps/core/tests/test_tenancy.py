@@ -37,6 +37,7 @@ from apps.core import cache as tenant_cache
 from apps.core import checks, db, health, middleware, rls, scrub, tasks, tenants
 from apps.core.db import NoTenantContext
 from apps.core.history import hard_delete
+from apps.core.management.commands import load_tenant, pull_tenant
 from apps.core.models import BaseModel
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
@@ -903,6 +904,72 @@ def test_delete_tenant_removes_every_row_and_file_of_one_user(
     assert [path.parent.parent.parent.name for path in media_root.rglob("*.pdf")] == [
         str(other_user.pk)
     ]
+
+
+def test_all_tenants_lifts_the_scope_for_commands(user: User) -> None:
+    """What every management command runs in: the ORM scope raises without a tenant, and a
+    command has none (`apps/core/db.py::all_tenants`)."""
+    with pytest.raises(ScopeError):
+        Dataset.objects.count()
+
+    with db.all_tenants():
+        # Runs. Row-level security still decides what it *sees* — nothing, as `app_user`
+        # without a tenant — which is why a command that reads owned rows needs DB_ROLE=migrator.
+        assert Dataset.objects.count() == 0
+
+
+@pytest.mark.cross_tenant
+def test_a_tenant_archive_round_trips_the_rows_and_their_files(
+    user: User, media_root: Path, tmp_path: Path
+) -> None:
+    """Export, erase, import: the whole point of `--with-files` is that the restored rows find
+    their objects again, not just the keys they were saved under."""
+    from click.testing import CliRunner  # noqa: PLC0415 - only this test drives the commands
+
+    from apps.documents.models import Document  # noqa: PLC0415 - avoids a module-level cycle
+
+    runner = CliRunner()
+    user_id = user.pk  # `delete_tenant` clears it on the instance, as Django's delete() does
+    with acting_as(user):
+        create_dataset_for(user, name="mine")
+        (document,) = store_documents(
+            user, [SimpleUploadedFile("f.pdf", b"%PDF-1.7", content_type="application/pdf")]
+        )
+        key = document.file.name
+
+    archive = tmp_path / "alice.zip"
+    export = runner.invoke(
+        pull_tenant.command, [user.username, "-o", str(archive), "--no-scrub", "--with-files"]
+    )
+    assert export.exit_code == 0, export.output
+    assert "1 file(s)" in export.output
+
+    tenants.delete_tenant(user)
+    assert list(media_root.rglob("*.pdf")) == []
+
+    restore = runner.invoke(load_tenant.command, [str(archive)])
+    assert restore.exit_code == 0, restore.output
+
+    with scopes_disabled():
+        back = Document.all_objects.get(pk=document.pk)
+        assert back.file.name == key  # the exact key the rows name, not a renamed copy
+        with back.file.open("rb") as restored_file:
+            assert restored_file.read() == b"%PDF-1.7"
+        assert Dataset.all_objects.filter(owner_id=user_id).count() == 1
+
+
+@pytest.mark.cross_tenant
+def test_an_archive_cannot_write_outside_the_store(tmp_path: Path) -> None:
+    """Archive members are data, not instructions: a key with `..` in it is refused."""
+    import zipfile  # noqa: PLC0415 - only this test builds an archive by hand
+
+    bad = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad, "w") as archive:
+        archive.writestr(tenants.ARCHIVE_FIXTURE, "[]")
+        archive.writestr(f"{tenants.ARCHIVE_FILES}../escaped.pdf", b"nope")
+
+    with pytest.raises(tenants.TenantArchiveError, match="leaves the store"):
+        tenants.unpack_archive(bad, tmp_path)
 
 
 @pytest.mark.cross_tenant

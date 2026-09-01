@@ -126,5 +126,17 @@
   }
   html {
     @apply font-sans;
+    /* Phones: no grey flash on tap, no font inflation when turning the device sideways. */
+    -webkit-tap-highlight-color: transparent;
+    text-size-adjust: 100%;
   }
+}
+
+/* The window is drawn edge to edge (viewport-fit=cover in index.html), so the fixed
+   header and tab bar keep themselves out of the notch and the home indicator. */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
 }

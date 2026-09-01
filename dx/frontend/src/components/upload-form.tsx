@@ -12,8 +12,8 @@ import { cn } from "@/lib/utils";
 
 type UploadFormProps = {
   title: string;
-  /** Drop-zone text. */
-  hint?: string;
+  /** The primary line in the drop zone — what the user is about to choose. */
+  action?: string;
   /** `accept` attribute of the file input, e.g. "image/*,video/*". */
   accept?: string;
   onUpload: (files: File[]) => void;
@@ -22,10 +22,10 @@ type UploadFormProps = {
   uploadedCount: number | null;
 };
 
-/** Multi-file picker with drag & drop; the caller owns the upload mutation. */
+/** Multi-file picker; tap to choose, plus drag & drop where there is a pointer. */
 export function UploadForm({
   title,
-  hint = "Drop files here or click to choose (multiple allowed)",
+  action = "Choose files",
   accept,
   onUpload,
   pending,
@@ -76,11 +76,15 @@ export function UploadForm({
         onDragLeave={(): void => setDragging(false)}
         onDrop={handleDrop}
         className={cn(
-          "flex h-32 cursor-pointer items-center justify-center rounded-md border-2 border-dashed text-center text-muted-foreground text-sm",
+          "flex h-28 cursor-pointer flex-col items-center justify-center gap-1 rounded-md border-2 border-dashed px-4 text-center text-sm md:h-32",
           dragging && "border-primary bg-accent text-accent-foreground",
         )}
       >
-        {hint}
+        <span className="font-medium">{action}</span>
+        {/* Dragging needs a pointer; a phone only ever taps, so the hint is desktop-only. */}
+        <span className="hidden text-muted-foreground text-xs md:inline">
+          or drop them here — several at once is fine
+        </span>
       </Label>
       {/* Plain <input>: the styled Input sets w-full/h-8, which beat sr-only's 1px box and
           made the absolutely positioned element overflow the page horizontally. */}
@@ -98,9 +102,9 @@ export function UploadForm({
           {selected.map((file) => (
             <li
               key={`${file.name}:${file.size}`}
-              className="flex items-center justify-between gap-4"
+              className="flex items-center justify-between gap-2"
             >
-              <span>
+              <span className="min-w-0 truncate">
                 {file.name}{" "}
                 <span className="text-muted-foreground">
                   ({formatBytes(file.size)})
@@ -120,10 +124,11 @@ export function UploadForm({
         </ul>
       )}
 
-      <div className="flex items-center gap-4">
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-4">
         <Button
           onClick={handleUpload}
           disabled={pending || selected.length === 0}
+          className="w-full sm:w-auto"
         >
           {pending
             ? "Uploading..."

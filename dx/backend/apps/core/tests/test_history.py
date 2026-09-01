@@ -31,7 +31,7 @@ from apps.core.history import hard_delete
 from apps.core.models import VersionedModel
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
-from apps.datasets.models import Dataset
+from apps.datasets.models import Dataset, DatasetOptions
 from apps.documents.api import store_documents
 from apps.documents.models import Document
 
@@ -313,6 +313,128 @@ def test_soft_deleted_rows_do_not_reserve_unique_values(user: User) -> None:
     assert again.pk != token.pk
 
 
+# --- Reading a version back as the model it is a version of ------------------------------------
+
+
+def test_history_lists_every_version_oldest_first(user: User) -> None:
+    """`obj.history()` reads like a list of the object's past selves, current state last."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="first")
+        dataset.name = "second"
+        dataset.save()
+        Dataset.objects.filter(pk=dataset.pk).update(name="third")
+
+        past = dataset.history()
+
+    assert [(version.version, version.to_object().name) for version in past] == [
+        (1, "first"),
+        (2, "second"),
+        (3, "third"),
+    ]
+
+
+def test_to_object_returns_the_tracked_model_and_leaves_the_live_row_alone(user: User) -> None:
+    """The way back from a generated event row to the model it mirrors — the whole point of
+    `Version`: nothing outside `apps/core/history.py` has to know `DatasetEvent` exists."""
+    with acting_as(user):
+        dataset = create_dataset_for(
+            user, name="first", options=DatasetOptions(delimiter=";", has_header=False)
+        )
+        dataset.name = "second"
+        dataset.options = DatasetOptions()
+        dataset.save()
+
+        original = dataset.history()[0].to_object()
+
+        assert isinstance(original, Dataset)
+        assert (original.pk, original.name, original.version) == (dataset.pk, "first", 1)
+        # Typed JSON columns come back as their pydantic model, not as a dict.
+        assert (original.options.delimiter, original.options.has_header) == (";", False)
+        # And reading a past state changed nothing about the row itself.
+        assert Dataset.objects.get(pk=dataset.pk).name == "second"
+
+
+def test_to_object_rebuilds_a_file_field_against_the_tracked_model(user: User) -> None:
+    """A `FileField` on an event row is bound to the *event* model's field; the rebuilt object
+    must carry the tracked model's own descriptor, or it reads through the wrong storage."""
+    with acting_as(user):
+        (document,) = store_documents(
+            user, [SimpleUploadedFile("source.pdf", b"%PDF", content_type="application/pdf")]
+        )
+        stored_key = document.file.name
+        document.name = "renamed.pdf"
+        document.save()
+
+        original = document.history()[0].to_object()
+
+    assert (original.name, original.file.name) == ("source.pdf", stored_key)
+    assert original.file.field is Document._meta.get_field("file")
+
+
+def test_saving_a_past_version_restores_it_as_a_new_version(user: User) -> None:
+    """Restoring is a normal write, never a rewrite: the `bump_version` trigger gives it the
+    next number and the event table records that the restore happened."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="first")
+        dataset.name = "second"
+        dataset.save()
+
+        dataset.history()[0].to_object().save()
+
+        dataset.refresh_from_db()
+        assert (dataset.name, dataset.version) == ("first", 3)
+        assert [version.version for version in dataset.history()] == [1, 2, 3]
+
+
+def test_a_soft_delete_is_visible_on_the_version_it_happened_in(user: User) -> None:
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="x")
+        dataset.soft_delete()
+
+        past = dataset.history()
+        assert [version.deleted for version in past] == [False, True]
+        assert past[-1].to_object().deleted_at is not None
+
+
+def test_history_of_an_unversioned_model_says_which_rule_applies(user: User) -> None:
+    token = ApiToken.objects.create(user=user, name="ci", token="tk_" + "a" * 20)
+    with pytest.raises(history.NotTracked, match="not versioned"):
+        token.history()
+
+
+def test_a_version_names_the_fields_it_cannot_speak_for(user: User) -> None:
+    """A field added later exists on every older event row too, holding whatever the column was
+    backfilled with. `to_object()` hands that value over; `untracked_fields()` is the warning
+    label on it (see "Schema evolution")."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="x")
+        current = history.tracked_fields()
+        older = [f for f in current[Dataset._meta.label] if f != "description"]
+        log = {
+            "current": history.SCHEMA_TAG,
+            "tags": {"2000-01": {Dataset._meta.label: older}, history.SCHEMA_TAG: current},
+        }
+        with mock.patch.object(history, "load_schema_log", return_value=log):
+            with history.unversioned(), connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE datasets_datasetevent SET pgh_schema = '2000-01' WHERE pgh_obj_id = %s",
+                    [str(dataset.pk)],
+                )
+            (first,) = dataset.history()
+
+            assert first.untracked_fields() == frozenset({"description"})
+            assert first.to_object().description == ""  # the backfilled default, not a value
+
+
+def test_history_of_another_tenants_row_is_empty(user: User, other_user: User) -> None:
+    """`history()` reads the event table directly, so it leans on the same row-level security
+    as everything else (see .claude/rules/multitenancy.md)."""
+    with acting_as(other_user):
+        theirs = create_dataset_for(other_user, name="theirs")
+    with acting_as(user):
+        assert theirs.history() == []
+
+
 # --- Context ----------------------------------------------------------------------------------
 
 
@@ -442,6 +564,94 @@ def test_lineage_spans_models(user: User) -> None:
         assert edge.target_type == event_type(Dataset)
         assert cast(DocumentEventRow, edge.resolve_source()).name == "source.pdf"
         assert edge.resolve_target().id == dataset.pk
+
+
+def test_sources_hands_back_the_source_as_its_own_model(user: User) -> None:
+    """The lineage counterpart of `to_object()`: an edge resolves to a `Document`, not to a
+    `DocumentEvent` nobody imports."""
+    with acting_as(user):
+        (document,) = store_documents(
+            user, [SimpleUploadedFile("source.pdf", b"%PDF", content_type="application/pdf")]
+        )
+        dataset = create_dataset_for(user, name="imported")
+        lineage.record_derivation(dataset, sources=[document])
+
+        # Unfiltered, an edge can point at any model, so all it promises is a
+        # `VersionedModel` — `str()` still names the row. Name the model to get it typed.
+        (any_source,) = dataset.sources()
+        assert str(any_source.to_object()) == "source.pdf"
+
+        (source,) = dataset.sources(Document)
+
+        assert (source.to_object().name, source.version) == ("source.pdf", 1)
+        assert source.object_id == document.pk
+        # And the other direction: what came out of the document.
+        assert [v.to_object().name for v in document.derived(Dataset)] == ["imported"]
+
+
+def test_sources_survive_a_later_edit_of_the_derived_row(user: User) -> None:
+    """An edge is recorded against the version that consumed the source, so `sources_of` (the
+    current version's edges) empties on the next edit. "What was this built from" must not."""
+    with acting_as(user):
+        source = create_dataset_for(user, name="the source")
+        target = create_dataset_for(user, name="derived")
+        lineage.record_derivation(target, sources=[source])
+
+        target.name = "derived, renamed"
+        target.save()
+
+        assert lineage.sources_of(target).count() == 0  # v2 consumed nothing
+        assert [v.to_object().name for v in target.sources(Dataset)] == ["the source"]
+
+
+def test_a_version_names_what_that_version_consumed(user: User) -> None:
+    with acting_as(user):
+        source = create_dataset_for(user, name="the source")
+        target = create_dataset_for(user, name="derived")
+        lineage.record_derivation(target, sources=[source])
+        target.name = "renamed"
+        target.save()
+
+        first, second = target.history()
+
+        assert [v.to_object().name for v in first.sources(Dataset)] == ["the source"]
+        assert second.sources() == []  # the rename consumed nothing
+        assert [v.object_id for v in source.history()[0].derived()] == [target.pk]
+
+
+def test_a_source_version_says_whether_it_is_still_current(user: User) -> None:
+    """Which is what makes a derivation stale: the source has moved on since it was read."""
+    with acting_as(user):
+        source = create_dataset_for(user, name="original")
+        target = create_dataset_for(user, name="derived")
+        lineage.record_derivation(target, sources=[source])
+
+        assert target.sources()[0].is_current() is True
+
+        source.name = "renamed since"
+        source.save()
+
+        assert target.sources()[0].is_current() is False
+        assert lineage.stale_derivations(source).count() == 1
+
+
+def test_one_source_version_feeding_two_versions_is_listed_once(user: User) -> None:
+    """A merge that reads the same source twice must not report it twice."""
+    with acting_as(user):
+        source = create_dataset_for(user, name="the source")
+        target = create_dataset_for(user, name="derived")
+        lineage.record_derivation(target, sources=[source])
+        target.name = "renamed"
+        target.save()
+        lineage.record_derivation(target, sources=[source])  # the same source version again
+
+        assert [v.version for v in target.sources()] == [1]
+
+
+def test_lineage_of_an_unversioned_model_says_so(user: User) -> None:
+    token = ApiToken.objects.create(user=user, name="ci", token="tk_" + "b" * 20)
+    with pytest.raises(history.NotTracked, match="no lineage"):
+        token.sources()
 
 
 def test_recording_a_derivation_needs_a_tenant_context(user: User) -> None:

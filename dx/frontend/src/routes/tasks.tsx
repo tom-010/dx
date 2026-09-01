@@ -55,7 +55,7 @@ function TasksPage(): JSX.Element {
   const failedToStart = [add, count, summary, fail].find((m) => m.isError);
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6 md:gap-8">
       <div>
         <h1 className="font-semibold text-2xl">Background tasks</h1>
         <p className="text-muted-foreground">
@@ -170,11 +170,11 @@ function TaskRun({ run }: { run: Run }): JSX.Element {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between gap-4">
-          <CardTitle>{run.label}</CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="min-w-0 truncate">{run.label}</CardTitle>
           <StateBadge state={status.state} />
         </div>
-        <CardDescription>
+        <CardDescription className="break-all">
           {run.startedAt.toLocaleTimeString()} · id{" "}
           <code className="text-xs">{status.id}</code>
         </CardDescription>

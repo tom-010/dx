@@ -1,10 +1,15 @@
-"""`manage.py pull_tenant USERNAME [-o FILE] [--no-scrub]` — one user's data as a fixture.
+"""`manage.py pull_tenant USERNAME [-o FILE] [--no-scrub] [--with-files]` — one user's data.
 
-Prod → dev parity for a single tenant: the user row plus every owned row, anonymised
-(apps/core/scrub.py), as one JSON fixture that `manage.py load_tenant` imports. Runs as the
-runtime role with the tenant pinned (session context + ORM scope), so the export cannot contain
-another user's rows even if a query forgot a filter — row-level security does not allow it.
-Uploaded files are not included (only their storage keys are).
+Prod → dev parity for a single tenant, and the export half of "back up one user": the user row
+plus every owned row, anonymised (apps/core/scrub.py), as one JSON fixture that
+`manage.py load_tenant` imports. Runs as the runtime role with the tenant pinned (session
+context + ORM scope), so the export cannot contain another user's rows even if a query forgot a
+filter — row-level security does not allow it.
+
+`--with-files` bundles the uploaded objects as well, into a zip (fixture + `files/<key>`), which
+is what makes the pair a real backup rather than rows naming keys that are not there. File
+*contents* cannot be anonymised, so it requires `--no-scrub` — the same explicit choice.
+See `docs/tenant-data.md`.
 """
 
 from pathlib import Path
@@ -30,8 +35,18 @@ console = Console()
 @click.option(
     "--no-scrub", is_flag=True, help="Skip anonymisation. Requires an explicit legal basis."
 )
-def command(username: str, output: Path, no_scrub: bool) -> None:
+@click.option(
+    "--with-files",
+    is_flag=True,
+    help="Bundle the uploaded files too, as a zip. Requires --no-scrub.",
+)
+def command(username: str, output: Path, no_scrub: bool, with_files: bool) -> None:
     """Export USERNAME's user row and owned data as a scrubbed JSON fixture."""
+    if with_files and not no_scrub:
+        raise click.UsageError(
+            "--with-files needs --no-scrub: the rows would be anonymised while the files they "
+            "point at are the originals."
+        )
     with scopes_disabled():
         try:
             user = User.objects.get(username=username)
@@ -52,8 +67,19 @@ def command(username: str, output: Path, no_scrub: bool) -> None:
         except scrub.UnscrubbedField as exc:
             raise click.ClickException(str(exc)) from None
 
-    output.write_text(serialize("json", objects, indent=2))
+    fixture = serialize("json", objects, indent=2)
+    note = " [yellow](not scrubbed)[/yellow]" if no_scrub else ""
+    if not with_files:
+        output.write_text(fixture)
+        console.print(
+            f"[green]✓[/green] wrote {len(objects)} object(s) for [bold]{username}[/bold] "
+            f"to {output}{note}"
+        )
+        return
+
+    archive = output.with_suffix(".zip")
+    files = tenants.write_archive(archive, fixture, tenants.tenant_files(user))
     console.print(
-        f"[green]✓[/green] wrote {len(objects)} object(s) for [bold]{username}[/bold] to {output}"
-        + (" [yellow](not scrubbed)[/yellow]" if no_scrub else "")
+        f"[green]✓[/green] wrote {len(objects)} object(s) and {files} file(s) for "
+        f"[bold]{username}[/bold] to {archive}{note}"
     )

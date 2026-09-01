@@ -37,6 +37,9 @@ def test_render_app_writes_compilable_python(tmp_path: Path) -> None:
         "__init__.py",
         "admin.py",
         "api.py",
+        # Every app is ready to hold commands; see .claude/rules/management-commands.md.
+        "management/__init__.py",
+        "management/commands/__init__.py",
         "migrations/__init__.py",
         "models.py",
         "tests/__init__.py",
@@ -99,3 +102,84 @@ def test_generated_tests_write_inside_a_tenant_context(tmp_path: Path) -> None:
         preceding = "\n".join(lines[max(index - 2, 0) : index + 1])
         assert "acting_as(user)" in preceding, f"no tenant context: {lines[index].strip()}"
     assert "with acting_as(user), pytest.raises(HttpError):" in generated
+
+
+def test_render_command_writes_a_runnable_command(tmp_path: Path) -> None:
+    app_dir = tmp_path / "apps" / "notes"
+
+    written = scaffold.render_command("purge_old", app_dir)
+
+    assert written == app_dir / "management" / "commands" / "purge_old.py"
+    source = written.read_text()
+    assert "${" not in source, "unrendered placeholder"
+    compile(source, str(written), "exec")
+    assert "def command(" in source
+    # Commands are database tasks: not tenant-filtered by default (.claude/rules).
+    assert "with all_tenants():" in source
+    # The package files exist even in an app that lost them.
+    assert (app_dir / "management" / "__init__.py").exists()
+    assert (app_dir / "management" / "commands" / "__init__.py").exists()
+
+    with pytest.raises(scaffold.ScaffoldError, match="already exists"):
+        scaffold.render_command("purge_old", app_dir)
+    with pytest.raises(scaffold.ScaffoldError, match="snake_case"):
+        scaffold.render_command("PurgeOld", app_dir)
+
+
+def test_registering_and_deleting_an_app_leave_the_config_as_it_was(tmp_path: Path) -> None:
+    """`deleteapp` is the exact opposite of `newapp`: nothing of it stays behind."""
+    settings_file = tmp_path / "settings.py"
+    api_file = tmp_path / "api.py"
+    shutil.copy(BASE_DIR / "config" / "settings.py", settings_file)
+    shutil.copy(BASE_DIR / "config" / "api.py", api_file)
+    before = (settings_file.read_text(), api_file.read_text())
+    spec = scaffold.app_spec("reports")
+    scaffold.render_app(spec, tmp_path / "apps")
+    scaffold.register_app(spec, settings_file, api_file)
+
+    assert scaffold.unregister_app("reports", settings_file, api_file) == []
+    assert scaffold.remove_app("reports", tmp_path / "apps") == 9
+
+    assert (settings_file.read_text(), api_file.read_text()) == before
+    assert not (tmp_path / "apps" / "reports").exists()
+
+
+def test_unregister_app_leaves_a_similarly_named_app_alone(tmp_path: Path) -> None:
+    """`apps.reports` is a prefix of `apps.reports_archive`: whole lines are matched, never
+    substrings, or deleting one app would half-unregister the other."""
+    settings_file = tmp_path / "settings.py"
+    api_file = tmp_path / "api.py"
+    shutil.copy(BASE_DIR / "config" / "settings.py", settings_file)
+    shutil.copy(BASE_DIR / "config" / "api.py", api_file)
+    for name in ("reports", "reports_archive"):
+        scaffold.register_app(scaffold.app_spec(name), settings_file, api_file)
+
+    scaffold.unregister_app("reports", settings_file, api_file)
+
+    assert '"apps.reports_archive",' in settings_file.read_text()
+    assert '"apps.reports",' not in settings_file.read_text()
+    assert "reports_archive_router" in api_file.read_text()
+    assert "as reports_router" not in api_file.read_text()
+
+
+def test_unregister_app_reports_what_it_could_not_find(tmp_path: Path) -> None:
+    """A registration somebody has edited by hand is named, not guessed at."""
+    settings_file = tmp_path / "settings.py"
+    api_file = tmp_path / "api.py"
+    settings_file.write_text('INSTALLED_APPS = [\n    "apps.reports",\n]\n')
+    api_file.write_text("# nothing registered here\n")
+
+    missing = scaffold.unregister_app("reports", settings_file, api_file)
+
+    assert missing == [
+        "from apps.reports.api import router as reports_router",
+        'api.add_router("/", reports_router)',
+    ]
+    assert '"apps.reports",' not in settings_file.read_text()
+
+
+def test_remove_app_refuses_what_is_not_there(tmp_path: Path) -> None:
+    with pytest.raises(scaffold.ScaffoldError, match="does not exist"):
+        scaffold.remove_app("reports", tmp_path / "apps")
+    with pytest.raises(scaffold.ScaffoldError, match="snake_case"):
+        scaffold.remove_app("Reports", tmp_path / "apps")

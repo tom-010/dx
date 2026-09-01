@@ -22,6 +22,7 @@ dependencies = [
     "rich>=15.0.0",
     "sentry-sdk>=2.68",
     "structlog>=26.1.0",
+    "textual>=8.2.8",
     "whitenoise[brotli]>=6.12.0",
 ]
 

@@ -18,7 +18,7 @@ shared tables that predate any tenant.
 
 import uuid
 from collections.abc import Container, Iterable
-from typing import TYPE_CHECKING, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Self, TypeVar, overload
 
 import pgtrigger
 from django.conf import settings
@@ -30,12 +30,18 @@ from django.utils import timezone
 from django_scopes import ScopeError, get_scope
 from pydantic import BaseModel as PydanticModel
 
+from apps.core import lineage
 from apps.core.db import NoTenantContext, current_user_id
+from apps.core.history import Version, versions
 
 # Django only imports `models.py` when it populates the app registry, so the lineage model
 # has to be pulled in from here. `apps.core.lineage` imports nothing from this module at
 # runtime (only under TYPE_CHECKING), so this is not a cycle — keep it that way.
 from apps.core.lineage import Lineage as Lineage
+
+# Same reason, the other way round: `apps.core.usage` imports the bases from *this* module, so
+# it can only be pulled in at the end — and it has to be pulled in, or its table is not part of
+# the app registry (`manage.py` records every invocation into it).
 
 if TYPE_CHECKING:
     from apps.accounts.models import User
@@ -168,6 +174,65 @@ class VersionedModel(models.Model):
         pointing at earlier versions stay resolvable forever."""
         self.deleted_at = timezone.now()
         self.save(update_fields=["deleted_at"])
+
+    def history(self) -> list[Version[Self]]:
+        """Every past state of this row, oldest first — `[0]` is how it was created, `[-1]` how
+        it stands now.
+
+            for version in document.history():
+                version.version, version.at, version.deleted
+
+            document.history()[0].to_object()   # a Document, typed, as it was created
+
+        Each entry wraps one event row (`apps/core/history.py`) and `to_object()` rebuilds this
+        model's own type from it. Reads the event table, so it is a query per call — hold on to
+        the list rather than indexing it twice. Raises `NotTracked` on a model that is exempt
+        from versioning (`HISTORY_EXEMPT`).
+        """
+        return versions(type(self), self.pk)
+
+    @overload
+    def sources(self) -> list[Version[VersionedModel]]: ...
+
+    @overload
+    def sources[SourceT: VersionedModel](self, model: type[SourceT]) -> list[Version[SourceT]]: ...
+
+    def sources(self, model: type[VersionedModel] | None = None) -> list[Version[Any]]:
+        """The versions this row was built from — its lineage sources (`apps/core/lineage.py`).
+
+            dataset.sources()                       # every source, whatever model it is
+            dataset.sources(Document)[0]            # ...typed, when you know what to expect
+            dataset.sources(Document)[0].to_object().name   # as the document read when imported
+            dataset.sources(Document)[0].is_current()       # ...and whether it has moved since
+
+        An edge can point at any model, so the unfiltered call can only promise
+        `Version[VersionedModel]`; naming the model you expect filters to it *and* types it, which
+        is what saves the caller a cast.
+
+        Spans every version of this row, not just the current one: an edge is recorded against
+        the version that consumed the source, so a later edit here must not make the row's
+        origins disappear. `history()[n].sources()` is the per-version question.
+        """
+        found = lineage.source_versions(lineage.all_sources_of(self))
+        return found if model is None else [v for v in found if issubclass(v.model, model)]
+
+    @overload
+    def derived(self) -> list[Version[VersionedModel]]: ...
+
+    @overload
+    def derived[TargetT: VersionedModel](self, model: type[TargetT]) -> list[Version[TargetT]]: ...
+
+    def derived(self, model: type[VersionedModel] | None = None) -> list[Version[Any]]:
+        """The versions of other rows that were built from this one — lineage the other way.
+
+            document.derived(Dataset)   # the datasets imported from it, as they were then
+
+        Every version of every derived row, oldest edge first; `model` filters and types the
+        result exactly as in `sources()`. What `lineage.stale_derivations()` would have to
+        rebuild is the subset whose source version is no longer current.
+        """
+        found = lineage.target_versions(lineage.derived_from(self).order_by("created", "id"))
+        return found if model is None else [v for v in found if issubclass(v.model, model)]
 
     def set_payload(self, payload: PydanticModel, *, exclude: Container[str] = frozenset()) -> None:
         """Overwrite fields from a full payload (PUT): unset schema fields fall back to defaults.
@@ -335,3 +400,8 @@ class BaseModel(VersionedModel):
             using=using,
             update_fields=update_fields,
         )
+
+
+# Imported for its side effect: the model has to be in the app registry, and `usage` imports the
+# bases above, so this can only happen at the end of the module (see the note near the top).
+from apps.core.usage import CommandRun as CommandRun  # noqa: E402

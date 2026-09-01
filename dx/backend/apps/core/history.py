@@ -29,6 +29,18 @@ Event tables are append-only (`PGHISTORY_APPEND_ONLY`), carry the owner column o
 mirror, and get the same row-level security policy as that model (`apps/core/rls.py`) — history
 is tenant data.
 
+## Reading a version back
+
+`obj.history()` (`apps/core/models.py::VersionedModel`) hands those rows over as `Version`
+objects, oldest first, and `to_object()` turns one back into the type it is a version *of*:
+
+    document.history()[0].to_object()   # a Document, as it was created — typed, unsaved
+
+That is the only interface application code needs; the generated event model stays an
+implementation detail of this module. A version also knows the lineage around it —
+`version.sources()` / `version.derived()`, and `is_current()` for "has this been superseded"
+(`apps/core/lineage.py`).
+
 ## Schema evolution
 
 `SCHEMA_TAG` names the tracked field set. Bump it in the same change that adds or removes a
@@ -67,8 +79,9 @@ import json
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast, overload
 
 import pghistory
 import pghistory.models
@@ -76,12 +89,15 @@ import pgtrigger
 from django.conf import settings
 from django.db import models
 from django.db.models import Func
+from django.db.models.fields.files import FieldFile
 
 from config.env import BASE_DIR
 
 if TYPE_CHECKING:
     from django.http import HttpRequest
     from django.http.response import HttpResponseBase
+
+    from apps.core.models import VersionedModel
 
 # The tracked field set this code writes. Bump on every change to a tracked model's fields.
 SCHEMA_TAG = "2026-09"
@@ -97,6 +113,9 @@ HISTORY_EXEMPT = {
     "accounts.ApiToken",  # ditto — a credential's history is the credential.
     # Append-only and immutable by construction; it *is* the lineage graph, not a subject of it.
     "core.Lineage",
+    # An operational log of what was run (apps/core/usage.py). Rows are written once and never
+    # edited, so a version chain over them would only ever mirror the insert.
+    "core.CommandRun",
 }
 
 
@@ -211,6 +230,150 @@ def current_event(obj: models.Model) -> EventRow:
     if event is None:
         raise MissingVersion(f"{obj} has no version row; is its capture trigger installed?")
     return as_event_row(event)
+
+
+@dataclass(frozen=True, repr=False)
+class Version[ModelT: models.Model]:
+    """One past state of one row, wearing the type of the model it is a state of.
+
+    An event row is a generated class nobody imports and mypy cannot see (`EventRow`). This is
+    the way back: `to_object()` rebuilds the tracked model's own type from it, so reading an old
+    state needs no knowledge of the event table at all.
+
+        first = document.history()[0]      # Version[Document]
+        first.version, first.at            # 1, when it was written
+        first.to_object().name             # a Document — typed, and as it was created
+
+    The event row stays reachable as `.event` for the pghistory columns (`pgh_label`,
+    `pgh_context_id`, `pgh_archive`) and for the mirrored fields as they were stored.
+    """
+
+    #: The tracked model — `Document`, never `DocumentEvent`.
+    model: type[ModelT]
+    #: The row this version was read from.
+    event: EventRow
+
+    @property
+    def version(self) -> int:
+        """Position in the version chain; 1 is the insert (`VersionedModel.version`)."""
+        return self.event.version
+
+    @property
+    def at(self) -> datetime:
+        """When this version was written. Two versions of one transaction share the value."""
+        return self.event.pgh_created_at
+
+    @property
+    def deleted(self) -> bool:
+        """The row was soft-deleted as of this version."""
+        return self.event.deleted_at is not None
+
+    @property
+    def object_id(self) -> uuid.UUID:
+        """The row this is a version of — how to reach the live one."""
+        return self.event.pgh_obj_id
+
+    def is_current(self) -> bool:
+        """Is this still the row's latest version, or has it moved on since?
+
+        The second case is exactly what makes a lineage edge stale, so a source version that
+        answers False is a derived row that would come out differently if it were rebuilt
+        (`lineage.stale_derivations`). One query; reads through `_base_manager`, so a
+        soft-deleted row still answers.
+        """
+        latest = (
+            self.model._base_manager.filter(pk=self.object_id)
+            .values_list("version", flat=True)
+            .first()
+        )
+        return bool(latest == self.version)
+
+    @overload
+    def sources(self) -> list[Version[VersionedModel]]: ...
+
+    @overload
+    def sources[SourceT: VersionedModel](self, model: type[SourceT]) -> list[Version[SourceT]]: ...
+
+    def sources(self, model: type[VersionedModel] | None = None) -> list[Version[Any]]:
+        """The versions this one was built from (`apps/core/lineage.py`).
+
+        What *this* version consumed, which is where an edge is recorded;
+        `VersionedModel.sources()` asks the wider "what was this row ever built from", and
+        documents `model`.
+        """
+        from apps.core import lineage  # noqa: PLC0415 - lineage is layered on top of this module
+
+        # Oldest edge first, like everywhere else here; `sources_of_version` keeps
+        # `Lineage.Meta.ordering` (newest first), which the revision page wants.
+        edges = lineage.sources_of_version(self.event).order_by("created", "id")
+        found = lineage.source_versions(edges)
+        return found if model is None else [v for v in found if issubclass(v.model, model)]
+
+    @overload
+    def derived(self) -> list[Version[VersionedModel]]: ...
+
+    @overload
+    def derived[TargetT: VersionedModel](self, model: type[TargetT]) -> list[Version[TargetT]]: ...
+
+    def derived(self, model: type[VersionedModel] | None = None) -> list[Version[Any]]:
+        """The versions of other rows that were built from this exact version."""
+        from apps.core import lineage  # noqa: PLC0415 - lineage is layered on top of this module
+
+        found = lineage.target_versions(lineage.derived_from_version(self.event))
+        return found if model is None else [v for v in found if issubclass(v.model, model)]
+
+    def untracked_fields(self) -> frozenset[str]:
+        """Fields `to_object()` cannot speak for at this version.
+
+        A field added later exists on the event table for every row, holding whatever the
+        column was backfilled with — presenting that as the value the object had would be a
+        lie (see "Schema evolution" and `apps/core/revisions.py`). A version older than the
+        schema log itself can vouch for nothing, so every field is named.
+        """
+        current = frozenset(field.name for field in self.model._meta.concrete_fields)
+        tracked_then = fields_at(self.event.pgh_schema, self.model._meta.label)
+        return current if tracked_then is None else current - tracked_then
+
+    def to_object(self) -> ModelT:
+        """The row as it stood at this version, as an unsaved instance of `model`.
+
+        Detached from the database on purpose: this is a past state, and the live row has
+        usually moved on. Saving it back is a restore and a perfectly normal write — the
+        `bump_version` trigger gives it the *next* version number rather than resurrecting the
+        old one, and the event table gains a row saying the restore happened.
+        """
+        row = cast(models.Model, self.event)
+        values: dict[str, Any] = {}
+        for field in self.model._meta.concrete_fields:
+            if not hasattr(row, field.attname):
+                continue  # dropped from tracking; the old value is in `pgh_archive`
+            value = getattr(row, field.attname)
+            # A FileField hands out a FieldFile bound to the *event* model's field. The stored
+            # key is what the tracked model's own descriptor wants.
+            values[field.attname] = value.name if isinstance(value, FieldFile) else value
+        obj = self.model(**values)
+        # Not a new row: a `save()` must UPDATE the row this version belongs to. Left as
+        # "adding", Django would force an INSERT (the pk has a database default) and the
+        # restore would fail on a duplicate key.
+        obj._state.adding = False
+        return obj
+
+    def __repr__(self) -> str:
+        # An event row mirrors `LABEL_FIELDS` but cannot inherit `VersionedModel.__str__`, so
+        # naming the row is spelled out here. Reading the row itself, not `to_object()`: a
+        # `__repr__` that builds a model instance is a `__repr__` that can raise.
+        from apps.core.models import LABEL_FIELDS  # noqa: PLC0415 - models is layered on this one
+
+        values = (getattr(self.event, field, None) for field in LABEL_FIELDS)
+        name = next((str(value) for value in values if value), "")
+        shown = f' "{name}"' if name else ""
+        return f"<Version {self.model.__name__}{shown} v{self.version} {self.at:%Y-%m-%d %H:%M}>"
+
+
+def versions[ModelT: models.Model](model: type[ModelT], obj_pk: uuid.UUID) -> list[Version[ModelT]]:
+    """Every version of one row, oldest first. `VersionedModel.history()` is the front door."""
+    rows = event_rows(model, obj_pk).order_by("version")
+    return [Version(model, as_event_row(row)) for row in rows]
 
 
 def tracked_models() -> list[tuple[type[models.Model], type[pghistory.models.Event]]]:

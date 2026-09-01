@@ -102,6 +102,18 @@ def isolated_tables() -> list[str]:
     return [model._meta.db_table for model in isolated_models()]
 
 
+def writable_tables() -> list[str]:
+    """Every table the runtime role has to be able to write at all.
+
+    The policies decide *which rows* `app_user` sees; the grants decide whether it may touch the
+    table in the first place, and a table created later starts with none — the initial
+    `GRANT ... ON ALL TABLES` in `docker/postgres/10-roles.sh` is a snapshot of what existed
+    then. Checking the whole registry, not just the isolated tables, is what makes `sync()`
+    notice a new shared one (`core_commandrun` was the case that found this).
+    """
+    return sorted({model._meta.db_table for model in apps.get_models() if not model._meta.abstract})
+
+
 def expected_expression() -> str:
     """The policy expression as Postgres renders it back (`pg_get_expr`).
 
@@ -206,7 +218,10 @@ def sync(*, tables: list[str] | None = None) -> list[str]:
                     _CREATE.format(policy=POLICY, table=quote(table), role=APP_ROLE, guc=guc_name())
                 )
             changed.append(table)
-        if any(not s.app_role_can_write for s in state.values() if s.exists):
+        # Grants are per table, and `_GRANTS` covers all of them at once, so the question is
+        # only whether *any* table is missing them — including tables with no policy, which
+        # `state` does not cover. A SELECT, so a healthy database still sees no DDL.
+        if any(not s.app_role_can_write for s in _states(writable_tables()).values() if s.exists):
             for grant in _GRANTS:
                 cursor.execute(grant.format(roles=f"{APP_ROLE}, {ADMIN_ROLE}"))
     return changed

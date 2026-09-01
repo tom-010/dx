@@ -19,8 +19,9 @@ export const Route = createFileRoute("/notes")({
   component: NotesPage,
 });
 
+// text-base below md: iOS zooms the whole page when a focused field is under 16px.
 const TEXTAREA_CLASS =
-  "w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 font-mono text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30";
+  "w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 font-mono text-base outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30";
 
 function NotesPage(): JSX.Element {
   const queryClient = useQueryClient();
@@ -62,7 +63,7 @@ function NotesPage(): JSX.Element {
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6 md:gap-8">
       <div className="flex flex-col gap-1">
         <h1 className="font-semibold text-2xl">Notes</h1>
         <p className="text-muted-foreground text-sm">
@@ -84,8 +85,8 @@ function NotesPage(): JSX.Element {
       )}
 
       {selected.length > 0 && (
-        <div className="flex flex-wrap items-end gap-4 rounded-lg border border-dashed p-4">
-          <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-end gap-3 rounded-lg border border-dashed p-4 sm:gap-4">
+          <div className="flex w-full flex-col gap-2 sm:w-auto">
             <Label htmlFor="merge-title">
               Merge {selected.length} selected note
               {selected.length === 1 ? "" : "s"} into
@@ -202,22 +203,23 @@ function NoteCard({
 }: NoteCardProps): JSX.Element {
   return (
     <article className="flex flex-col gap-3 rounded-lg border p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 items-center gap-3">
           <input
             type="checkbox"
             checked={selected}
             onChange={onToggle}
             aria-label={`Select ${note.title} for merging`}
-            className="size-4"
+            /* size-5 below md: a checkbox is the smallest thing on the page to hit. */
+            className="size-5 shrink-0 md:size-4"
           />
-          <h2 className="font-medium">{note.title}</h2>
-          <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground text-xs">
+          <h2 className="min-w-0 break-words font-medium">{note.title}</h2>
+          <span className="shrink-0 rounded bg-muted px-2 py-0.5 text-muted-foreground text-xs">
             v{note.version}
           </span>
         </div>
         <time
-          className="text-muted-foreground text-sm"
+          className="text-muted-foreground text-xs sm:text-sm"
           dateTime={note.modified}
         >
           {new Date(note.modified).toLocaleString()}

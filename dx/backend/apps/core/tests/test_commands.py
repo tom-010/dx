@@ -1,3 +1,4 @@
+import asyncio
 import os
 import signal
 import subprocess
@@ -10,13 +11,24 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError
 from click.testing import CliRunner
+from django.apps import apps as django_apps
+from django.db import DatabaseError
 from pytest_django.fixtures import Settings
+from textual.widgets import Input, Static
 from watchfiles import Change
 
 from apps.accounts.models import User
-from apps.core import worker_reload
+from apps.core import cli, usage, worker_reload
 from apps.core.history import hard_delete
-from apps.core.management.commands import backup, ensure_bucket, hello_world, restore
+from apps.core.management.commands import (
+    backup,
+    deleteapp,
+    ensure_bucket,
+    hello_world,
+    newcommand,
+    restore,
+    tui,
+)
 from apps.core.storage import BucketStatus
 from apps.core.storage import ensure_bucket as ensure_bucket_fn
 from apps.core.testing import acting_as
@@ -252,3 +264,352 @@ def test_run_with_reload_stops_the_worker_on_sigterm() -> None:
     assert [p.returncode for p in workers] == [-signal.SIGTERM, -signal.SIGTERM]
     assert messages[-1] == "stopping worker"
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL  # handler restored
+
+
+# --- The command index and `manage.py tui` ----------------------------------------------------
+
+
+def test_every_app_can_hold_commands() -> None:
+    """Commands are how this project is operated, so every app has the directory ready — and
+    `manage.py newapp` scaffolds it (apps/core/scaffold.py)."""
+    missing = [
+        app.name
+        for app in django_apps.get_app_configs()
+        if app.name.startswith("apps.")
+        and not (Path(app.path) / "management" / "commands" / "__init__.py").exists()
+    ]
+    assert missing == [], f"add management/commands/__init__.py to: {missing}"
+
+
+def test_command_index_puts_this_project_first() -> None:
+    index = cli.command_index()
+    names = [command.name for command in index]
+    assert {"hello_world", "tui", "migrate"} <= set(names)
+
+    groups = [command.group for command in index]
+    assert groups == sorted(groups, key=cli.GROUPS.index)  # project, then django, then the rest
+
+    hello = next(command for command in index if command.name == "hello_world")
+    assert (hello.app, hello.group, hello.loaded) == ("apps.core", "project", True)
+    assert hello.help.startswith("Greet NAME")
+
+
+def test_a_command_that_does_not_import_is_listed_with_its_error() -> None:
+    """The one tool that can tell you why a command is broken must not be the one that hides
+    it: an unimportable module is a row, not a crash."""
+    broken = cli.describe("no_such_command", "apps.core")
+
+    assert broken.loaded is False
+    assert "ModuleNotFoundError" in broken.help
+
+
+def test_fuzzy_score_ranks_an_abbreviation_at_the_top() -> None:
+    assert cli.fuzzy_score("", "anything") == 0
+    assert cli.fuzzy_score("zzz", "hello_world") is None
+
+    ranked = sorted(
+        ["shell_as", "showmigrations", "hello_world"],
+        key=lambda name: -(cli.fuzzy_score("hw", name) or 0),
+    )
+    assert ranked[0] == "hello_world"
+
+
+def test_search_matches_names_loosely_and_descriptions_tightly() -> None:
+    commands = [
+        cli.CommandInfo("rls_sync", "apps.core", "Create/refresh the RLS policies."),
+        cli.CommandInfo("hello_world", "apps.core", "Greet NAME and show a few facts."),
+    ]
+
+    assert [c.name for c in cli.search(commands, "rls")] == ["rls_sync"]
+    assert cli.search(commands, "") == commands
+
+    # The descriptions are searched only when asked (ctrl+f in the UI, -d on the command line).
+    assert cli.search(commands, "polic") == []
+    assert [c.name for c in cli.search(commands, "polic", descriptions=True)] == ["rls_sync"]
+    # ...and then still tightly: six letters scattered across a sentence are not a match, or
+    # every query would match everything.
+    assert cli.search(commands, "tenant", descriptions=True) == []
+
+
+def test_group_by_app_keeps_the_order_it_is_given() -> None:
+    """The list is grouped under the app that ships each command, best-matching group first."""
+    commands = [
+        cli.CommandInfo("migrate", "django.core", "..."),
+        cli.CommandInfo("backup", "apps.core", "..."),
+        cli.CommandInfo("check", "django.core", "..."),
+    ]
+
+    assert [(app, [c.name for c in group]) for app, group in cli.group_by_app(commands)] == [
+        ("django.core", ["migrate", "check"]),
+        ("apps.core", ["backup"]),
+    ]
+
+
+def test_tui_lists_every_command() -> None:
+    result = runner.invoke(tui.command, ["--list"])
+
+    assert result.exit_code == 0
+    assert "project commands" in result.output
+    assert "hello_world" in result.output
+    assert "migrate" in result.output
+
+
+def test_tui_filters_by_query() -> None:
+    result = runner.invoke(tui.command, ["--list", "tenant"])
+
+    assert result.exit_code == 0
+    assert "pull_tenant" in result.output
+    assert "hello_world" not in result.output
+
+    assert "no command matches" in runner.invoke(tui.command, ["--list", "zzzz"]).output
+
+
+def test_full_help_is_the_commands_own_help() -> None:
+    """Captured from the command itself, so it cannot drift from the real options."""
+    text = cli.full_help("hello_world")
+
+    assert "Usage: manage.py hello_world" in text
+    assert "--shout" in text
+
+
+def test_the_query_is_also_the_command_line() -> None:
+    """Arguments start only once the first word names a command; until then every word is
+    part of the search, so a two-word query narrows the list instead of breaking it."""
+    names = {"hello_world", "shell"}
+
+    assert tui.split_query("hello_world dx --shout", names) == ("hello_world", ["dx", "--shout"])
+    assert tui.split_query("  hello_world  ", names) == ("hello_world", [])
+    assert tui.split_query("del ten", names) == ("del ten", [])
+    assert tui.split_query("", names) == ("", [])
+    assert tui.split_query('hello_world "unbalanced', names) == ("hello_world", [])  # still typing
+
+
+def test_search_narrows_as_you_add_words() -> None:
+    """Fuzzy in fzf's sense: every term has to match, in any order."""
+    index = cli.command_index()
+
+    assert [c.name for c in cli.search(index, "del ten")][0] == "delete_tenant"
+    assert [c.name for c in cli.search(index, "ten del")][0] == "delete_tenant"
+    assert cli.search(index, "del ten zzz") == []
+
+
+def test_running_a_command_starts_a_child_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In this process it would raise `SynchronousOnlyOperation`: the explorer is an event loop
+    and Django refuses synchronous database access from one."""
+    started: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        started.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert tui.run_command("migrate", ["--noinput"]) == 0
+    assert started == [[sys.executable, str(tui.MANAGE), "migrate", "--noinput"]]
+
+
+def test_the_explorer_filters_as_you_type() -> None:
+    """The screen itself, driven by keystrokes (textual's own test harness)."""
+
+    async def scenario() -> None:
+        app = tui.Explorer(cli.command_index())
+        async with app.run_test() as pilot:
+            await pilot.press(*"hw")
+
+            highlighted = app.highlighted_command()
+            assert highlighted is not None and highlighted.name == "hello_world"
+            # The pane shows the command's real --help, not our one-line summary.
+            assert "--shout" in str(app.query_one("#detail", Static).content)
+
+            await pilot.press("down")
+            assert app.highlighted_command() != highlighted
+
+    asyncio.run(scenario())
+
+
+def test_the_explorer_can_widen_the_search_to_descriptions() -> None:
+    """ctrl+f: names only by default, descriptions too on request."""
+
+    async def scenario() -> None:
+        app = tui.Explorer(cli.command_index())
+        async with app.run_test() as pilot:
+            await pilot.press(*"polic")
+            assert app.highlighted_command() is None  # no command is *called* that
+
+            await pilot.press("ctrl+f")
+
+            found = app.highlighted_command()
+            assert found is not None and found.name == "rls_sync"
+
+    asyncio.run(scenario())
+
+
+def test_the_explorer_groups_the_list_by_app() -> None:
+    async def scenario() -> None:
+        app = tui.Explorer(cli.command_index())
+        async with app.run_test():
+            # A heading is a row without a command; the first selectable row sits under one.
+            assert app.rows[0] is None
+            assert app.highlighted_command() is not None
+
+    asyncio.run(scenario())
+
+
+def test_enter_builds_the_command_line_before_running_it() -> None:
+    """`manage.py newapp` needs a NAME: the first enter picks the command, the arguments are
+    typed after it, and the bottom line always shows exactly what will run."""
+
+    async def scenario() -> None:
+        app = tui.Explorer(cli.command_index())
+        async with app.run_test() as pilot:
+            await pilot.press(*"newapp")
+            assert not app.armed()
+
+            await pilot.press("enter")  # picks it — does not run it
+
+            assert app.query_one("#query", Input).value == "newapp "
+            assert app.armed()
+
+            await pilot.press(*"reports")
+
+            assert "manage.py newapp reports" in str(app.query_one("#runline", Static).content)
+
+            await pilot.press("escape")  # back to searching, not out of the app
+            assert app.query_one("#query", Input).value == ""
+            assert app.is_running
+
+    asyncio.run(scenario())
+
+
+def test_running_a_command_leaves_the_explorer() -> None:
+    """The app hands the line back instead of running it: the command then has the terminal to
+    itself, and what it printed is still on the screen afterwards."""
+
+    async def scenario() -> None:
+        app = tui.Explorer(cli.command_index())
+        async with app.run_test() as pilot:
+            await pilot.press(*"newapp")
+            await pilot.press("enter")  # picks
+            await pilot.press(*"reports")
+            await pilot.press("enter")  # runs — by leaving
+
+        assert app.return_value == ("newapp", ["reports"])
+
+    asyncio.run(scenario())
+
+
+def test_the_explorer_says_when_nothing_matches() -> None:
+    async def scenario() -> None:
+        app = tui.Explorer(cli.command_index())
+        async with app.run_test() as pilot:
+            await pilot.press(*"zzzz")
+
+            assert app.highlighted_command() is None
+            assert "no command matches" in str(app.query_one("#detail", Static).content)
+
+    asyncio.run(scenario())
+
+
+def test_newcommand_refuses_an_app_that_does_not_exist() -> None:
+    """The app is asked for when `--app` is left out; a wrong one is a usage error, not a file
+    written somewhere surprising."""
+    result = runner.invoke(newcommand.command, ["purge_old", "--app", "nope"])
+
+    assert result.exit_code == 2
+    assert "unknown app" in result.output
+    assert "core" in result.output  # ...and it says which apps there are
+
+
+# --- The usage log (apps/core/usage.py) --------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_every_invocation_is_recorded() -> None:
+    """`manage.py` records the run before the command starts (see manage.py)."""
+    usage.record_run(["pull_tenant", "alice", "--no-scrub"])
+
+    run = usage.CommandRun.objects.get()
+    assert (run.name, run.arguments) == ("pull_tenant", "alice --no-scrub")
+    assert str(run) == "manage.py pull_tenant alice --no-scrub"
+
+
+@pytest.mark.django_db
+def test_the_explorer_itself_is_not_recorded() -> None:
+    """It reads this log; writing to it would rearrange the list it is showing you."""
+    usage.record_run(["tui", "backup"])
+    usage.record_run([])  # bare `manage.py`
+    usage.record_run(["--version"])
+
+    assert usage.CommandRun.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_recording_a_run_never_breaks_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No table yet (the first `migrate`), no database at all — the command still runs."""
+
+    def boom(**kwargs: object) -> None:
+        raise DatabaseError("no such table")
+
+    monkeypatch.setattr(usage.CommandRun.objects, "create", boom)
+
+    usage.record_run(["migrate"])  # does not raise
+
+
+@pytest.mark.django_db
+def test_recent_runs_names_each_command_once_newest_first() -> None:
+    for argv in (["backup"], ["hello_world"], ["backup", "--list"]):
+        usage.record_run(argv)
+
+    assert usage.recent_runs() == ["backup", "hello_world"]
+    assert usage.recent_runs(limit=1) == ["backup"]
+
+
+def test_search_prefers_the_command_you_ran_last() -> None:
+    """Recency breaks ties: two equally good matches, the one you used last comes first."""
+    commands = [
+        cli.CommandInfo("backup", "apps.core", "..."),
+        cli.CommandInfo("backend", "apps.core", "..."),
+    ]
+
+    assert [c.name for c in cli.search(commands, "back")] == ["backup", "backend"]
+    assert [c.name for c in cli.search(commands, "back", recent=["backend"])] == [
+        "backend",
+        "backup",
+    ]
+
+
+def test_the_explorer_leads_with_what_you_ran_last() -> None:
+    async def scenario() -> None:
+        app = tui.Explorer(cli.command_index(), recent=["migrate"])
+        async with app.run_test() as pilot:
+            assert app.rows[0] is None  # the "recently used" heading
+            first = app.rows[1]
+            assert first is not None and first.name == "migrate"
+
+            # Once you are searching, the ranking takes over and the group is gone.
+            await pilot.press(*"backup")
+            assert app.rows[0] is None
+            second = app.rows[1]
+            assert second is not None and second.name == "backup"
+
+    asyncio.run(scenario())
+
+
+def test_tui_takes_a_multi_word_query() -> None:
+    result = runner.invoke(tui.command, ["--list", "delete", "tenant"])
+
+    assert result.exit_code == 0
+    assert "delete_tenant" in result.output
+
+
+def test_deleteapp_refuses_infrastructure_and_unknown_apps() -> None:
+    """The two mistakes worth making impossible: `deleteapp core`, and a typo that would have
+    matched nothing but still unregistered something."""
+    infrastructure = runner.invoke(deleteapp.command, ["core"])
+    unknown = runner.invoke(deleteapp.command, ["nope"])
+
+    assert infrastructure.exit_code == 1
+    assert "not a feature app" in infrastructure.output
+    assert unknown.exit_code == 1
+    assert "no app named apps.nope" in unknown.output
+    assert "datasets" in unknown.output  # ...and it says which apps there are

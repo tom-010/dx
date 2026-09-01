@@ -21,12 +21,14 @@ function HistoryPage(): JSX.Element {
   const history = useGetHistory(resource, objectId);
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6 md:gap-8">
       <div className="flex flex-col gap-1">
         <h1 className="font-semibold text-2xl">
           History{history.data ? ` · ${history.data.model}` : ""}
         </h1>
-        <p className="font-mono text-muted-foreground text-xs">{objectId}</p>
+        <p className="break-all font-mono text-muted-foreground text-xs">
+          {objectId}
+        </p>
         {history.data && (
           <p className="text-muted-foreground text-sm">
             Currently at version {history.data.current_version}. Every write is
@@ -67,7 +69,7 @@ function RevisionGroupCard({
   group: RevisionGroupOut;
 }): JSX.Element {
   return (
-    <li className="flex flex-col gap-3 rounded-lg border p-4">
+    <li className="flex flex-col gap-3 rounded-lg border p-3 sm:p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="font-medium">
           {SOURCE_LABEL[group.source] ?? group.source}
@@ -92,7 +94,7 @@ function childAction(revision: RevisionOut): string {
 
 function Revision({ revision }: { revision: RevisionOut }): JSX.Element {
   return (
-    <div className="flex flex-col gap-2 border-l-2 pl-4">
+    <div className="flex flex-col gap-2 border-l-2 pl-3 sm:pl-4">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="font-medium">
           {revision.model} v{revision.version}
@@ -178,11 +180,11 @@ function Revision({ revision }: { revision: RevisionOut }): JSX.Element {
 
 function Change({ change }: { change: ChangeOut }): JSX.Element {
   return (
-    <div className="grid grid-cols-[10rem_1fr] items-baseline gap-2">
+    <div className="grid items-baseline gap-x-2 sm:grid-cols-[10rem_1fr]">
       <dt className="truncate font-mono text-muted-foreground text-xs">
         {change.field}
       </dt>
-      <dd className="flex flex-wrap items-baseline gap-2">
+      <dd className="flex flex-wrap items-baseline gap-2 break-words">
         {change.old !== null && change.old !== "" && (
           <span className="text-muted-foreground line-through">
             {change.old}

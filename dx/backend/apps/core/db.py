@@ -34,7 +34,7 @@ from django.db import DatabaseError, connection, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.backends.signals import connection_created
 from django.dispatch import receiver
-from django_scopes import scope
+from django_scopes import scope, scopes_disabled
 
 current_user_id: ContextVar[uuid.UUID | None] = ContextVar("current_user_id", default=None)
 
@@ -87,6 +87,29 @@ def tenant_context(user_id: uuid.UUID) -> Iterator[None]:
     """Both enforcement layers for one transaction: the database variable (RLS) and the ORM
     scope (`OwnedManager`). The one thing requests, tasks and tests wrap their work in."""
     with tenant_db_context(user_id), scope(user=user_id):
+        yield
+
+
+@contextmanager
+def all_tenants() -> Iterator[None]:
+    """No tenant filtering: owned models are read across every tenant. **The default for
+    management commands** — `.claude/rules/management-commands.md`.
+
+        with all_tenants():
+            Dataset.objects.count()      # everyone's, not "no tenant is active" → ScopeError
+
+    A command is a database task — a report, a backfill, a cleanup — not a request on behalf of
+    one user, so the ORM scope that protects request code is only in the way here: without a
+    scope it *raises* rather than filtering. A command that does act for one user pins them
+    instead (`pin_session_tenant(user.pk)`, as `shell_as` and `load_tenant` do).
+
+    **This lifts the ORM scope, not row-level security.** The database still shows only the
+    tenant in `app.user_id` — none, in a command — so a command that reads owned rows also needs
+    a connection the policies do not apply to: `DB_ROLE=migrator manage.py …`. Say so out loud
+    with `apps.core.rls.require_cross_tenant_access()`, which fails with that instruction
+    instead of quietly returning nothing.
+    """
+    with scopes_disabled():
         yield
 
 

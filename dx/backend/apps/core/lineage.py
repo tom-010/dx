@@ -9,14 +9,17 @@ point of pointing at an event row (`pgh_id`, `apps/core/history.py`) instead of 
         summary = create_summary(user, source=dataset)
         record_derivation(summary, sources=[dataset])
 
-    # what did this summary actually consume?
-    for edge in sources_of(summary):
-        edge.resolve_source().name        # the source's name as it stood then
+    # What did this summary actually consume? `VersionedModel.sources()` is the front door:
+    # it hands back `history.Version` objects, so a source wears the type of the model it is a
+    # version of instead of being an untyped event row. Naming that model types the call.
+    summary.sources(Dataset)[0].to_object().name   # the source's name as it stood then
+    summary.sources(Dataset)[0].is_current()       # False once the dataset has moved on
+    dataset.derived(Summary)                       # the same edges, read the other way
 
-    # everything ever derived from this dataset, and everything derived from a version of it
-    # that has since been superseded — the query the denormalised columns exist for
-    derived_from(dataset)
-    stale_derivations(dataset)
+    # The edges themselves — what the denormalised columns are for
+    sources_of(summary)         # feeding the version `summary` is at right now
+    derived_from(dataset)       # everything ever derived from any version of it
+    stale_derivations(dataset)  # ...and what would come out differently if rebuilt now
 
 `Lineage` is deliberately **not** a `BaseModel`: it has no version chain of its own, it is
 append-only (a graph whose nodes can be edited is not a graph), and it is never soft-deleted.
@@ -36,7 +39,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pgtrigger
 from django.contrib.contenttypes.models import ContentType
@@ -45,7 +48,14 @@ from django.db.models import Func
 from django.db.models.functions import Now
 
 from apps.core.db import NoTenantContext, current_user_id
-from apps.core.history import EventRow, NotTracked, as_event_row, current_event, event_model_for
+from apps.core.history import (
+    EventRow,
+    NotTracked,
+    Version,
+    as_event_row,
+    current_event,
+    event_model_for,
+)
 
 if TYPE_CHECKING:
     from apps.core.models import VersionedModel
@@ -176,6 +186,78 @@ def sources_of_version(target_event: EventRow) -> models.QuerySet[Lineage]:
 def derived_from(source: VersionedModel) -> models.QuerySet[Lineage]:
     """Everything ever derived from any version of `source`."""
     return Lineage.objects.filter(source_obj_id=source.pk)
+
+
+# --- The two ends of an edge, as versions ------------------------------------------------------
+#
+# `resolve_source()` hands back an event row, which is a generated class with no type. These
+# return `history.Version` instead, so the far end of an edge wears the type of the model it is
+# a version of: `dataset.sources()[0].to_object()` is a `Document`.
+
+
+def all_sources_of(target: VersionedModel) -> models.QuerySet[Lineage]:
+    """Every edge feeding *any* version of `target` — everything it was ever built from.
+
+    `sources_of` asks the narrower question: what the version `target` is at *right now* was
+    built from. An edge names the version that consumed the source, so one later edit to
+    `target` empties that set — which is what a revision page wants (the edge belongs on the
+    revision it was recorded for) and never what "where did this come from" wants.
+    """
+    if event_model_for(type(target)) is None:
+        raise NotTracked(
+            f"{type(target).__name__} is not versioned, so it has no lineage. Decorate it with "
+            "@tracked (apps/core/history.py)."
+        )
+    return Lineage.objects.filter(
+        target_pgh_id__in=_version_ids(type(target), {target.pk})
+    ).order_by("created", "id")
+
+
+def derived_from_version(source: EventRow) -> models.QuerySet[Lineage]:
+    """The edges that consumed exactly this version — `derived_from` spans all of them."""
+    return Lineage.objects.filter(source_pgh_id=source.pgh_id).order_by("created", "id")
+
+
+def source_versions(edges: Iterable[Lineage]) -> list[Version[VersionedModel]]:
+    """The source end of each edge, as a version of the model it belongs to."""
+    return _resolve_versions([(edge.source_type_id, edge.source_pgh_id) for edge in edges])
+
+
+def target_versions(edges: Iterable[Lineage]) -> list[Version[VersionedModel]]:
+    """The target end of each edge: the versions that were built from something."""
+    return _resolve_versions([(edge.target_type_id, edge.target_pgh_id) for edge in edges])
+
+
+def _resolve_versions(refs: list[tuple[int, uuid.UUID]]) -> list[Version[VersionedModel]]:
+    """`(content type of an event table, pgh_id)` pairs as versions, in order and without
+    repeats — one source version can feed several versions of the same target.
+
+    A row has a handful of edges, so this reads one at a time rather than grouping by table;
+    the grouped form (`_target_object_ids`) is for the graph walk, which does not.
+    """
+    seen: set[uuid.UUID] = set()
+    found = []
+    for type_id, pgh_id in refs:
+        if pgh_id in seen:
+            continue
+        seen.add(pgh_id)
+        # `get_for_id` is the cached lookup; `edge.source_type` would query per edge.
+        event_model = ContentType.objects.get_for_id(type_id).model_class()
+        if event_model is None:  # pragma: no cover - a content type without a model
+            continue
+        row = event_model._base_manager.filter(pgh_id=pgh_id).first()
+        if row is None:  # pragma: no cover - event rows are append-only and never deleted
+            continue
+        found.append(Version(_tracked_model(event_model), as_event_row(row)))
+    return found
+
+
+def _tracked_model(event_model: type[models.Model]) -> type[VersionedModel]:
+    """The model an event table mirrors — `Document`, not `DocumentEvent`."""
+    tracked = getattr(event_model, "pgh_tracked_model", None)
+    if tracked is None:  # pragma: no cover - pghistory sets this on every event model
+        raise LineageError(f"{event_model.__name__} does not name the model it tracks")
+    return cast("type[VersionedModel]", tracked)
 
 
 # --- The graph ----------------------------------------------------------------------------------

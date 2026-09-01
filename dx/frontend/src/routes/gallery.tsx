@@ -31,12 +31,12 @@ function GalleryPage(): JSX.Element {
   });
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6 md:gap-8">
       <h1 className="font-semibold text-2xl">Gallery</h1>
 
       <UploadForm
         title="Upload images and videos"
-        hint="Drop images or videos here or click to choose (multiple allowed)"
+        action="Choose images or videos"
         accept="image/*,video/*"
         onUpload={(files: File[]): void => upload.mutate({ data: { files } })}
         pending={upload.isPending}
@@ -109,7 +109,7 @@ function MediaGrid({
             className="flex flex-col gap-2 rounded-lg border p-2"
           >
             <MediaPreview item={item} />
-            <div className="flex items-start justify-between gap-2 text-sm">
+            <div className="flex flex-col gap-2 text-sm">
               <div className="min-w-0">
                 <p className="truncate font-medium" title={item.name}>
                   {item.name}
@@ -119,22 +119,24 @@ function MediaGrid({
                   {new Date(item.created).toLocaleDateString()}
                 </p>
               </div>
-              <Button asChild variant="ghost" size="sm">
-                <Link
-                  to="/history/$resource/$objectId"
-                  params={{ resource: "mediaitem", objectId: item.id }}
+              <div className="flex flex-wrap justify-end gap-1">
+                <Button asChild variant="ghost" size="sm">
+                  <Link
+                    to="/history/$resource/$objectId"
+                    params={{ resource: "mediaitem", objectId: item.id }}
+                  >
+                    History
+                  </Link>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(): void => onDelete(item.id)}
+                  disabled={deletingId === item.id}
                 >
-                  History
-                </Link>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={(): void => onDelete(item.id)}
-                disabled={deletingId === item.id}
-              >
-                {deletingId === item.id ? "Deleting..." : "Delete"}
-              </Button>
+                  {deletingId === item.id ? "Deleting..." : "Delete"}
+                </Button>
+              </div>
             </div>
           </li>
         ))}

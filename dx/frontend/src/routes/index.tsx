@@ -42,7 +42,7 @@ function HomePage(): JSX.Element {
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <pre className="rounded-md bg-muted p-3 text-sm">
+            <pre className="overflow-x-auto rounded-md bg-muted p-3 text-sm">
               {health.isPending && "Loading..."}
               {health.isError && `Error: ${errorMessage(health.error)}`}
               {health.isSuccess && JSON.stringify(health.data, null, 2)}
@@ -73,7 +73,10 @@ function HomePage(): JSX.Element {
             {readiness ? (
               <ul className="flex flex-col gap-1 text-sm">
                 {readiness.checks.map((check) => (
-                  <li key={check.name} className="flex items-baseline gap-2">
+                  <li
+                    key={check.name}
+                    className="flex flex-wrap items-baseline gap-x-2"
+                  >
                     <span
                       className={cn(
                         "font-mono",

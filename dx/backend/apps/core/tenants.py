@@ -9,10 +9,13 @@ delete (`apps/accounts/admin.py`) and points here instead.
 CLI: `manage.py delete_tenant <username>`. Export instead of erase: `manage.py pull_tenant`.
 """
 
+import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import structlog
-from django.core.files.storage import Storage
+from django.core.files.base import ContentFile
+from django.core.files.storage import Storage, default_storage
 from django.db import models, transaction
 from django_scopes import scopes_disabled
 
@@ -78,21 +81,11 @@ def delete_tenant(user: User) -> Erasure:
     rls.require_cross_tenant_access()
     username = user.get_username()
     rows: dict[str, int] = {}
-    # Keyed by storage key: the event tables mirror the FileField, so every version of a row
-    # names a file — usually the same one, but a replaced upload leaves an older key that only
-    # the history still points at, and that has to go too.
-    stored: dict[str, Storage] = {}
+    stored = tenant_files(user)
 
     with scopes_disabled():
         for model in rls.isolated_models():
-            owned = owned_rows(model, user)
-            rows[model._meta.label] = owned.count()
-            names = file_fields(model)
-            for instance in owned.iterator() if names else ():
-                for name in names:
-                    file = getattr(instance, name)
-                    if file and file.name:
-                        stored.setdefault(str(file.name), file.storage)
+            rows[model._meta.label] = owned_rows(model, user).count()
         with transaction.atomic(), hard_delete():
             for model in rls.isolated_models():
                 owned_rows(model, user).delete()
@@ -104,3 +97,93 @@ def delete_tenant(user: User) -> Erasure:
     erasure = Erasure(username=username, rows=rows, files=len(stored))
     log.info("tenant_erased", username=username, rows=erasure.total_rows, files=erasure.files)
     return erasure
+
+
+# --- The whole tenant as one file: rows plus the objects they point at ---------------------------
+#
+# `pull_tenant --with-files` / `load_tenant`. The fixture alone restores the rows; without the
+# files those rows name keys that are not in the bucket, which is a restore in name only.
+
+#: What a tenant archive holds.
+ARCHIVE_FIXTURE = "tenant.json"
+ARCHIVE_FILES = "files/"
+
+
+class TenantArchiveError(Exception):
+    """The archive cannot be read, or restoring it would not reproduce the tenant."""
+
+
+def tenant_files(user: User) -> dict[str, Storage]:
+    """Every stored file `user`'s rows point at, keyed by storage key.
+
+    The event tables mirror the `FileField`, so every *version* of a row names a file — usually
+    the same one, but a replaced upload leaves an older key that only the history still points
+    at. Erasure has to reclaim those, and an archive has to carry them, or restoring an old
+    version would resolve to nothing.
+    """
+    stored: dict[str, Storage] = {}
+    with scopes_disabled():
+        for model in rls.isolated_models():
+            names = file_fields(model)
+            for instance in owned_rows(model, user).iterator() if names else ():
+                for name in names:
+                    file = getattr(instance, name)
+                    if file and file.name:
+                        stored.setdefault(str(file.name), file.storage)
+    return stored
+
+
+def write_archive(path: Path, fixture: str, files: dict[str, Storage]) -> int:
+    """Write the fixture and every file it references into one zip; returns the file count.
+
+    A key the bucket no longer has is logged and skipped rather than fatal: object storage is
+    not part of the database transaction, so a gap is possible, and an archive of everything
+    else is still worth having.
+    """
+    written = 0
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(ARCHIVE_FIXTURE, fixture)
+        for key, storage in files.items():
+            try:
+                with storage.open(key) as stored:
+                    archive.writestr(ARCHIVE_FILES + key, stored.read())
+            except OSError, ValueError:
+                log.warning("tenant_archive_file_missing", key=key)
+                continue
+            written += 1
+    return written
+
+
+def unpack_archive(path: Path, into: Path) -> tuple[Path, int]:
+    """Restore an archive: files back to the keys they came from, fixture into `into`.
+
+    Keys are restored *exactly*, because the rows in the fixture name them: an existing object
+    is replaced rather than saved beside it as `…_a1b2c3.pdf`, which is what `Storage.save`
+    does with a name it already has. Everything goes back through the default storage, the one
+    every `FileField` in this project uses (`owned_upload_path`).
+    """
+    fixture = into / ARCHIVE_FIXTURE
+    restored = 0
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        if ARCHIVE_FIXTURE not in names:
+            raise TenantArchiveError(f"{path} is not a tenant archive: no {ARCHIVE_FIXTURE}")
+        fixture.write_bytes(archive.read(ARCHIVE_FIXTURE))
+        for name in names:
+            if not name.startswith(ARCHIVE_FILES) or name.endswith("/"):
+                continue
+            key = name[len(ARCHIVE_FILES) :]
+            # The archive is data, not instructions: a key from it must stay inside the store.
+            if not key or key.startswith("/") or ".." in Path(key).parts:
+                raise TenantArchiveError(f"refusing a key that leaves the store: {key!r}")
+            if default_storage.exists(key):
+                default_storage.delete(key)
+            saved = default_storage.save(key, ContentFile(archive.read(name)))
+            if saved != key:  # pragma: no cover - only if the key was taken again mid-restore
+                raise TenantArchiveError(
+                    f"storage renamed {key!r} to {saved!r}; the restored rows would point at "
+                    "a key that does not exist"
+                )
+            restored += 1
+    log.info("tenant_archive_unpacked", files=restored)
+    return fixture, restored

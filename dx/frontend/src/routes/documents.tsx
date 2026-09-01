@@ -51,7 +51,7 @@ function DocumentsPage(): JSX.Element {
   });
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6 md:gap-8">
       <h1 className="font-semibold text-2xl">Documents</h1>
 
       <UploadForm
@@ -124,6 +124,7 @@ type DocumentTableProps = {
   importingId: string | null;
 };
 
+/** Same shape rule as the dataset list: stacked below `lg`, a table from `lg` up. */
 function DocumentTable({
   documents,
   onDelete,
@@ -144,56 +145,67 @@ function DocumentTable({
       <TableHeader>
         <TableRow>
           <TableHead>Name</TableHead>
-          <TableHead>Type</TableHead>
-          <TableHead className="text-right">Size</TableHead>
-          <TableHead>Uploaded</TableHead>
-          <TableHead className="w-56" />
+          <TableHead className="hidden lg:table-cell">Type</TableHead>
+          <TableHead className="hidden text-right lg:table-cell">
+            Size
+          </TableHead>
+          <TableHead className="hidden lg:table-cell">Uploaded</TableHead>
+          <TableHead className="lg:w-56" />
         </TableRow>
       </TableHeader>
       <TableBody>
         {documents.map((document) => (
           <TableRow key={document.id}>
-            <TableCell className="font-medium">{document.name}</TableCell>
-            <TableCell className="text-muted-foreground">
+            <TableCell className="whitespace-normal break-all font-medium lg:whitespace-nowrap lg:break-normal">
+              {document.name}
+              <div className="mt-1 font-normal text-muted-foreground text-xs lg:hidden">
+                {formatBytes(document.size)}
+                {document.content_type && ` · ${document.content_type}`} ·{" "}
+                {new Date(document.created).toLocaleDateString()}
+              </div>
+            </TableCell>
+            <TableCell className="hidden text-muted-foreground lg:table-cell">
               {document.content_type || "—"}
             </TableCell>
-            <TableCell className="text-right tabular-nums">
+            <TableCell className="hidden text-right tabular-nums lg:table-cell">
               {formatBytes(document.size)}
             </TableCell>
-            <TableCell className="text-muted-foreground">
+            <TableCell className="hidden text-muted-foreground lg:table-cell">
               {new Date(document.created).toLocaleString()}
             </TableCell>
-            <TableCell className="text-right">
-              <Button variant="ghost" size="sm" asChild>
-                <a href={document.download_url} download={document.name}>
-                  Download
-                </a>
-              </Button>
-              <Button asChild variant="ghost" size="sm">
-                <Link
-                  to="/history/$resource/$objectId"
-                  params={{ resource: "document", objectId: document.id }}
+            <TableCell>
+              <div className="flex flex-wrap justify-end gap-1 lg:flex-nowrap">
+                <Button variant="ghost" size="sm" asChild>
+                  <a href={document.download_url} download={document.name}>
+                    Download
+                  </a>
+                </Button>
+                <Button asChild variant="ghost" size="sm">
+                  <Link
+                    to="/history/$resource/$objectId"
+                    params={{ resource: "document", objectId: document.id }}
+                  >
+                    History
+                  </Link>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(): void => onImport(document.id)}
+                  disabled={importingId === document.id}
+                  title="Create a dataset from this file"
                 >
-                  History
-                </Link>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={(): void => onImport(document.id)}
-                disabled={importingId === document.id}
-                title="Create a dataset from this file"
-              >
-                {importingId === document.id ? "Importing..." : "Import"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={(): void => onDelete(document.id)}
-                disabled={deletingId === document.id}
-              >
-                {deletingId === document.id ? "Deleting..." : "Delete"}
-              </Button>
+                  {importingId === document.id ? "Importing..." : "Import"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(): void => onDelete(document.id)}
+                  disabled={deletingId === document.id}
+                >
+                  {deletingId === document.id ? "Deleting..." : "Delete"}
+                </Button>
+              </div>
             </TableCell>
           </TableRow>
         ))}

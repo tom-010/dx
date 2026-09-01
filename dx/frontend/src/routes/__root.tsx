@@ -8,6 +8,14 @@ import {
   useLocation,
   useNavigate,
 } from "@tanstack/react-router";
+import {
+  FileText,
+  House,
+  Images,
+  ListChecks,
+  NotebookPen,
+  Table2,
+} from "lucide-react";
 import { type JSX, useEffect } from "react";
 import { logout as logoutRequest, useGetCurrentUser } from "@/api/auth/auth";
 import { Button } from "@/components/ui/button";
@@ -31,13 +39,15 @@ export const Route = createRootRoute({
   notFoundComponent: NotFound,
 });
 
+// The same six destinations twice over: a tab bar under the thumb on phones, a row of
+// links in the header from md up. The icon is only ever shown in the tab bar.
 const navItems = [
-  { to: "/", label: "Home", exact: true },
-  { to: "/datasets", label: "Datasets", exact: false },
-  { to: "/documents", label: "Documents", exact: false },
-  { to: "/gallery", label: "Gallery", exact: false },
-  { to: "/notes", label: "Notes", exact: false },
-  { to: "/tasks", label: "Tasks", exact: false },
+  { to: "/", label: "Home", exact: true, icon: House },
+  { to: "/datasets", label: "Datasets", exact: false, icon: Table2 },
+  { to: "/documents", label: "Documents", exact: false, icon: FileText },
+  { to: "/gallery", label: "Gallery", exact: false, icon: Images },
+  { to: "/notes", label: "Notes", exact: false, icon: NotebookPen },
+  { to: "/tasks", label: "Tasks", exact: false, icon: ListChecks },
 ] as const;
 
 function RootLayout(): JSX.Element {
@@ -55,7 +65,7 @@ function RootLayout(): JSX.Element {
 
   if (token === null) {
     return (
-      <main className="flex min-h-svh flex-col p-6">
+      <main className="flex min-h-svh flex-col px-4 pt-safe pb-safe md:p-6">
         <Outlet />
       </main>
     );
@@ -63,27 +73,59 @@ function RootLayout(): JSX.Element {
 
   return (
     <div className="flex min-h-svh flex-col">
-      <header className="border-b">
-        <nav className="mx-auto flex w-full max-w-5xl items-center gap-1 px-6 py-2">
-          <span className="mr-4 font-semibold">dx</span>
-          {navItems.map((item) => (
-            <Button key={item.to} variant="ghost" asChild>
+      {/* Sticky so the account controls stay reachable while a long list scrolls. */}
+      <header className="sticky top-0 z-40 border-b bg-background/90 pt-safe backdrop-blur">
+        <div className="mx-auto flex w-full max-w-5xl items-center gap-1 px-4 py-2 md:px-6">
+          <span className="font-semibold md:mr-4">dx</span>
+          <nav className="hidden items-center gap-1 md:flex">
+            {navItems.map((item) => (
+              <Button key={item.to} variant="ghost" asChild>
+                <Link
+                  to={item.to}
+                  activeOptions={{ exact: item.exact }}
+                  activeProps={{
+                    className: "bg-accent text-accent-foreground",
+                  }}
+                >
+                  {item.label}
+                </Link>
+              </Button>
+            ))}
+          </nav>
+          <UserMenu />
+        </div>
+      </header>
+      {/* The bottom padding clears the fixed tab bar; from md up there is none. */}
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 pt-6 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:px-6 md:py-8">
+        <Outlet />
+      </main>
+      <TabBar />
+    </div>
+  );
+}
+
+function TabBar(): JSX.Element {
+  return (
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t bg-background pb-safe md:hidden">
+      <ul className="grid grid-cols-6">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <li key={item.to}>
               <Link
                 to={item.to}
                 activeOptions={{ exact: item.exact }}
-                activeProps={{ className: "bg-accent text-accent-foreground" }}
+                activeProps={{ className: "text-foreground" }}
+                className="flex h-14 flex-col items-center justify-center gap-1 text-[0.625rem] text-muted-foreground"
               >
+                <Icon className="size-5" aria-hidden="true" />
                 {item.label}
               </Link>
-            </Button>
-          ))}
-          <UserMenu />
-        </nav>
-      </header>
-      <main className="mx-auto w-full max-w-5xl flex-1 p-6">
-        <Outlet />
-      </main>
-    </div>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
 
@@ -104,9 +146,9 @@ function UserMenu(): JSX.Element {
   }
 
   return (
-    <div className="ml-auto flex items-center gap-2">
+    <div className="ml-auto flex min-w-0 items-center gap-2">
       {me.data && (
-        <span className="text-muted-foreground text-sm">
+        <span className="truncate text-muted-foreground text-sm">
           {me.data.username}
         </span>
       )}

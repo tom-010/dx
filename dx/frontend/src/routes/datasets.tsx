@@ -57,7 +57,7 @@ function DatasetsPage(): JSX.Element {
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6 md:gap-8">
       <div className="flex items-center justify-between gap-4">
         <h1 className="font-semibold text-2xl">Datasets</h1>
         <Button
@@ -161,7 +161,7 @@ function CreateDatasetForm({
       className="flex flex-col gap-4 rounded-lg border p-4"
     >
       <h2 className="font-medium">New dataset</h2>
-      <div className="grid gap-4 sm:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <div className="flex flex-col gap-2">
           <Label htmlFor="dataset-name">Name</Label>
           <Input
@@ -219,8 +219,8 @@ function CreateDatasetForm({
           />
         </div>
       </div>
-      <div className="flex items-center gap-4">
-        <Button type="submit" disabled={pending}>
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-4">
+        <Button type="submit" disabled={pending} className="w-full sm:w-auto">
           {pending ? "Creating..." : "Create"}
         </Button>
         {validationError && (
@@ -240,6 +240,32 @@ type DatasetTableProps = {
   deletingId: string | null;
 };
 
+// `delimiter` is optional in the generated type (ninja ModelSchema gives fields with a
+// default `?`), so an absent one renders as nothing, exactly as before.
+function delimiterLabel(delimiter: string | undefined): string | undefined {
+  return delimiter === "\t" ? "tab" : delimiter;
+}
+
+function TagChips({ tags }: { tags: string[] }): JSX.Element {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className="rounded bg-muted px-2 py-0.5 text-muted-foreground text-xs"
+        >
+          {tag}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One breakpoint decides the whole shape: below `lg` a phone or a portrait tablet gets the
+ * name with everything else stacked under it, from `lg` up the full table. Two layouts of
+ * the same row, not two components — the columns are simply not rendered on a small screen.
+ */
 function DatasetTable({
   datasets,
   onDelete,
@@ -257,67 +283,75 @@ function DatasetTable({
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead className="w-24">ID</TableHead>
+          <TableHead className="hidden w-24 lg:table-cell">ID</TableHead>
           <TableHead>Name</TableHead>
-          <TableHead>Description</TableHead>
-          <TableHead className="text-right">Rows</TableHead>
-          <TableHead>Tags</TableHead>
-          <TableHead>Delimiter</TableHead>
-          <TableHead>Created</TableHead>
-          <TableHead className="w-24" />
+          <TableHead className="hidden lg:table-cell">Description</TableHead>
+          <TableHead className="hidden text-right lg:table-cell">
+            Rows
+          </TableHead>
+          <TableHead className="hidden lg:table-cell">Tags</TableHead>
+          <TableHead className="hidden lg:table-cell">Delimiter</TableHead>
+          <TableHead className="hidden lg:table-cell">Created</TableHead>
+          <TableHead />
         </TableRow>
       </TableHeader>
       <TableBody>
         {datasets.map((dataset) => (
           <TableRow key={dataset.id}>
             {/* UUIDv7: the first block is the timestamp, enough to tell rows apart. */}
-            <TableCell className="font-mono text-xs" title={dataset.id}>
+            <TableCell
+              className="hidden font-mono text-xs lg:table-cell"
+              title={dataset.id}
+            >
               {dataset.id.slice(0, 8)}
             </TableCell>
-            <TableCell className="font-medium">{dataset.name}</TableCell>
-            <TableCell className="text-muted-foreground">
-              {dataset.description}
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              {dataset.row_count.toLocaleString()}
-            </TableCell>
-            <TableCell>
-              <div className="flex flex-wrap gap-1">
-                {dataset.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="rounded bg-muted px-2 py-0.5 text-muted-foreground text-xs"
-                  >
-                    {tag}
-                  </span>
-                ))}
+            <TableCell className="whitespace-normal font-medium lg:whitespace-nowrap">
+              {dataset.name}
+              {/* Everything the small screen hides, restated under the name. */}
+              <div className="mt-1 flex flex-col gap-1 font-normal text-muted-foreground text-xs lg:hidden">
+                {dataset.description && <span>{dataset.description}</span>}
+                <span className="tabular-nums">
+                  {dataset.row_count.toLocaleString()} rows ·{" "}
+                  {delimiterLabel(dataset.options.delimiter)} ·{" "}
+                  {new Date(dataset.created).toLocaleDateString()}
+                </span>
+                {dataset.tags.length > 0 && <TagChips tags={dataset.tags} />}
               </div>
             </TableCell>
-            <TableCell className="font-mono text-muted-foreground">
-              {dataset.options.delimiter === "\t"
-                ? "tab"
-                : dataset.options.delimiter}
+            <TableCell className="hidden text-muted-foreground lg:table-cell">
+              {dataset.description}
             </TableCell>
-            <TableCell className="text-muted-foreground">
+            <TableCell className="hidden text-right tabular-nums lg:table-cell">
+              {dataset.row_count.toLocaleString()}
+            </TableCell>
+            <TableCell className="hidden lg:table-cell">
+              <TagChips tags={dataset.tags} />
+            </TableCell>
+            <TableCell className="hidden font-mono text-muted-foreground lg:table-cell">
+              {delimiterLabel(dataset.options.delimiter)}
+            </TableCell>
+            <TableCell className="hidden text-muted-foreground lg:table-cell">
               {new Date(dataset.created).toLocaleString()}
             </TableCell>
-            <TableCell className="text-right">
-              <Button asChild variant="ghost" size="sm">
-                <Link
-                  to="/history/$resource/$objectId"
-                  params={{ resource: "dataset", objectId: dataset.id }}
+            <TableCell>
+              <div className="flex flex-wrap justify-end gap-1 lg:flex-nowrap">
+                <Button asChild variant="ghost" size="sm">
+                  <Link
+                    to="/history/$resource/$objectId"
+                    params={{ resource: "dataset", objectId: dataset.id }}
+                  >
+                    History
+                  </Link>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(): void => onDelete(dataset.id)}
+                  disabled={deletingId === dataset.id}
                 >
-                  History
-                </Link>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={(): void => onDelete(dataset.id)}
-                disabled={deletingId === dataset.id}
-              >
-                {deletingId === dataset.id ? "Deleting..." : "Delete"}
-              </Button>
+                  {deletingId === dataset.id ? "Deleting..." : "Delete"}
+                </Button>
+              </div>
             </TableCell>
           </TableRow>
         ))}
