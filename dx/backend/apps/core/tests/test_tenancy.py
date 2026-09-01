@@ -882,20 +882,16 @@ def test_delete_tenant_removes_every_row_and_file_of_one_user(
     erasure = tenants.delete_tenant(user)
 
     # History and lineage are erased with the rows they describe, and counted in the preview.
-    assert summary == {
-        "core.Lineage": 0,
+    # The preview covers *every* protected table, not only the ones this test filled: a model
+    # missing here is a table the erasure would walk past. Derived from the same registry the
+    # policies come from rather than listed by hand — a new app must not break this test, and a
+    # literal list would only ever be updated by copying whatever the code now says.
+    assert set(summary) == {model._meta.label for model in rls.isolated_models()}
+    assert {label: count for label, count in summary.items() if count} == {
         "datasets.Dataset": 1,
         "datasets.DatasetEvent": 1,
-        "datasets.DatasetTag": 0,
-        "datasets.DatasetTagEvent": 0,
-        "datasets.Tag": 0,
-        "datasets.TagEvent": 0,
         "documents.Document": 1,
         "documents.DocumentEvent": 1,
-        "gallery.MediaItem": 0,
-        "gallery.MediaItemEvent": 0,
-        "notes.Note": 0,
-        "notes.NoteEvent": 0,
     }
     assert (erasure.username, erasure.rows, erasure.files) == ("alice", summary, 1)
     with scopes_disabled():

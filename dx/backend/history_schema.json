@@ -92,6 +92,24 @@
         "tag",
         "version"
       ],
+      "datasets.ModelA": [
+        "created",
+        "deleted_at",
+        "id",
+        "modified",
+        "name",
+        "owner",
+        "version"
+      ],
+      "datasets.ModelB": [
+        "created",
+        "deleted_at",
+        "id",
+        "modified",
+        "name",
+        "owner",
+        "version"
+      ],
       "datasets.Tag": [
         "created",
         "deleted_at",

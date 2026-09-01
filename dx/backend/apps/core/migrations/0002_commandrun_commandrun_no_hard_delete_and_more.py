@@ -7,7 +7,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("core", "0001_initial"),
     ]
@@ -42,9 +41,7 @@ class Migration(migrations.Migration):
                 ("version", models.PositiveIntegerField(db_default=1, editable=False)),
                 (
                     "deleted_at",
-                    models.DateTimeField(
-                        db_index=True, default=None, editable=False, null=True
-                    ),
+                    models.DateTimeField(db_index=True, default=None, editable=False, null=True),
                 ),
                 ("name", models.CharField(max_length=100)),
                 ("arguments", models.TextField(blank=True)),
@@ -53,9 +50,7 @@ class Migration(migrations.Migration):
                 "ordering": ["-created", "-id"],
                 "abstract": False,
                 "indexes": [
-                    models.Index(
-                        fields=["name", "-created"], name="core_comman_name_93c965_idx"
-                    )
+                    models.Index(fields=["name", "-created"], name="core_comman_name_93c965_idx")
                 ],
             },
         ),

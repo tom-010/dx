@@ -20,6 +20,10 @@ django_stubs_ext.monkeypatch()
 SECRET_KEY = env.SECRET_KEY
 SECRET_KEY_FALLBACKS = env.SECRET_KEY_FALLBACKS
 DEBUG = env.DEBUG
+# The build this process is running: the short commit `scripts/build.sh` stamps into the image,
+# "dev" outside one. Sentry reports it as the release, and `Lineage.release` records it beside
+# the stack that wrote an edge, so a file and a line can be resolved back to the code that ran.
+APP_VERSION = env.APP_VERSION
 # `/admin/` is only mounted when this is on (config/urls.py). The admin shows tenant data, so
 # production does not serve it: administer through `manage.py shell_as` / `shell_admin`.
 ADMIN_ENABLED = env.admin_enabled

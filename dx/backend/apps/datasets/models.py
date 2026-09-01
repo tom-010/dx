@@ -96,3 +96,16 @@ class DatasetTag(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.dataset} · {self.tag}"
+
+
+@tracked
+class ModelA(BaseModel):
+    name = models.CharField(max_length=256)
+
+
+@tracked
+class ModelB(BaseModel):
+    name = models.CharField(max_length=256)
+
+    def __str__(self) -> str:
+        return self.name

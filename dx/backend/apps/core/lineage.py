@@ -35,17 +35,24 @@ event table would make a *write* fail for the sake of a *reference*. pghistory u
 
 from __future__ import annotations
 
+import subprocess
+import traceback
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cache
 from typing import TYPE_CHECKING, cast
 
 import pgtrigger
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.db.models import Func
 from django.db.models.functions import Now
+from django_pydantic_field import SchemaField
+from pydantic import BaseModel as PydanticModel
+from pydantic import ConfigDict
 
 from apps.core.db import NoTenantContext, current_user_id
 from apps.core.history import (
@@ -56,6 +63,7 @@ from apps.core.history import (
     current_event,
     event_model_for,
 )
+from config.env import BASE_DIR
 
 if TYPE_CHECKING:
     from apps.core.models import VersionedModel
@@ -63,6 +71,22 @@ if TYPE_CHECKING:
 
 class LineageError(Exception):
     """A derivation cannot be recorded as stated."""
+
+
+class StackFrame(PydanticModel):
+    """One frame of the call stack that recorded an edge, as `traceback` reports it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file: str
+    line: int
+    func: str
+    #: The source line itself, stripped. Empty when the file is no longer readable — the stack
+    #: is a record of a past run, and the code it names can be deleted or edited afterwards.
+    code: str = ""
+
+    def __str__(self) -> str:
+        return f"{self.file}:{self.line} in {self.func}"
 
 
 class Lineage(models.Model):
@@ -87,6 +111,15 @@ class Lineage(models.Model):
 
     # The run that produced the edge (`pghistory_context`), for grouping on the revision page.
     pgh_context = models.UUIDField(null=True, default=None)
+    #: The call stack that recorded the edge, outermost frame first — which code claimed this
+    #: derivation, down to the line. A typed JSON column like any other (NOTES.md §5); frames
+    #: inside `apps/core/lineage.py` are left out, so `stack[-1]` is the caller.
+    stack = SchemaField(list[StackFrame], default=list)
+    #: The build the stack belongs to (`APP_VERSION`: the short commit the image was built from,
+    #: "dev" outside one). A file and a line only identify code together with the revision it was
+    #: in, so this is stored *beside* the stack and captured in the same breath — `git show
+    #: <release>:<file>` then reconstructs exactly what ran.
+    release = models.CharField(max_length=64, default="", editable=False)
     created = models.DateTimeField(db_default=Now(), editable=False)
 
     class Meta:
@@ -137,9 +170,69 @@ def _event_type(obj: VersionedModel) -> ContentType:
     return ContentType.objects.get_for_model(event_model)
 
 
+def _release() -> str:
+    """The build this process is running, for `Lineage.release`.
+
+    `scripts/build.sh` stamps the short commit into the image as `APP_VERSION`, so production
+    answers without ever touching git. Outside an image that value is the literal "dev", which
+    would make every locally recorded edge point at an unidentifiable pile of code — so ask the
+    working tree instead, once per process.
+    """
+    return settings.APP_VERSION if settings.APP_VERSION != "dev" else _git_release()
+
+
+@cache
+def _git_release() -> str:
+    """The working tree's commit, `-dirty` when it has uncommitted changes.
+
+    Cached, not read per call: `git status` walks the tree, and the answer cannot change under a
+    running process in any way worth catching. The dirty marker is the honest half — a commit
+    alone names code that, in a tree with local edits, never ran.
+
+    Falls back to "dev" when git cannot answer at all (no git binary, no checkout: a container
+    built from a tarball, a source distribution).
+    """
+
+    def git(*args: str) -> str:
+        return subprocess.run(  # noqa: S603 - fixed argv, no shell, no user input
+            ["git", *args],  # noqa: S607 - resolved via PATH on purpose: dev machines only
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+
+    try:
+        commit = git("rev-parse", "--short", "HEAD")
+        dirty = bool(git("status", "--porcelain"))
+    except OSError, subprocess.SubprocessError:
+        return "dev"
+    return f"{commit}-dirty" if dirty else commit
+
+
+def _capture_stack() -> list[StackFrame]:
+    """The call stack leading here, outermost frame first, without this module's own frames.
+
+    `extract_stack` resolves each frame's source line through `linecache`, so the first call in
+    a process touches the files on disk; afterwards it is cached. That cost buys the one thing a
+    `producer` string cannot give: the exact line that asserted the derivation.
+    """
+    return [
+        StackFrame(
+            file=frame.filename,
+            line=frame.lineno or 0,
+            func=frame.name,
+            code=(frame.line or "").strip(),
+        )
+        for frame in traceback.extract_stack()
+        if frame.filename != __file__
+    ]
+
+
 def record_derivation(
     target: VersionedModel,
-    sources: list[VersionedModel],
+    sources: Sequence[VersionedModel],
     *,
     context_id: uuid.UUID | None = None,
 ) -> list[Lineage]:
@@ -154,6 +247,9 @@ def record_derivation(
 
     target_event = current_event(target)
     target_type = _event_type(target)
+    # Captured once: every edge of one call was recorded from the same place, by the same build.
+    stack = _capture_stack()
+    release = _release()
     edges = []
     for source in sources:
         source_event = current_event(source)
@@ -167,6 +263,8 @@ def record_derivation(
                 source_obj_id=source.pk,
                 source_version=source_event.version,
                 pgh_context=context_id or target_event.pgh_context_id,
+                stack=stack,
+                release=release,
             )
         )
     Lineage.objects.bulk_create(edges)
