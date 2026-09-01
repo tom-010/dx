@@ -31,7 +31,7 @@ def test_for_user_scopes_owned_models(user: User, other_user: User) -> None:
 
     with acting_as(user):
         assert list(Dataset.objects.for_user(user)) == [mine]
-        assert user.datasets.get() == mine  # reverse accessor from OwnedModel.owner
+        assert user.datasets.get() == mine  # reverse accessor from BaseModel.owner
 
 
 def test_payload_helpers_keep_typed_json_values(user: User) -> None:

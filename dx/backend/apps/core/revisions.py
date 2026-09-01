@@ -41,7 +41,7 @@ from apps.core.history import (
     fields_at,
     tracked_models,
 )
-from apps.core.models import LABEL_FIELDS, OWNER_COLUMN, OwnedModel
+from apps.core.models import LABEL_FIELDS, OWNER_COLUMN, BaseModel
 
 # Columns every row has and nobody wants in a diff: they change on every single write.
 NOISE = frozenset({"id", "created", "modified", "version", "owner"})
@@ -107,7 +107,7 @@ class RevisionGroup:
     revisions: list[Revision]
 
 
-def resource_models() -> dict[str, type[OwnedModel]]:
+def resource_models() -> dict[str, type[BaseModel]]:
     """URL segment -> versioned model, derived from the registry rather than a hand-kept list.
 
     The key is the model name in lower case (`dataset`, `mediaitem`). Only owned models are
@@ -117,11 +117,11 @@ def resource_models() -> dict[str, type[OwnedModel]]:
     return {
         model._meta.model_name: model
         for model, _event_model in tracked_models()
-        if issubclass(model, OwnedModel) and model._meta.model_name is not None
+        if issubclass(model, BaseModel) and model._meta.model_name is not None
     }
 
 
-def resource_model(resource: str) -> type[OwnedModel] | None:
+def resource_model(resource: str) -> type[BaseModel] | None:
     return resource_models().get(resource.lower())
 
 
@@ -213,9 +213,9 @@ def _latest_versions(edges: list[lineage.Lineage]) -> dict[tuple[int, uuid.UUID]
 
 
 def row_label(row: object, fallback: object) -> str:
-    """Name a row the way `BaseModel.__str__` would.
+    """Name a row the way `VersionedModel.__str__` would.
 
-    Event rows are generated classes that do not inherit `BaseModel`, so they cannot borrow its
+    Event rows are generated classes that do not inherit `VersionedModel`, so they cannot borrow its
     `__str__` — but they mirror the same columns, so the same preference works on them.
     """
     for name in LABEL_FIELDS:
@@ -260,9 +260,9 @@ def child_relations(model: type[models.Model]) -> list[ForeignObjectRel]:
         rel
         for rel in model._meta.related_objects
         # `one_to_many`: the reverse side of a ForeignKey pointing at `model`. (`DatasetEvent`
-        # shows up here too, via pgh_obj — the OwnedModel check is what leaves it out.)
+        # shows up here too, via pgh_obj — the BaseModel check is what leaves it out.)
         if rel.one_to_many
-        and issubclass(rel.related_model, OwnedModel)
+        and issubclass(rel.related_model, BaseModel)
         and event_model_for(rel.related_model) is not None
     ]
 
@@ -287,7 +287,7 @@ def _describe(row: models.Model, skip: set[str]) -> str:
     return ", ".join(labels)
 
 
-def _related_revisions(obj: OwnedModel) -> list[Revision]:
+def _related_revisions(obj: BaseModel) -> list[Revision]:
     revisions = []
     for rel in child_relations(type(obj)):
         related = rel.related_model
@@ -322,7 +322,7 @@ def _related_revisions(obj: OwnedModel) -> list[Revision]:
     return revisions
 
 
-def revisions_of(obj: OwnedModel) -> list[Revision]:
+def revisions_of(obj: BaseModel) -> list[Revision]:
     """Every version of `obj` and of the child rows written with it, newest first.
 
     Child rows are what makes one save render as one revision even when it touched several

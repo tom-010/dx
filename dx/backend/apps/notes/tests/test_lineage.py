@@ -272,7 +272,7 @@ def test_a_deleted_note_still_appears_in_the_graph(user: User) -> None:
 
 def test_the_history_page_names_the_source_note(auth_client: Client, user: User) -> None:
     """The "Derived from" link has to say which note, in words. Event rows are generated classes
-    that cannot borrow `BaseModel.__str__`, so the label goes through the same field preference
+    that cannot borrow `VersionedModel.__str__`, so the label goes through the same field preference
     (`apps/core/revisions.py::row_label`) — `title` here, `name` on other models."""
     with acting_as(user):
         first = create_note_for(user, title="Monday")

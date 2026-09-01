@@ -28,7 +28,7 @@ from django_scopes import scopes_disabled
 from apps.accounts.models import ApiToken, User
 from apps.core import history, lineage, revisions
 from apps.core.history import hard_delete
-from apps.core.models import BaseModel
+from apps.core.models import VersionedModel
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
@@ -65,11 +65,11 @@ def event_type(model: type[Model]) -> ContentType:
     return ContentType.objects.get_for_model(event_model)
 
 
-def concrete_base_models() -> list[type[BaseModel]]:
+def concrete_base_models() -> list[type[VersionedModel]]:
     return [
         model
         for model in apps.get_models()
-        if issubclass(model, BaseModel) and not model._meta.abstract
+        if issubclass(model, VersionedModel) and not model._meta.abstract
     ]
 
 
@@ -106,9 +106,9 @@ def test_tracked_models_are_never_reported_through_inheritance() -> None:
 def test_no_implicit_m2m_on_versioned_models() -> None:
     """An auto-created through table is not a model, so it can be neither tracked nor owned:
     a tag change would leave no version row behind it, which is the one thing lineage cannot
-    tolerate. Declare an explicit `through=` model inheriting `OwnedModel`.
+    tolerate. Declare an explicit `through=` model inheriting `BaseModel`.
 
-    Scoped to `BaseModel` subclasses — the tables that hold our data. `accounts.User` inherits
+    Scoped to `VersionedModel` subclasses — the tables that hold our data. `accounts.User` inherits
     `groups`/`user_permissions` from Django's `AbstractUser`; those are permission bookkeeping
     on a shared table, they carry no tenant data, and they are not ours to redeclare.
     """
@@ -122,7 +122,7 @@ def test_no_implicit_m2m_on_versioned_models() -> None:
 
 
 def test_triggers_survived_meta_inheritance() -> None:
-    """A concrete model that writes `class Meta:` instead of `class Meta(OwnedModel.Meta)`
+    """A concrete model that writes `class Meta:` instead of `class Meta(BaseModel.Meta)`
     silently loses both triggers — no error, no migration, just no protection."""
     registered: dict[str, set[str]] = {}
     for owner, trigger in pgtrigger.registry.registered():
@@ -132,7 +132,7 @@ def test_triggers_survived_meta_inheritance() -> None:
         names = registered.get(model._meta.label, set())
         assert {"no_hard_delete", "bump_version"} <= names, (
             f"{model._meta.label} lost its base triggers ({sorted(names)}) — "
-            "does its Meta inherit BaseModel.Meta?"
+            "does its Meta inherit VersionedModel.Meta?"
         )
 
 
@@ -143,7 +143,7 @@ def test_every_base_model_hides_soft_deleted_rows_by_default() -> None:
             queryset = str(model._default_manager.all().query)
         assert "deleted_at" in queryset, (
             f"{model._meta.label}._default_manager does not filter deleted_at — declare "
-            "`objects = ActiveManager()` (see apps/core/models.py::BaseModel)."
+            "`objects = ActiveManager()` (see apps/core/models.py::VersionedModel)."
         )
         assert hasattr(model, "all_objects"), f"{model._meta.label} has no all_objects manager"
 
@@ -241,7 +241,7 @@ def test_raw_sql_update_is_versioned(user: User) -> None:
 
 
 def test_modified_never_predates_created(user: User) -> None:
-    """`created` and `modified` must come from the same clock (see BaseModel.Meta)."""
+    """`created` and `modified` must come from the same clock (see VersionedModel.Meta)."""
     with acting_as(user):
         dataset = create_dataset_for(user, name="x")
         Dataset.objects.filter(pk=dataset.pk).update(name="y")
@@ -489,7 +489,7 @@ def test_model_registry_has_no_stray_event_tables() -> None:
 
 def test_lineage_is_not_a_base_model() -> None:
     """It has no version chain of its own and is never soft-deleted (see apps/core/lineage.py)."""
-    assert not issubclass(lineage.Lineage, BaseModel)
+    assert not issubclass(lineage.Lineage, VersionedModel)
     assert lineage.Lineage._meta.get_field("owner") is not None  # but it is still tenant data
 
 

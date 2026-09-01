@@ -18,7 +18,7 @@ point of pointing at an event row (`pgh_id`, `apps/core/history.py`) instead of 
     derived_from(dataset)
     stale_derivations(dataset)
 
-`Lineage` is deliberately **not** an `OwnedModel`: it has no version chain of its own, it is
+`Lineage` is deliberately **not** a `BaseModel`: it has no version chain of its own, it is
 append-only (a graph whose nodes can be edited is not a graph), and it is never soft-deleted.
 It does carry `owner`, so `apps/core/rls.py` gives it the same tenant policy as everything else
 — generic pointers offer no structural protection against a cross-tenant reference, so the
@@ -48,7 +48,7 @@ from apps.core.db import NoTenantContext, current_user_id
 from apps.core.history import EventRow, NotTracked, as_event_row, current_event, event_model_for
 
 if TYPE_CHECKING:
-    from apps.core.models import BaseModel
+    from apps.core.models import VersionedModel
 
 
 class LineageError(Exception):
@@ -91,7 +91,7 @@ class Lineage(models.Model):
             )
         ]
         triggers = [
-            # The nodes of the graph are immutable; so are its edges. Not `BaseModel`'s
+            # The nodes of the graph are immutable; so are its edges. Not `VersionedModel`'s
             # `no_hard_delete`: erasing a tenant must still be able to remove them
             # (apps/core/history.py::hard_delete lifts exactly these two names).
             pgtrigger.Protect(name="no_hard_delete", operation=pgtrigger.Delete),
@@ -116,7 +116,7 @@ class Lineage(models.Model):
         return as_event_row(model._base_manager.get(pgh_id=pgh_id))
 
 
-def _event_type(obj: BaseModel) -> ContentType:
+def _event_type(obj: VersionedModel) -> ContentType:
     """The content type of the *event* model of `obj` — what an edge's `*_type` points at."""
     event_model = event_model_for(type(obj))
     if event_model is None:
@@ -128,8 +128,8 @@ def _event_type(obj: BaseModel) -> ContentType:
 
 
 def record_derivation(
-    target: BaseModel,
-    sources: list[BaseModel],
+    target: VersionedModel,
+    sources: list[VersionedModel],
     *,
     context_id: uuid.UUID | None = None,
 ) -> list[Lineage]:
@@ -163,7 +163,7 @@ def record_derivation(
     return edges
 
 
-def sources_of(target: BaseModel) -> models.QuerySet[Lineage]:
+def sources_of(target: VersionedModel) -> models.QuerySet[Lineage]:
     """The edges feeding `target`'s current version."""
     return Lineage.objects.filter(target_pgh_id=current_event(target).pgh_id)
 
@@ -173,7 +173,7 @@ def sources_of_version(target_event: EventRow) -> models.QuerySet[Lineage]:
     return Lineage.objects.filter(target_pgh_id=target_event.pgh_id)
 
 
-def derived_from(source: BaseModel) -> models.QuerySet[Lineage]:
+def derived_from(source: VersionedModel) -> models.QuerySet[Lineage]:
     """Everything ever derived from any version of `source`."""
     return Lineage.objects.filter(source_obj_id=source.pk)
 
@@ -242,7 +242,7 @@ def _target_object_ids(edges: Iterable[Lineage]) -> dict[uuid.UUID, uuid.UUID]:
     return resolved
 
 
-def _describe(object_ids: set[uuid.UUID], model: type[BaseModel]) -> dict[uuid.UUID, Node]:
+def _describe(object_ids: set[uuid.UUID], model: type[VersionedModel]) -> dict[uuid.UUID, Node]:
     """Live rows for the ids, as graph nodes. Reads soft-deleted rows too — a derived note whose
     source was deleted must still show where it came from."""
     found = {}
@@ -258,7 +258,7 @@ def _describe(object_ids: set[uuid.UUID], model: type[BaseModel]) -> dict[uuid.U
     return found
 
 
-def graph(root: BaseModel, *, depth: int = 3) -> Graph:
+def graph(root: VersionedModel, *, depth: int = 3) -> Graph:
     """The piece of the lineage graph around `root`: what it came from, what came from it, and
     what those touch in turn, out to `depth` steps.
 
@@ -338,7 +338,7 @@ def graph(root: BaseModel, *, depth: int = 3) -> Graph:
     )
 
 
-def _version_ids(model: type[BaseModel], object_ids: set[uuid.UUID]) -> list[uuid.UUID]:
+def _version_ids(model: type[VersionedModel], object_ids: set[uuid.UUID]) -> list[uuid.UUID]:
     """Every `pgh_id` belonging to these objects — the edge column that names a target."""
     event_model = event_model_for(model)
     if event_model is None:  # pragma: no cover - guarded by the caller
@@ -349,7 +349,9 @@ def _version_ids(model: type[BaseModel], object_ids: set[uuid.UUID]) -> list[uui
     return [uuid.UUID(str(pgh_id)) for pgh_id in rows]
 
 
-def _latest_versions(model: type[BaseModel], object_ids: set[uuid.UUID]) -> dict[uuid.UUID, int]:
+def _latest_versions(
+    model: type[VersionedModel], object_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, int]:
     """Current version per object, for marking an edge stale."""
     if not object_ids:
         return {}
@@ -357,7 +359,7 @@ def _latest_versions(model: type[BaseModel], object_ids: set[uuid.UUID]) -> dict
     return dict(rows)
 
 
-def stale_derivations(source: BaseModel) -> models.QuerySet[Lineage]:
+def stale_derivations(source: VersionedModel) -> models.QuerySet[Lineage]:
     """Everything derived from a version of `source` that has since been superseded.
 
     The query the denormalised columns exist for, and the one that makes versioned lineage worth

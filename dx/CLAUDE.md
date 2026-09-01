@@ -20,7 +20,7 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
   (`openschema.json`) is the contract with the frontend; the frontend talks to the API ONLY through
   the code orval generates from it (`frontend/src/api/`). See "End-to-end types".
 - Decisions listed in `NOTES.md` §2 (stack table) are settled — do not swap libraries without asking.
-- **Multitenancy, tenant == user**: every feature model is an `OwnedModel`; isolation is enforced
+- **Multitenancy, tenant == user**: every feature model is a `BaseModel`; isolation is enforced
   by the ORM scope *and* by Postgres row-level security, never by hand-written filters alone.
   See "Multitenancy" — its invariants are not negotiable.
 - **Everything is versioned and nothing is deleted**: every write to a feature model is mirrored
@@ -182,8 +182,8 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     automatically, no settings change. `apps/core/apps.py` is the one that earns it (system
     checks and the `connection_created` receiver).
   - `apps/core/` — infrastructure: `health.py` (`GET /api/health`, `GET /api/ready`, see "Health
-    checks"), `models.py` (`BaseModel`: UUIDv7 pk + `created`/`modified` +
-    `set_payload()`/`set_payload_partial()` for PUT/PATCH; `OwnedModel` + `OwnedManager`/
+    checks"), `models.py` (`VersionedModel`: UUIDv7 pk + `created`/`modified` +
+    `set_payload()`/`set_payload_partial()` for PUT/PATCH; `BaseModel` + `OwnedManager`/
     `OwnedQuerySet.for_user()` — see "Data model conventions"), the multitenancy layer
     (`db.py` tenant context, `rls.py` policies, `middleware.py`, `checks.py`, `scrub.py`,
     `cache.py`, `testing.py` — see "Multitenancy"), the versioning layer (`history.py` capture +
@@ -197,7 +197,7 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     `test_tenancy.py`).
   - `apps/accounts/` — authentication, see "Auth" below.
   - `apps/datasets/` — demo feature app and the reference for new ones (`newapp`
-    generates the same shape): `models.py` (`Dataset(OwnedModel)`, `DatasetId = NewType(...,
+    generates the same shape): `models.py` (`Dataset(BaseModel)`, `DatasetId = NewType(...,
     uuid.UUID)`, `DatasetOptions` = typed JSON column, plus `Tag` and the explicit `DatasetTag`
     through model), `api.py` — the schemas (`DatasetOut`, `DatasetIn`, `DatasetPatch`), the
     logic and the router in one file. Views raise `HttpError` themselves and return
@@ -222,7 +222,7 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     not mounted in production (`ADMIN_ENABLED`).
     Endpoints: paginated `GET /api/datasets`, `POST /api/datasets`,
     `GET/PUT/PATCH/DELETE /api/datasets/{id}`.
-  - `apps/documents/` — file uploads: `Document(OwnedModel)` (`FileField` on Django's default
+  - `apps/documents/` — file uploads: `Document(BaseModel)` (`FileField` on Django's default
     storage = the S3-compatible object store, see "File storage"; keys
     `documents/<owner id>/%Y/%m/<name>`, `owned_upload_path`),
     multipart `POST /api/documents/upload` (`files: File[list[UploadedFile]]`, validated as a
@@ -279,7 +279,7 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
 A note-taking app that exists to *demonstrate* versioning and lineage end to end, not because
 the product needs notes. It is deliberately self-contained.
 
-- `Note(OwnedModel)` — title, body, and `tags` as a plain comma-separated string, normalised on
+- `Note(BaseModel)` — title, body, and `tags` as a plain comma-separated string, normalised on
   write (`api.normalize_tags`) so that retyping the same set in a different order is not a
   change in the note's history. Deliberately *not* the shape `apps/datasets` uses: an owned,
   versioned `Tag` model with a join table is what you want when tags are shared, renamed or
@@ -312,7 +312,7 @@ be able to leak data:
 
 | Layer | Where | Role |
 |---|---|---|
-| Data model | `OwnedModel.owner` FK (the guide's `TenantModel`) | scoping and per-tenant extraction are mechanical |
+| Data model | `BaseModel.owner` FK (the guide's `TenantModel`) | scoping and per-tenant extraction are mechanical |
 | ORM guard | `OwnedManager` on django-scopes' state (`scope`, `scopes_disabled`) | a query outside a tenant scope **raises** `ScopeError`; inside it is filtered |
 | **Database guard** | **Postgres row-level security**, policy `tenant_isolation` on every table with an `owner_id` column — owned models, the event tables holding their history, and `Lineage` (`apps/core/rls.py::isolated_models`, `manage.py rls_sync`) | **the guarantee**: `owner_id = NULLIF(current_setting('app.user_id', true), '')::uuid` for `USING` and `WITH CHECK`; no context → nothing visible or writable (fails closed) |
 | Request context | `TenantMiddleware`: bearer token verified once → `SET LOCAL app.user_id` + ORM scope inside one transaction (`tenant_context(user_id)`) | stateless, safe with connection reuse / PgBouncer transaction pooling |
@@ -335,7 +335,7 @@ default-deny).
   ended: materialise querysets before returning a `StreamingHttpResponse` (the middleware logs
   `tenant_streaming_response`).
 - **Models**: every concrete model in a tenant app (`TENANT_APPS` = every `apps.*` app except
-  `SHARED_APPS = ["apps.core", "apps.accounts"]`) inherits `OwnedModel`, or is listed in
+  `SHARED_APPS = ["apps.core", "apps.accounts"]`) inherits `BaseModel`, or is listed in
   `SHARED_MODELS` after review — system check `tenant.E001`; an auto-created M2M through table
   is `tenant.E002` (declare an owned `through=` model). `owner` is `editable=False`, filled from
   the context by `save()` when a service does not pass it (`NoTenantContext` otherwise),
@@ -349,7 +349,7 @@ default-deny).
 - **Policies** are generated from the model registry, never written by hand:
   `manage.py rls_sync` (DB_ROLE=migrator) enables RLS and (re)creates the policy on every table
   whose state is not already right. The set is `rls.isolated_models()` — **anything with an
-  `owner_id` column**, not just `OwnedModel` subclasses: an event table holds the same rows one
+  `owner_id` column**, not just `BaseModel` subclasses: an event table holds the same rows one
   version older and `Lineage` holds tenant data without being versioned, so a rule keyed on the
   base class would have let both escape (`app_user` can read every table; RLS is what stops it).
   A rollback that drops an `owner` column fails while the policy references it — `DROP POLICY
@@ -437,8 +437,8 @@ version* of a source, not at the live row.
 | Capture | django-pghistory triggers, `@tracked` (`apps/core/history.py`) | a `.update()`, a `bulk_update`, raw SQL and a data migration all produce version rows — application code cannot bypass it |
 | Storage | one event table per model (`DatasetEvent`, …), typed mirrored columns | history is queryable per field, and migrating it is a normal migration |
 | Immutability | `PGHISTORY_APPEND_ONLY` → pgtrigger rejects UPDATE and DELETE on event tables | lineage nodes cannot be edited or vanish |
-| Version chain | `BaseModel.version`, bumped by the `bump_version` trigger | authoritative ordering; "which version came first" does not rest on clock behaviour |
-| Soft delete | `BaseModel.deleted_at` + `pgtrigger.Protect` on DELETE | a deleted row stays resolvable, so old lineage edges keep working |
+| Version chain | `VersionedModel.version`, bumped by the `bump_version` trigger | authoritative ordering; "which version came first" does not rest on clock behaviour |
+| Soft delete | `VersionedModel.deleted_at` + `pgtrigger.Protect` on DELETE | a deleted row stays resolvable, so old lineage edges keep working |
 | Isolation | the same RLS policy on every event table and on `Lineage` | history is tenant data (see "Multitenancy") |
 
 - **Tracking a model**: `@tracked` from `apps/core/history.py`, on the concrete model. Never on an
@@ -453,7 +453,7 @@ version* of a source, not at the live row.
   which return rows typed as `history.EventRow` (event models are generated at import time, so a
   protocol is the only way to describe them to mypy). `Model.pgh_event_model` is the class.
 - **Never assign `id`, `created`, `modified` or `version` in Python** — all four are database
-  defaults or trigger-set (`apps/core/models.py::BaseModel`). `Now()` renders as
+  defaults or trigger-set (`apps/core/models.py::VersionedModel`). `Now()` renders as
   `STATEMENT_TIMESTAMP()` on Postgres, which is why the trigger uses it too; `NOW()` is the
   transaction start and would put `modified` *before* `created`. `save()` reads `version` and
   `modified` back afterwards, because the instance it returns is what the API serialises — an
@@ -467,7 +467,7 @@ version* of a source, not at the live row.
   tenant erasure reclaims them.
 - **Every unique constraint is conditioned on `deleted_at__isnull=True`** (see
   `accounts.ApiToken`), otherwise a soft-deleted row reserves its value forever. `unique=True`
-  and `unique_together` on a `BaseModel` fail a test.
+  and `unique_together` on a `VersionedModel` fail a test.
 - **Cascade is application logic now**: Django's collector never runs, so decide per relation in
   the service layer (block, reassign, or soft-delete the children) — never in a signal, which
   would also fire for the restore and erasure paths, where it is exactly wrong.
@@ -500,7 +500,7 @@ version* of a source, not at the live row.
 - **Lineage** (`apps/core/lineage.py`): `record_derivation(target, sources=[...])` inside the
   writing transaction; `sources_of`, `derived_from`, `stale_derivations`. An edge stores
   `source_pgh_id` plus a denormalised `(source_obj_id, source_version)`, so "what has to be
-  recomputed now that this changed" is one index scan. `Lineage` is not a `BaseModel`: no version
+  recomputed now that this changed" is one index scan. `Lineage` is not a `VersionedModel`: no version
   chain, append-only, never soft-deleted — but it carries `owner` and gets the tenant policy.
   There is deliberately no FK on the `*_pgh_id` columns (event rows are append-only, so a dangling
   pointer cannot arise, and an FK into history would make a *write* fail for a reference).
@@ -549,7 +549,7 @@ admin session to log in with). Administer production through `manage.py shell_as
   foreign key on commit (`manage.py delete_tenant` is the working path). Soft-deleted rows are
   simply invisible — `objects` hides them and there is no restore action any more.
 - **The aggregate events page** (`pghistory.admin`) needs no tenant column of its own: every
-  event table mirrors an `OwnedModel` and carries a real `owner_id` with the `tenant_isolation`
+  event table mirrors a `BaseModel` and carries a real `owner_id` with the `tenant_isolation`
   policy, so **without a tenant context it returns nothing, not everything**.
   `PGHISTORY_ADMIN_ALL_EVENTS = False` — it unions *every* event table, so it stays blank until
   filtered. `PGHISTORY_BASE_MODEL` names `apps.core.history.Event` so every event table gets the
@@ -564,7 +564,7 @@ admin session to log in with). Administer production through `manage.py shell_as
 
 ## Data model conventions (`apps/core/models.py`, `apps/core/schemas.py`)
 
-- **Primary keys are UUIDv7** (`BaseModel.id`, `db_default=Func(function="uuidv7")`, PG 18):
+- **Primary keys are UUIDv7** (`VersionedModel.id`, `db_default=Func(function="uuidv7")`, PG 18):
   time-ordered like an auto-increment id (index locality, sortable by creation), globally unique,
   and cheap to generate anywhere so offline-created rows never collide (NOTES.md §6). Native
   Postgres `uuid` column, and the default lives in the *database* so a raw INSERT or a data
@@ -572,13 +572,13 @@ admin session to log in with). Administer production through `manage.py shell_as
   ignore `db_default`). We are deliberately locked
   in on Postgres. Ids are `NewType`s per model (`DatasetId = NewType("DatasetId", uuid.UUID)`),
   ninja path params are `uuid.UUID`, the generated TS types have `id: string`.
-- **Every model extends `BaseModel`** (id, `created`, `modified`, `version`, `deleted_at`,
+- **Every model extends `VersionedModel`** (id, `created`, `modified`, `version`, `deleted_at`,
   `soft_delete()`, `set_payload()` for PUT, `set_payload_partial()` for PATCH — both pass values
   through as they are on the schema, so typed JSON fields keep their pydantic instances).
   `accounts.User` carries the same UUIDv7 id. The first four columns are set by the database
   (`db_default` / the `bump_version` trigger) and must never be assigned in Python; see
   "Versioning, history and lineage".
-- **User data extends `OwnedModel`** (`owner` FK to `AUTH_USER_MODEL`, reverse accessor
+- **User data extends `BaseModel`** (`owner` FK to `AUTH_USER_MODEL`, reverse accessor
   `user.<models>`) and is only read through `Model.objects.for_user(user)` (`OwnedQuerySet`,
   which also hides soft-deleted rows; `Model.all_objects` keeps the tenant scope and includes
   them) —
@@ -934,7 +934,7 @@ Layers (each app mirrors this in `tests/`):
    code; `test_errors.py` — JSON error bodies; `test_ownership.py` — other users get an empty
    list and 404s for every owned resource in `RESOURCES`; `test_tenancy.py` — ORM scope + RLS
    isolation, fail-closed, `WITH CHECK`, middleware, tasks, scrubbers and source rules for every
-   owned model; `test_history.py` — every `BaseModel` is tracked or exempt, triggers survive
+   owned model; `test_history.py` — every `VersionedModel` is tracked or exempt, triggers survive
    `Meta` inheritance, bulk and raw writes are versioned, event tables are append-only, soft
    delete is a version, unique constraints are conditional, the schema log is current, plus the
    lineage and revision-page behaviour end to end;

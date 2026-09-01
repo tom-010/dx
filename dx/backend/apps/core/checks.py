@@ -1,7 +1,7 @@
 """System checks that keep the multitenancy invariants (CLAUDE.md "Multitenancy") true as the
 code base grows. Registered in `apps.core.apps.CoreConfig.ready()`.
 
-- tenant.E001 — a concrete model in a tenant app does not inherit `OwnedModel` (and is not in
+- tenant.E001 — a concrete model in a tenant app does not inherit `BaseModel` (and is not in
   `SHARED_MODELS`). The highest-leverage check here: it makes the invariant survive new
   developers and new models.
 - tenant.E002 — an auto-created many-to-many through table on an owned model: no `owner`
@@ -23,7 +23,7 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.db.models import Model
 
-from apps.core.models import OWNER_COLUMN, OwnedModel
+from apps.core.models import OWNER_COLUMN, BaseModel
 
 
 def tenant_app_labels() -> set[str]:
@@ -46,7 +46,7 @@ def tenant_model_errors(models: Iterable[type[Model]]) -> list[CheckMessage]:
 
         if issubclass(model, pghistory.models.Event):
             # Event tables are generated into the tracked model's app and cannot inherit
-            # OwnedModel. They mirror the tracked columns, so they carry `owner_id` and get the
+            # BaseModel. They mirror the tracked columns, so they carry `owner_id` and get the
             # same policy (rls.isolated_models) — unless someone excluded the column, which is
             # what E004 is for.
             if not any(field.attname == OWNER_COLUMN for field in model._meta.fields):
@@ -62,12 +62,12 @@ def tenant_model_errors(models: Iterable[type[Model]]) -> list[CheckMessage]:
                 )
             continue
 
-        if not issubclass(model, OwnedModel):
+        if not issubclass(model, BaseModel):
             errors.append(
                 Error(
-                    f"{label} is in a tenant app but does not inherit OwnedModel.",
+                    f"{label} is in a tenant app but does not inherit BaseModel.",
                     hint=(
-                        "Inherit apps.core.models.OwnedModel, or add the label to "
+                        "Inherit apps.core.models.BaseModel, or add the label to "
                         "settings.SHARED_MODELS after a security review."
                     ),
                     obj=model,
@@ -82,7 +82,7 @@ def tenant_model_errors(models: Iterable[type[Model]]) -> list[CheckMessage]:
                     Error(
                         f"{label}.{field.name} uses an auto-created M2M through table, which "
                         "has no owner column and cannot be protected by row-level security.",
-                        hint="Declare an explicit through= model inheriting OwnedModel.",
+                        hint="Declare an explicit through= model inheriting BaseModel.",
                         obj=model,
                         id="tenant.E002",
                     )

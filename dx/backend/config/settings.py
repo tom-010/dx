@@ -68,7 +68,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "django_structlog",
     "django_scopes",  # ORM tenant scope (apps/core/models.py::OwnedManager)
-    "pgtrigger",  # database triggers as model Meta (apps/core/models.py::BaseModel)
+    "pgtrigger",  # database triggers as model Meta (apps/core/models.py::VersionedModel)
     "pghistory",  # trigger-captured version history (apps/core/history.py)
     # Feature apps live under apps/<name>/
     "apps.core",
@@ -149,12 +149,12 @@ DATABASES = {
 
 
 # Multitenancy (tenant == user; CLAUDE.md "Multitenancy"). Two enforcement layers ride on
-# `apps.core.models.OwnedModel`: the ORM scope (`OwnedManager`, django-scopes state) and
+# `apps.core.models.BaseModel`: the ORM scope (`OwnedManager`, django-scopes state) and
 # Postgres row-level security (apps/core/rls.py, `manage.py rls_sync`). The request context
 # comes from `apps.core.middleware.TenantMiddleware`, tasks use `apps.core.tasks.tenant_task`.
 
 # The infrastructure apps hold shared tables (users, tokens, sessions); every other app under
-# apps/ is a tenant app: all of its concrete models must inherit OwnedModel (apps/core/checks.py,
+# apps/ is a tenant app: all of its concrete models must inherit BaseModel (apps/core/checks.py,
 # tenant.E001). A new app is a tenant app by default — nothing to register.
 SHARED_APPS = ["apps.core", "apps.accounts"]
 TENANT_APPS = [app for app in INSTALLED_APPS if app.startswith("apps.") and app not in SHARED_APPS]

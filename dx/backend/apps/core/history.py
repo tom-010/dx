@@ -8,7 +8,7 @@ audit log, it is an edge that silently misattributes data.
     from apps.core.history import tracked
 
     @tracked
-    class Dataset(OwnedModel):
+    class Dataset(BaseModel):
         ...
 
 `@tracked` generates `DatasetEvent` (reachable as `Dataset.pgh_event_model`, and as
@@ -88,7 +88,7 @@ SCHEMA_TAG = "2026-09"
 # Checked-in snapshot of that field set (manage.py history_schema --write).
 SCHEMA_FILE = BASE_DIR / "history_schema.json"
 
-# Models that inherit BaseModel but are deliberately not versioned ("app_label.Model").
+# Models that inherit VersionedModel but are deliberately not versioned ("app_label.Model").
 # Every entry needs a reason: history is the default, opting out is the exception.
 HISTORY_EXEMPT = {
     # Rotated on every token refresh and purged on login: high-churn session bookkeeping with no
@@ -149,7 +149,7 @@ def tracked[ModelT: type[models.Model]](model: ModelT) -> ModelT:
 
 class EventRow(Protocol):
     """The runtime shape of a generated event row: pghistory's own columns plus the mirrored
-    `BaseModel` ones.
+    `VersionedModel` ones.
 
     Event models are built at import time from the tracked model's fields, so no type checker
     can see them. This protocol is how the rest of the code says what it expects; `as_event_row`
@@ -302,7 +302,7 @@ def event_model_for(model: type[models.Model]) -> type[pghistory.models.Event] |
 
 # --- Escape hatches: the two places the triggers must not apply -------------------------------
 
-# apps/core/models.py::BaseModel.Meta
+# apps/core/models.py::VersionedModel.Meta
 PROTECT_TRIGGER = "no_hard_delete"
 VERSION_TRIGGER = "bump_version"
 # Generated: pghistory's own capture triggers and the append-only guard on event tables.

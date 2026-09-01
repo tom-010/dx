@@ -4,13 +4,13 @@ from typing import NewType
 from django.db import models
 
 from apps.core.history import tracked
-from apps.core.models import OwnedModel, owned_upload_path
+from apps.core.models import BaseModel, owned_upload_path
 
 DocumentId = NewType("DocumentId", uuid.UUID)
 
 
 @tracked
-class Document(OwnedModel):
+class Document(BaseModel):
     """An uploaded file plus the metadata we show in listings."""
 
     # Storage backend is Django's default storage: the S3-compatible object store (settings).
@@ -20,5 +20,5 @@ class Document(OwnedModel):
     content_type = models.CharField(max_length=100, blank=True)
     size = models.PositiveBigIntegerField()
 
-    class Meta(OwnedModel.Meta):
+    class Meta(BaseModel.Meta):
         pass

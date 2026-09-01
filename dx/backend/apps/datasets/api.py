@@ -41,7 +41,7 @@ router = Router(tags=["datasets"])
 # A cap, not a policy: keeps a single request from creating an unbounded number of tag rows.
 MAX_TAGS = 25
 
-# Schema field that is not a column of `datasets_dataset` (see `BaseModel.set_payload`).
+# Schema field that is not a column of `datasets_dataset` (see `VersionedModel.set_payload`).
 TAG_FIELD = frozenset({"tags"})
 
 

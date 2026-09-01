@@ -9,9 +9,11 @@ Every row also carries a `version` counter and a `deleted_at` timestamp, and eve
 mirrored into an append-only event table by a trigger (`apps/core/history.py`). Nothing is ever
 hard-deleted: `soft_delete()` is an UPDATE, and the database refuses a real DELETE.
 
-`OwnedModel` is the tenant base (tenant == user, CLAUDE.md "Multitenancy"): the `owner` column
-is what both isolation layers key on — the ORM scope applied by `OwnedManager` and the
-row-level security policy `apps/core/rls.py` generates for every owned table.
+`BaseModel` is the tenant base and what a feature model extends (tenant == user, CLAUDE.md
+"Multitenancy"): the `owner` column is what both isolation layers key on — the ORM scope applied
+by `OwnedManager` and the row-level security policy `apps/core/rls.py` generates for every owned
+table. `VersionedModel` underneath it is everything except that column, for the handful of
+shared tables that predate any tenant.
 """
 
 import uuid
@@ -38,7 +40,7 @@ from apps.core.lineage import Lineage as Lineage
 if TYPE_CHECKING:
     from apps.accounts.models import User
 
-_ModelT = TypeVar("_ModelT", bound="BaseModel")
+_ModelT = TypeVar("_ModelT", bound="VersionedModel")
 
 # The column both isolation layers key on. Named here rather than in apps/core/rls.py so
 # the system checks can use it without importing the database layer at startup.
@@ -46,7 +48,7 @@ OWNER_COLUMN = "owner_id"
 
 # Fields that name a row for a human, in order of preference. Used by `__str__` and by
 # anything that has to label a row it knows nothing else about — including an *event* row,
-# which is not a `BaseModel` and so cannot borrow its `__str__` (apps/core/revisions.py).
+# which is not a `VersionedModel` and so cannot borrow its `__str__` (apps/core/revisions.py).
 LABEL_FIELDS = ("name", "title")
 
 
@@ -61,7 +63,7 @@ class ActiveQuerySet(models.QuerySet[_ModelT]):
 
 
 class ActiveManager(models.Manager[_ModelT]):
-    """Default manager of every `BaseModel`: soft-deleted rows are simply not there.
+    """Default manager of every `VersionedModel`: soft-deleted rows are simply not there.
 
     Django's own `_base_manager` (forward FK traversal, `refresh_from_db`, deletion collection)
     is deliberately left as the plain unfiltered manager Django creates when `Meta` names none:
@@ -73,8 +75,16 @@ class ActiveManager(models.Manager[_ModelT]):
         return ActiveQuerySet(model=self.model, using=self._db).alive()
 
 
-class BaseModel(models.Model):
-    """Abstract base for every model: UUIDv7 pk, timestamps, versioning, soft delete.
+class VersionedModel(models.Model):
+    """Abstract base under every model: UUIDv7 pk, timestamps, versioning, soft delete.
+
+    **Do not extend this — extend `BaseModel` below.** Almost every model holds one user's data,
+    and `BaseModel` is this class plus the `owner` column both isolation layers key on; inheriting
+    here instead silently opts a table out of tenant isolation, which is why the system check
+    `tenant.E001` rejects it in a feature app unless the label is listed in `SHARED_MODELS`.
+
+    This one is right only for a table that cannot belong to a single user: `accounts.ApiToken`
+    and `RefreshToken` are read while authenticating, before any tenant context exists.
 
     Four of these columns are owned by the database and must never be assigned in Python:
 
@@ -102,15 +112,15 @@ class BaseModel(models.Model):
     deleted_at = models.DateTimeField(null=True, default=None, db_index=True, editable=False)
 
     # No manager here on purpose: django-stubs resolves a manager's model type per concrete
-    # class, and declaring the pair on both this base *and* `OwnedModel` collapses it to Any.
+    # class, and declaring the pair on both this base *and* `BaseModel` collapses it to Any.
     # Every concrete subclass gets `objects` (soft-deleted rows hidden) plus `all_objects`
-    # (everything) from `OwnedModel` below or declares them itself — `test_history.py` checks
+    # (everything) from `BaseModel` below or declares them itself — `test_history.py` checks
     # that none is missing.
 
     class Meta:
         abstract = True
         ordering = ["-created", "-id"]
-        # Inherited through `class Meta(BaseModel.Meta)`. A concrete model that declares a bare
+        # Inherited through `class Meta(VersionedModel.Meta)`. A concrete model that declares a bare
         # `class Meta:` silently loses both triggers — `test_history.py` fails on that.
         triggers = [
             pgtrigger.Protect(name="no_hard_delete", operation=pgtrigger.Delete),
@@ -189,11 +199,11 @@ class BaseModel(models.Model):
         return f"{type(self).__name__}({self.pk})"
 
 
-_OwnedT = TypeVar("_OwnedT", bound="OwnedModel")
+_OwnedT = TypeVar("_OwnedT", bound="BaseModel")
 
 
 class OwnedQuerySet(ActiveQuerySet[_OwnedT]):
-    """Queryset of an `OwnedModel`. `for_user(user)` is the explicit half of the isolation:
+    """Queryset of a `BaseModel`. `for_user(user)` is the explicit half of the isolation:
     callers name the user they act for; the manager below adds the ambient scope on top."""
 
     def for_user(self, user: User) -> Self:
@@ -259,16 +269,16 @@ def owned_upload_path(instance: models.Model, filename: str) -> str:
     Per-user prefixes keep one tenant's objects extractable (or erasable) with a prefix listing
     and make a key say whose it is. Not an access control: `/media/…` links are signed.
     """
-    if not isinstance(instance, OwnedModel):
-        raise TypeError("owned_upload_path is for OwnedModel files only")
+    if not isinstance(instance, BaseModel):
+        raise TypeError("owned_upload_path is for BaseModel files only")
     owner_id = instance.__dict__.get("owner_id") or current_user_id.get()
     if owner_id is None:
         raise NoTenantContext(f"{type(instance).__name__} has no owner to build a file path from")
     return f"{instance._meta.app_label}/{owner_id}/{timezone.now():%Y/%m}/{filename}"
 
 
-class OwnedModel(BaseModel):
-    """Abstract base for everything that belongs to a user — the tenant base.
+class BaseModel(VersionedModel):
+    """Abstract base for feature models: a `VersionedModel` that belongs to a user.
 
     Two enforcement layers ride on this class:
       1. `OwnedManager` — queries outside `scope(user=...)` raise, inside they are filtered.
@@ -294,9 +304,9 @@ class OwnedModel(BaseModel):
     objects = OwnedManager()
     all_objects = AllOwnedManager()
 
-    class Meta(BaseModel.Meta):
+    class Meta(VersionedModel.Meta):
         abstract = True
-        # Lists are always "this owner's rows, newest first" (BaseModel.ordering). The name is
+        # Lists are always "this owner's rows, newest first" (VersionedModel.ordering). The name is
         # left to Django: `Index.max_name_length` is 30, so a literal `%(app_label)s_%(class)s`
         # pattern would make every app with a longer name fail `makemigrations` (models.E034).
         indexes = [models.Index(fields=["owner", "-created", "-id"])]

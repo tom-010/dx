@@ -6,7 +6,7 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
 
-from apps.core.models import ActiveManager, BaseModel
+from apps.core.models import ActiveManager, VersionedModel
 
 ApiTokenId = NewType("ApiTokenId", uuid.UUID)
 RefreshTokenId = NewType("RefreshTokenId", uuid.UUID)
@@ -33,13 +33,13 @@ def generate_token() -> str:
     return API_TOKEN_PREFIX + secrets.token_hex(20)
 
 
-class ApiToken(BaseModel):
+class ApiToken(VersionedModel):
     """Long-lived personal bearer token for scripts and CI (`Authorization: Bearer tk_...`).
 
     Unlike the JWTs from `POST /api/auth/login` these never expire; revoke them instead.
     """
 
-    # Direct `BaseModel` subclasses declare the manager pair themselves (see BaseModel).
+    # Direct `VersionedModel` subclasses declare the manager pair themselves (see VersionedModel).
     objects = ActiveManager()
     all_objects = models.Manager()
 
@@ -49,7 +49,7 @@ class ApiToken(BaseModel):
     is_active = models.BooleanField(default=True)
     last_used = models.DateTimeField(null=True, blank=True)
 
-    class Meta(BaseModel.Meta):
+    class Meta(VersionedModel.Meta):
         # Conditional, not `unique=True`: rows are only ever soft-deleted, and a plain unique
         # index would let a deleted row reserve its value forever.
         constraints = [
@@ -72,7 +72,7 @@ class ApiToken(BaseModel):
         self.save(update_fields=["last_used"])
 
 
-class RefreshToken(BaseModel):
+class RefreshToken(VersionedModel):
     """One login session: the server-side half of a refresh JWT (its `jti` is this row's id).
 
     Access tokens are stateless and short-lived; the refresh token that renews them is checked
