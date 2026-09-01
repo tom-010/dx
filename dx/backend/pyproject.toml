@@ -41,8 +41,9 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-# scaffold/ holds *.py.tmpl templates with placeholders, not code.
-extend-exclude = ["scaffold"]
+# scaffold/ holds *.py.tmpl templates with placeholders, not code; notebooks/ is scratch space
+# where `import` after `setup_django()` is the point, not a mistake.
+extend-exclude = ["scaffold", "notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ANN"]
@@ -72,7 +73,7 @@ enable_error_code = [
     "ignore-without-code", # `# type: ignore` must name the error code it silences
 ]
 plugins = ["mypy_django_plugin.main"]
-exclude = ["migrations/", "scaffold/"]
+exclude = ["migrations/", "scaffold/", "notebooks/"]
 # Local stubs for untyped dependencies (stubs/<package>/__init__.pyi), see NOTES.md §5.
 # Currently: djclick, storages (django-storages).
 mypy_path = "stubs"
