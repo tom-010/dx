@@ -37,7 +37,6 @@ def test_render_module_writes_compilable_python(tmp_path: Path) -> None:
         "__init__.py",
         "admin.py",
         "api.py",
-        "apps.py",
         "migrations/__init__.py",
         "models.py",
         "tests/__init__.py",

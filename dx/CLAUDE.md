@@ -3,6 +3,7 @@
 Data-management app: Django backend + React SPA, later wrapped with Capacitor for Android/iOS.
 Architecture decisions and rationale live in `NOTES.md` (currently German; the decisions there are binding).
 
+
 ## Conventions
 
 - **Everything in English**: code, comments, docs, commit messages.
@@ -21,6 +22,32 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
 - **Everything is versioned and nothing is deleted**: every write to a feature model is mirrored
   into an append-only event table by a database trigger, and deletes are soft. See
   "Versioning, history and lineage" — those invariants are not negotiable either.
+
+## Principles: Your approach to write code. Your attitude toward programming
+
+Code is a Liability; Mutability is the Only Metric. Every line of code creates maintenance debt and entropy. The objective is maximum utility via minimum syntax. Static "quality" is irrelevant if the system resists modification; a rigid system that functions correctly is a failure. Therefore, subtraction is superior to addition, and explicit duplication is scientifically superior to premature abstraction. Wrong abstractions introduce invisible, high-cost dependencies that cripple future velocity.
+
+The Bottleneck is Cognitive Capacity, Not Hardware. Software velocity is constrained by the developer's working memory, not CPU cycles. "Clever" code exhausts this resource; "boring," predictable code preserves it for domain logic. Enforce strict uniformity to eliminate decision fatigue regarding implementation details. Optimize for locality—co-locating related logic—to minimize context switching. Coupling is the primary enemy of cognitive containment; distinctness enables speed.
+
+Scale is a Distraction; Architect Only for Now. Speculative architecture for hypothetical futures is resource waste. Solve strictly for the immediate reality (e.g., 10 users). Leverage "Lindy" technologies—proven standards like SQL and HTTP—where failure modes are known; novelty introduces unquantified risk. Speed today is a requirement; speed tomorrow is achieved not by generic flexibility, but by a disciplined refusal to couple components.
+
+Value Follows a Power Law; Imperfection is Economic. The majority of utility derives from a minority of features. Perfectionism in the "long tail" or secondary UI is economic malpractice. Real-world usage is the only valid validation mechanism for the scientific method. Consequently, rapid, imperfect shipping outperforms perfect planning. A solution exists only when value is delivered; until then, it is merely inventory.
+
+Other little ideas:
+- The URL is the Source of Truth. The Database is the State. The Client is just a View. No API Layer, no client state like redux, no loading spinners.
+- F5-ability: All UI state must survive a page refresh. Tabs, filters, modals, selections — if it's visible, it's in the URL. Never store UI state in React state alone.
+  - **Search params (`?tab=settings`):** Use when the loader needs the value — tabs that load different data, filters, pagination, search queries. This is the default choice.
+  - **Hash (`#section`):** Use for in-page scroll anchors or purely client-side state that doesn't affect data loading. Rare in this stack.
+- Co-location is king: Put things together, best in a single file.
+- No magic. E.g. route.ts over file-system based routing.
+- Keep things simple. E.g. no own caching layer.
+- Design for 10 users or less
+- Types are your friend as they provide fast feedback for fast iterations.
+- The Programmers Time, Brain-Capacity and Happyness are the most important resource.
+- Logging: Unix philosophy. Silent on success, stderr on error. No emojis, no "cute" messages.
+- The database is ephemeral. Seed data is the source of truth. Reset anytime via `npm run db:reset`.
+
+
 
 ## Prerequisites
 
@@ -145,6 +172,11 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
   - `apps/<feature>/` — one Django app per feature module: `api.py` (schemas, logic and the
     ninja `Router`), `models.py`, `admin.py`, `tests/test_*.py`. Register new apps in
     `INSTALLED_APPS` as `"apps.<feature>"` and their router in `config/api.py`.
+    **No `apps.py`**: Django synthesises the `AppConfig` from the `INSTALLED_APPS` entry (label =
+    last component, `datasets`), so a stub that only restates `name` is a file to keep in sync
+    for nothing. Add one only when the module needs `ready()` — Django picks it up
+    automatically, no settings change. `apps/core/apps.py` is the one that earns it (system
+    checks, the `connection_created` receiver, `register_event_admins`).
   - `apps/core/` — infrastructure: `health.py` (`GET /api/health`, `GET /api/ready`, see "Health
     checks"), `models.py` (`BaseModel`: UUIDv7 pk + `created`/`modified` +
     `set_payload()`/`set_payload_partial()` for PUT/PATCH; `OwnedModel` + `OwnedManager`/
