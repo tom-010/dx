@@ -1,14 +1,6 @@
-"""Admin pages for the gallery app (see apps/datasets/admin.py for the rules)."""
+"""Admin pages for the gallery app: Django's defaults, see apps/core/admin.py."""
 
-from django.contrib import admin
+from apps.core.admin import register_all
+from apps.gallery import models
 
-from apps.core.admin import OwnedModelAdmin
-from apps.gallery.models import MediaItem
-
-
-@admin.register(MediaItem)
-class MediaItemAdmin(OwnedModelAdmin[MediaItem]):
-    list_display = ["name", "kind", "content_type", "size", "version", "created", "deleted_at"]
-    list_filter = ["deleted_at", "kind"]
-    search_fields = ["name"]
-    readonly_fields = [*OwnedModelAdmin.readonly_fields, "file", "size", "content_type", "kind"]
+register_all(models)

@@ -1,13 +1,6 @@
-"""Admin pages for the notes app (see apps/datasets/admin.py for the rules)."""
+"""Admin pages for the notes app: Django's defaults, see apps/core/admin.py."""
 
-from django.contrib import admin
+from apps.core.admin import register_all
+from apps.notes import models
 
-from apps.core.admin import OwnedModelAdmin
-from apps.notes.models import Note
-
-
-@admin.register(Note)
-class NoteAdmin(OwnedModelAdmin[Note]):
-    list_display = ["title", "version", "created", "deleted_at"]
-    list_filter = ["deleted_at"]
-    search_fields = ["title", "body"]
+register_all(models)

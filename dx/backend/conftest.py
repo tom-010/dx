@@ -18,8 +18,7 @@
 from collections.abc import Callable, Iterator
 
 import pytest
-from django.conf import settings
-from django.db import DatabaseError, connection, connections
+from django.db import DatabaseError, connection
 from django.test import Client
 from pytest_django import DjangoDbBlocker
 
@@ -64,17 +63,6 @@ def rls_enforced(request: pytest.FixtureRequest) -> Iterator[None]:
             cursor.execute("RESET ROLE")
     except DatabaseError:
         pass  # aborted transaction: the rollback undoes the SET ROLE anyway
-
-
-@pytest.fixture(autouse=True)
-def close_audit_connection() -> Iterator[None]:
-    """The admin's cross-tenant alias is a second session on the same database, and pytest-django
-    cannot drop the test database while one is open. Nothing else closes it: the alias is outside
-    the test transaction by design (that is what makes it see other tenants)."""
-    yield
-    alias = settings.AUDIT_DB_ALIAS
-    if alias in settings.DATABASES:
-        connections[alias].close()
 
 
 @pytest.fixture

@@ -1,12 +1,17 @@
 """Request tenant context: verify the bearer token once, then run the request inside a
 transaction with the tenant set (`SET LOCAL app.user_id` + ORM scope, apps/core/db.py).
 
+Two middlewares, because the two resolve different identities: `TenantMiddleware` trusts a
+bearer token and nothing else, `AdminTenantMiddleware` trusts the admin session. Keeping them
+apart is what stops a session cookie from ever authenticating the API.
+
 Requests without a valid token proceed with **no** context: every owned table is then empty
 and unwritable (the policy fails closed), and ninja's `BearerAuth` answers 401 anyway. The
 identity comes only from the verified token — never from a header, query parameter or body
 field a client could set.
 """
 
+import uuid
 from collections.abc import Callable
 
 import structlog
@@ -15,7 +20,7 @@ from django.http.response import HttpResponseBase
 
 from apps.accounts import api as accounts_api
 from apps.accounts.models import User
-from apps.core.db import tenant_context
+from apps.core.db import NoTenantContext, tenant_context
 
 log = structlog.get_logger(__name__)
 
@@ -57,3 +62,32 @@ class TenantMiddleware:
             # queries inside a streaming generator would see nothing. Materialise first.
             log.warning("tenant_streaming_response", path=request.path)
         return response
+
+
+class AdminTenantMiddleware:
+    """Runs `/admin/` requests inside the tenant context of the logged-in staff user.
+
+    Tenant == user, so a staff user browsing the admin is a tenant browsing their own rows.
+    Without this every admin page over owned data raises: `TenantMiddleware` only runs under
+    `/api/`, so neither the ORM scope nor `app.user_id` would be set.
+
+    Must come after `AuthenticationMiddleware` (it reads `request.user`) and after
+    `HistoryMiddleware`, so an admin write lands in a context like any other.
+    """
+
+    prefix = "/admin/"
+
+    def __init__(self, get_response: Callable[[HttpRequest], HttpResponseBase]) -> None:
+        self.get_response = get_response
+
+    def __call__(self, request: HttpRequest) -> HttpResponseBase:
+        if not request.path.startswith(self.prefix):
+            return self.get_response(request)
+        user = request.user
+        if not user.is_authenticated:  # the login page, which reads no owned data
+            return self.get_response(request)
+        user_id = user.pk
+        if not isinstance(user_id, uuid.UUID):  # pragma: no cover - AbstractUser has a UUID pk
+            raise NoTenantContext(f"admin request has no usable user id: {user_id!r}")
+        with tenant_context(user_id):
+            return self.get_response(request)

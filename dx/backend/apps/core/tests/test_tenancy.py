@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 from django.conf import settings
-from django.contrib.admin.sites import site
 from django.core.checks import Tags, run_checks
 from django.core.checks.registry import registry as check_registry
 from django.core.files.base import ContentFile
@@ -32,7 +31,6 @@ from pytest_django import DjangoAssertNumQueries
 from pytest_django.fixtures import Settings
 
 from apps.accounts import api as accounts_api
-from apps.accounts.admin import UserAdmin
 from apps.accounts.api import issue_access_token
 from apps.accounts.models import User
 from apps.core import cache as tenant_cache
@@ -926,26 +924,6 @@ def test_delete_tenant_keeps_the_files_when_the_rows_survive(
         tenants.delete_tenant(user)
 
     assert len(list(media_root.rglob("*.pdf"))) == 1
-
-
-@pytest.mark.django_db
-def test_the_admin_does_not_offer_a_user_deletion_it_cannot_perform(
-    client: Client, staff_user: User, user: User
-) -> None:
-    """It would report success and then fail at the foreign key on commit (the cascade cannot
-    see the owned rows). `manage.py delete_tenant` is the working path."""
-    staff_user.is_superuser = True
-    staff_user.save()
-    client.force_login(staff_user)
-    with acting_as(user):
-        create_dataset_for(user, name="mine")
-
-    assert UserAdmin(User, site).has_delete_permission(RequestFactory().get("/")) is False
-    assert (
-        client.post(f"/admin/accounts/user/{user.pk}/delete/", {"post": "yes"}).status_code == 403
-    )
-    with scopes_disabled():
-        assert User.objects.filter(pk=user.pk).exists()
 
 
 @isolate_apps("apps.datasets", "apps.accounts")  # accounts: the owner FK must resolve

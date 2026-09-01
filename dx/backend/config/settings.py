@@ -102,10 +102,10 @@ MIDDLEWARE = [
     # the tenant context set (`SET LOCAL app.user_id` + ORM scope) — after AuthenticationMiddleware
     # (which would overwrite request.user), before anything that reads owned data.
     "apps.core.middleware.TenantMiddleware",
-    # The same context for `/admin/`, resolved from the admin session instead of a bearer token
-    # (apps/core/admin.py). Without it every admin page over owned data is empty: the ORM scope
-    # is missing and the policies fail closed.
-    "apps.core.admin.AdminTenantMiddleware",
+    # The same context for `/admin/`, resolved from the admin session instead of a bearer token.
+    # Without it every admin page over owned data raises: the ORM scope is missing and the
+    # policies fail closed.
+    "apps.core.middleware.AdminTenantMiddleware",
     # Binds request_id/user_id/ip to every log line of a request (config/logging.py).
     "django_structlog.middlewares.RequestMiddleware",
 ]
@@ -147,21 +147,6 @@ DATABASES = {
     )
 }
 
-# Cross-tenant reads for the Django admin (apps/core/admin.py). A *second* alias, so the default
-# connection stays `app_user` and the readiness probe's `rls` check keeps failing a web process
-# that could bypass the policies. Present only when DB_ADMIN_* is configured: without it a
-# superuser sees their own tenant like everybody else, which is the safe default.
-AUDIT_DB_ALIAS = "audit"
-_audit_credentials = env.audit_credentials()
-if _audit_credentials is not None:
-    DATABASES[AUDIT_DB_ALIAS] = {
-        **django_database(
-            env.DATABASE_URL, conn_max_age=env.DB_CONN_MAX_AGE, credentials=_audit_credentials
-        ),
-        # One database, two roles: never give this alias a test database of its own.
-        "TEST": {"MIRROR": "default"},
-    }
-
 
 # Multitenancy (tenant == user; CLAUDE.md "Multitenancy"). Two enforcement layers ride on
 # `apps.core.models.OwnedModel`: the ORM scope (`OwnedManager`, django-scopes state) and
@@ -199,9 +184,9 @@ PGHISTORY_BASE_MODEL = "apps.core.history.Event"
 # The admin's aggregate events page (`pghistory.admin`, CLAUDE.md "Admin").
 # It unions *every* event table, so its cost grows with the number of tracked models and we
 # track all of them: show nothing until the page is filtered or reached from another admin page.
+# It needs no tenant column of its own: every event table carries `owner_id` with the
+# `tenant_isolation` policy, so without a context the page returns nothing, not everything.
 PGHISTORY_ADMIN_ALL_EVENTS = False
-# Scoped to one tenant unless a superuser has cross-tenant access (apps/core/admin.py).
-PGHISTORY_ADMIN_CLASS = "apps.core.admin.TenantEventsAdmin"
 # `version` is the authoritative order of the version chain, but the aggregate model cannot
 # carry it as a column (pghistory only lets a proxy field read `pgh_context`), so the page
 # orders by write time and shows the version inside `pgh_diff`.

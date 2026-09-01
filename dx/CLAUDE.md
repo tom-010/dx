@@ -75,7 +75,7 @@ Other little ideas:
 | Django management    | `cd backend && uv run python manage.py <cmd>`               |
 | Tenant shell         | `cd backend && uv run python manage.py shell_as [-u USER \| --last]` (one user's data; picker with MRU + Tab completion) · `shell_admin --reason '…'` (all tenants, needs `DB_ADMIN_*`, audited) |
 | Pull one tenant      | `manage.py pull_tenant USER [-o FILE] [--no-scrub]` → scrubbed fixture · `manage.py load_tenant FILE`; see "Multitenancy" |
-| Erase one tenant     | `DB_ROLE=migrator manage.py delete_tenant USER [-y]` (user + all owned rows + **their version history and lineage** + their files; the admin's user deletion is disabled on purpose) |
+| Erase one tenant     | `DB_ROLE=migrator manage.py delete_tenant USER [-y]` (user + all owned rows + **their version history and lineage** + their files; the only working way to delete a user — the admin's delete button fails) |
 | Tracked-field snapshot | `cd backend && uv run python manage.py history_schema [--write]` → `backend/history_schema.json`; run after any field change on a tracked model (see "Versioning") |
 | Maintenance worker   | `./scripts/celery.sh maintenance` (beat + `maintenance` queue as the table owner; the nightly backup runs here, not on the dev worker) |
 | Backend tests        | `cd backend && uv run pytest`                               |
@@ -180,7 +180,7 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     last component, `datasets`), so a stub that only restates `name` is a file to keep in sync
     for nothing. Add one only when the app needs `ready()` — Django picks it up
     automatically, no settings change. `apps/core/apps.py` is the one that earns it (system
-    checks, the `connection_created` receiver, `register_event_admins`).
+    checks and the `connection_created` receiver).
   - `apps/core/` — infrastructure: `health.py` (`GET /api/health`, `GET /api/ready`, see "Health
     checks"), `models.py` (`BaseModel`: UUIDv7 pk + `created`/`modified` +
     `set_payload()`/`set_payload_partial()` for PUT/PATCH; `OwnedModel` + `OwnedManager`/
@@ -217,8 +217,8 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     **`POST /api/datasets/import-document`** builds a dataset from an uploaded document
     (`import_dataset_from_document`) and is the one place that writes a lineage edge: the edge
     names the document *version* the rows were counted from, so a later rename does not rewrite
-    history and `stale_derivations(document)` finds what needs rebuilding. `admin.py` registers
-    the three models with `OwnedModelAdmin` (see "Admin"); the admin is a dev/staff tool and is
+    history and `stale_derivations(document)` finds what needs rebuilding. `admin.py` is the
+    standard three-line `register_all(models)` (see "Admin"); the admin is a dev tool and is
     not mounted in production (`ADMIN_ENABLED`).
     Endpoints: paginated `GET /api/datasets`, `POST /api/datasets`,
     `GET/PUT/PATCH/DELETE /api/datasets/{id}`.
@@ -393,9 +393,9 @@ default-deny).
   `tenants.owned_rows()` (`_base_manager`), so soft-deleted rows are exported and erased too: an
   export that hid them would be a false answer to "what do you hold about me", and history that
   outlived an erased user would defeat the erasure. Erasure is the one caller allowed to really
-  delete (`history.hard_delete()`). Erasure needs cross-tenant credentials, and that is also why
-  **`UserAdmin` refuses to delete**: outside a tenant context the cascade cannot see the owned
-  rows, so the admin would report success and then fail at the foreign key on commit. `apps/core/scrub.py`: `PII_FIELDS` allowlist —
+  delete (`history.hard_delete()`). Erasure needs cross-tenant credentials, which is also why
+  **deleting a user from the admin does not work**: the cascade cannot see the owned rows, so it
+  reports success and then fails at the foreign key on commit. `apps/core/scrub.py`: `PII_FIELDS` allowlist —
   every model field with such a name needs a `SCRUBBERS` entry or the export refuses
   (`check_scrubbers()` is a test). Backups (`dumpdata`) need cross-tenant access and refuse
   the runtime role (`CrossTenantAccessRequired`). Connect to Postgres directly (not via a
@@ -409,7 +409,7 @@ default-deny).
   `tenant_streaming_response` when it sees one).
 - **Peripheral guardrails**: cache keys via `apps.core.cache.tenant_cache_key()` (raw
   `cache.get/set` in tenant apps fails a test); file keys carry the owner id
-  (`owned_upload_path`), links stay signed; the Django admin registers owned models but only
+  (`owned_upload_path`), links stay signed; the Django admin reads owned models only
   inside a tenant context it opens itself (`AdminTenantMiddleware`, see "Admin") and is off in
   production; 404 not 403; UUIDs in URLs;
   `ModelForm`s on owned models would need `django_scopes.forms.SafeModelChoiceField`;
@@ -518,76 +518,49 @@ version* of a source, not at the live row.
 - Tests: `apps/core/tests/test_history.py` (coverage, triggers, append-only, soft delete,
   schema log, lineage, the endpoint); event-table isolation lives in `test_tenancy.py`.
 
-## Admin (`apps/core/admin.py`, `admin_lineage.py`)
+## Admin (`apps/core/admin.py`)
 
-Version history and lineage, browsable — without the admin becoming a way to hard-delete rows,
-edit history, or read another tenant's data. **Not mounted in production**: `ADMIN_ENABLED`
-defaults to `DEBUG`, and with it off `/admin/` does not resolve and the interactive API docs go
-with it (they need an admin session to log in with). Administer production through
-`manage.py shell_as` / `shell_admin`.
+A **dev-only** window on the rows, not a maintained UI. `ADMIN_ENABLED` defaults to `DEBUG`, so
+in production `/admin/` does not resolve and the interactive API docs go with it (they need an
+admin session to log in with). Administer production through `manage.py shell_as` /
+`shell_admin`.
 
-- **`AdminTenantMiddleware` gives an admin request a tenant context**, resolved from the admin
-  session (tenant == user, so a staff user browsing the admin is a tenant browsing their own
-  rows). Without it every owned-model page is empty and `OwnedManager` raises: `TenantMiddleware`
-  only runs under `/api/`, so neither the ORM scope nor `app.user_id` would be set. Kept separate
-  from `TenantMiddleware` on purpose — that one trusts a bearer token and nothing else, which is
+- **No admin classes.** Every app's `admin.py` is three lines — `register_all(models)` from
+  `apps/core/admin.py`, which registers every model *that app defines* in the module with
+  Django's default `ModelAdmin`. A new model appears without anyone maintaining a page for it,
+  and the pghistory event models carry the app's label, so they show up too. It registers only
+  the app's own models on purpose: `dir()` also sees whatever the module imported, and another
+  app's model would either duplicate its page or raise `AlreadyRegistered` at boot.
+- **Nothing is registered when the admin is off.** `register_all` returns early unless
+  `settings.ADMIN_ENABLED`, so in production the registry holds none of our models — a page that
+  cannot be reached is not built. Django still imports each `admin.py` (autodiscovery), which is
+  why the guard lives in the function rather than at the six call sites.
+- **`AdminTenantMiddleware` (`apps/core/middleware.py`) is what makes the pages resolve**: it
+  runs `/admin/` requests inside the logged-in staff user's tenant context (tenant == user, so
+  a staff user browsing the admin is a tenant browsing their own rows). Without it `OwnedManager`
+  raises and row-level security hides everything — `TenantMiddleware` only runs under `/api/`.
+  Kept a separate class on purpose: that one trusts a bearer token and nothing else, which is
   what stops a session cookie from ever authenticating the API.
-- **Every `BaseModel` subclass registers with `BaseModelAdmin`** (owned models with
-  `OwnedModelAdmin`, which adds the lineage page), never a plain `ModelAdmin`. A plain one
-  reintroduces the delete button and `delete_selected`, both of which issue a real `DELETE` and
-  surface the `no_hard_delete` trigger as a 500. `apps/core/tests/test_admin.py` fails on any
-  that does — including the two `accounts` token models, which are shared tables but still
-  `BaseModel`s.
-- **Admin `get_queryset` uses `all_objects`.** `objects` hides soft-deleted rows from the only
-  interface that can restore them. `soft_delete_action` / `restore_action` replace the delete
-  button; restore catches the `IntegrityError` from a partial unique index (a name freed by a
-  delete can be taken again) and reports it as a message per row instead of a 500.
-- **FKs to soft-deleted rows keep validating**: `formfield_for_foreignkey` swaps in
-  `all_objects`, because admin choice fields query `_default_manager` and would otherwise fail a
-  save nobody asked for with "Select a valid choice". New FKs between `BaseModel` subclasses
-  need no extra work.
-- **Event admins subclass `ReadOnlyEventAdmin`** and refuse add/change/delete at the permission
-  layer — the tables are append-only in the database, so an edit surfaces as a trigger error.
-  `pgh_schema` is in `list_display`: a row written under an older tag must not present a
-  backfilled default as recorded data. They are registered automatically for every tracked model
-  that is itself registered (`register_event_admins`, `apps/core/apps.py`), so the two lists
-  cannot drift apart. Never add an admin action that writes to an event table.
-- **All admin querysets go through `scope_to_tenant()`** — one function, which is what the leak
-  tests can verify; a filter repeated in six overrides is not. A source-level test asserts every
-  `get_queryset` calls it.
-- **The aggregate events page** (`pghistory.admin`, `PGHISTORY_ADMIN_CLASS = TenantEventsAdmin`)
-  has no tenant column of its own and cannot be given one: pghistory only lets a proxy field read
-  `pgh_context`, and that table is deliberately free of identifiers. It does not need one —
-  every event table here mirrors an `OwnedModel`, so each carries a real `owner_id` with the
-  `tenant_isolation` policy, and the union is built from those tables: **without a tenant context
-  the page returns nothing, not everything.** `.references(user)` adds the ORM-layer half.
+- **Known sharp edges, accepted because nobody administers data here.** The pages are Django's
+  defaults, so: the delete button issues a real `DELETE` and the `no_hard_delete` trigger turns
+  it into a 500 (deleting is `obj.soft_delete()`); the event tables are append-only, so saving
+  one of their change forms fails the same way; `User` gets a plain form, meaning the password
+  field is a raw hash box, and deleting a user here would report success and then fail at the
+  foreign key on commit (`manage.py delete_tenant` is the working path). Soft-deleted rows are
+  simply invisible — `objects` hides them and there is no restore action any more.
+- **The aggregate events page** (`pghistory.admin`) needs no tenant column of its own: every
+  event table mirrors an `OwnedModel` and carries a real `owner_id` with the `tenant_isolation`
+  policy, so **without a tenant context it returns nothing, not everything**.
   `PGHISTORY_ADMIN_ALL_EVENTS = False` — it unions *every* event table, so it stays blank until
-  filtered. `PGHISTORY_ADMIN_ORDERING` cannot name `version`: the aggregate model has no such
-  column (it shows up inside `pgh_diff`).
-- `PGHISTORY_BASE_MODEL` names `apps.core.history.Event` rather than `@tracked` passing
-  `base_model=`, so every event table — including one a third party or a migration generates —
-  gets the same column set the union depends on.
-- **`Lineage` admin is read-only and is not a `BaseModel` admin** (no version chain, no soft
-  delete). Its generic pointers get no FK widget, so `source_link`/`target_link` resolve
-  `(content_type, pgh_id)` to that event model's change page through one helper, which renders a
-  placeholder rather than raising if a pointer ever fails to resolve — that is precisely when you
-  want to be able to look.
-- **Each owned object gets a Lineage page** (`admin_lineage.py`, button next to pghistory's
-  "Events"): upstream, which exact source *versions* produced each version of it, and downstream,
-  everything built from it with the version consumed — rows built from a superseded version are
-  highlighted as stale. Tables, not a graph: they answer the questions people actually ask, and
-  `lineage.graph()` is already there if a drawing is ever wanted.
-- **Cross-tenant access for superusers** is a second database alias (`AUDIT_DB_ALIAS`, connecting
-  as `app_admin`/BYPASSRLS — the role `shell_admin` uses), not a loosened policy: the default
-  connection stays `app_user`, so `/api/ready`'s `rls` check keeps refusing a web process that
-  could bypass the policies on its own connection. The alias exists **only when `DB_ADMIN_*` is
-  configured**; unset — the production default — means a superuser sees their own tenant like
-  anyone else. Every cross-tenant page view is logged to `tenant.admin_access`, and those pages
-  are read-only (`owner` is `editable=False`, so such a page could not say whose a new row is).
-  Tests for it need `transaction=True`: the alias is a second session and cannot see a normal
-  test's uncommitted transaction, which is the same property that lets it see other tenants.
-- Django's built-in "History" button still points at `LogEntry` and is unrelated to any of this.
-  Leave it; the useful pages are "Events" and "Lineage".
+  filtered. `PGHISTORY_BASE_MODEL` names `apps.core.history.Event` so every event table gets the
+  same column set that union depends on.
+- **Superusers see their own tenant, like everyone else.** There is no cross-tenant admin access
+  and no second database alias: `manage.py shell_admin --reason '…'` is the audited way to read
+  across tenants.
+- `apps/core/tests/test_admin.py` is a smoke test — every registered changelist returns 200 (it
+  would be a 500 without the tenant context) and one tenant's rows do not appear in another's.
+- Django's built-in "History" button points at `LogEntry` and is unrelated to the version
+  history; the real one is the SPA's revision page (`GET /api/history/{resource}/{id}`).
 
 ## Data model conventions (`apps/core/models.py`, `apps/core/schemas.py`)
 

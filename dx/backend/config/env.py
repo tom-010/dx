@@ -172,18 +172,6 @@ class Env(BaseSettings):
         """Whether `/admin/` is mounted at all (default: only with DEBUG)."""
         return self.ADMIN_ENABLED if self.ADMIN_ENABLED is not None else self.DEBUG
 
-    def audit_credentials(self) -> tuple[str, str] | None:
-        """(user, password) for the admin's cross-tenant alias, or None when it is not set up.
-
-        Same role as `manage.py shell_admin` (`DB_ADMIN_*`, BYPASSRLS). Unset — the production
-        default — is a supported state, not an error: `apps/core/admin.py` then shows a superuser
-        their own tenant like any other staff user. Deploying the credential is what turns
-        cross-tenant visibility on, so the decision stays with the environment.
-        """
-        if not self.DB_ADMIN_USER or self.DB_ADMIN_PASSWORD is None:
-            return None
-        return self.database_credentials("admin")
-
     @model_validator(mode="after")
     def production_guards(self) -> Self:
         """Refuse to start with a known secret rather than serve with it."""

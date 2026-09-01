@@ -14,15 +14,6 @@ from config.settings import *  # noqa: F403  # extends the real settings on purp
 # row-level security is enforced in tests exactly as in production.
 DATABASES = {
     "default": django_database(env.DATABASE_URL, credentials=env.database_credentials("migrator")),
-    # The admin's cross-tenant alias (apps/core/admin.py). Wired up unconditionally here — in a
-    # real environment it appears only when DB_ADMIN_* is set, and a feature that is off in the
-    # suite is a feature nothing tests. The credentials are the dev compose's
-    # (docker/postgres/10-roles.sh); MIRROR keeps it on the one test database, as a second role
-    # rather than a second copy.
-    AUDIT_DB_ALIAS: {  # noqa: F405
-        **django_database(env.DATABASE_URL, credentials=("app_admin", "app_admin")),
-        "TEST": {"MIRROR": "default"},
-    },
 }
 
 # Celery: run tasks inline, keep results in memory — no broker, no Redis, but
