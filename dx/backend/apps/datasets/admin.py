@@ -1,4 +1,4 @@
-"""Admin pages for the datasets module.
+"""Admin pages for the datasets app.
 
 `OwnedModelAdmin` (apps/core/admin.py) is what makes these safe: soft-delete instead of the
 hard-delete button the database rejects, `all_objects` so deleted rows stay restorable, and the

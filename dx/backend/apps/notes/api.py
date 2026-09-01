@@ -1,6 +1,6 @@
 """Notes: schemas, logic and the ninja router in one module.
 
-**This module is the showcase for versioning and lineage.** Notes are edited, and every edit is
+**This app is the showcase for versioning and lineage.** Notes are edited, and every edit is
 a version; then notes are *merged*, and the merge records which **version** of each source it
 read:
 

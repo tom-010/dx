@@ -1,4 +1,4 @@
-"""`manage.py startmodule` (apps/core/scaffold.py) on temporary copies of the project files."""
+"""`manage.py newapp` (apps/core/scaffold.py) on temporary copies of the project files."""
 
 import shutil
 from pathlib import Path
@@ -16,21 +16,21 @@ def test_default_model_name_singularizes() -> None:
     assert scaffold.default_model_name("address") == "Address"
 
 
-def test_module_spec_validates_names() -> None:
-    spec = scaffold.module_spec("todo_items")
-    assert (spec.model, spec.singular, spec.module_class) == ("TodoItem", "todo_item", "TodoItems")
-    assert scaffold.module_spec("inventory", "Item").model == "Item"
+def test_app_spec_validates_names() -> None:
+    spec = scaffold.app_spec("todo_items")
+    assert (spec.model, spec.singular) == ("TodoItem", "todo_item")
+    assert scaffold.app_spec("inventory", "Item").model == "Item"
 
     with pytest.raises(scaffold.ScaffoldError, match="snake_case"):
-        scaffold.module_spec("Reports")
+        scaffold.app_spec("Reports")
     with pytest.raises(scaffold.ScaffoldError, match="CamelCase"):
-        scaffold.module_spec("reports", "report")
+        scaffold.app_spec("reports", "report")
 
 
-def test_render_module_writes_compilable_python(tmp_path: Path) -> None:
-    spec = scaffold.module_spec("reports")
+def test_render_app_writes_compilable_python(tmp_path: Path) -> None:
+    spec = scaffold.app_spec("reports")
 
-    files = scaffold.render_module(spec, tmp_path / "apps")
+    files = scaffold.render_app(spec, tmp_path / "apps")
 
     names = sorted(str(f.relative_to(tmp_path / "apps" / "reports")) for f in files)
     assert names == [
@@ -52,17 +52,17 @@ def test_render_module_writes_compilable_python(tmp_path: Path) -> None:
     assert "class Report(OwnedModel)" in (tmp_path / "apps" / "reports" / "models.py").read_text()
 
     with pytest.raises(scaffold.ScaffoldError, match="already exists"):
-        scaffold.render_module(spec, tmp_path / "apps")
+        scaffold.render_app(spec, tmp_path / "apps")
 
 
-def test_register_module_inserts_at_the_needles(tmp_path: Path) -> None:
+def test_register_app_inserts_at_the_needles(tmp_path: Path) -> None:
     settings_file = tmp_path / "settings.py"
     api_file = tmp_path / "api.py"
     shutil.copy(BASE_DIR / "config" / "settings.py", settings_file)
     shutil.copy(BASE_DIR / "config" / "api.py", api_file)
-    spec = scaffold.module_spec("reports")
+    spec = scaffold.app_spec("reports")
 
-    scaffold.register_module(spec, settings_file, api_file)
+    scaffold.register_app(spec, settings_file, api_file)
 
     settings_lines = settings_file.read_text().splitlines()
     app_index = settings_lines.index('    "apps.reports",')
@@ -73,21 +73,21 @@ def test_register_module_inserts_at_the_needles(tmp_path: Path) -> None:
     assert scaffold.ROUTERS_NEEDLE in api_lines[router_index + 1]
 
     with pytest.raises(scaffold.ScaffoldError, match="already in INSTALLED_APPS"):
-        scaffold.register_module(spec, settings_file, api_file)
+        scaffold.register_app(spec, settings_file, api_file)
 
 
-def test_register_module_fails_without_needle(tmp_path: Path) -> None:
+def test_register_app_fails_without_needle(tmp_path: Path) -> None:
     settings_file = tmp_path / "settings.py"
     settings_file.write_text("INSTALLED_APPS = []\n")
 
     with pytest.raises(scaffold.ScaffoldError, match="needle"):
-        scaffold.register_module(scaffold.module_spec("reports"), settings_file, tmp_path / "x")
+        scaffold.register_app(scaffold.app_spec("reports"), settings_file, tmp_path / "x")
 
 
 def test_generated_tests_write_inside_a_tenant_context(tmp_path: Path) -> None:
     """Writes raise outside a tenant context, so the scaffold's own tests must open one —
-    otherwise every new module starts with a red suite (CLAUDE.md "Multitenancy")."""
-    scaffold.render_module(scaffold.module_spec("reports"), tmp_path / "apps")
+    otherwise every new app starts with a red suite (CLAUDE.md "Multitenancy")."""
+    scaffold.render_app(scaffold.app_spec("reports"), tmp_path / "apps")
     generated = (tmp_path / "apps" / "reports" / "tests" / "test_api.py").read_text()
 
     assert "from apps.core.testing import acting_as" in generated

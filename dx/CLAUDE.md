@@ -9,9 +9,13 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
 - **Everything in English**: code, comments, docs, commit messages.
 - Monorepo: `backend/` (Django, uv) and `frontend/` (Vite SPA, pnpm). One deployable in prod
   (Django serves `frontend/dist` via WhiteNoise); in dev both run separately.
-- **One module per feature: `apps/<feature>/api.py`** holds the ninja schemas, the logic and the
-  router together. No `services.py`, no `schemas.py` — a lookup that 404s is three lines in the
-  view, and the handful of functions two routes share sit above them in the same file.
+- **Vocabulary**: a feature lives in a Django **app** under `apps/<name>/`. "App" is the only
+  word for it — Django's own (`INSTALLED_APPS`, `AppConfig`, `app_label`), so a second name would
+  just be a translation step. "Module" means a Python file and nothing else; "feature" means a
+  capability, which may be one app or part of one.
+- **One `api.py` per app** holds the ninja schemas, the logic and the router together. No
+  `services.py`, no `schemas.py` — a lookup that 404s is three lines in the view, and the
+  handful of functions two routes share sit above them in the same file.
 - Every API operation declares `response=Schema`; never return bare dicts. The OpenAPI spec
   (`openschema.json`) is the contract with the frontend; the frontend talks to the API ONLY through
   the code orval generates from it (`frontend/src/api/`). See "End-to-end types".
@@ -92,7 +96,7 @@ Other little ideas:
 | CI in one command    | `./scripts/ci.py [backend\|frontend\|image]` = `check.py` + `./scripts/build.sh` (production image `dx-app:latest`) |
 | Full pre-commit check| `./scripts/check.sh` (lint + pytest + build + sync_schema --check) |
 | DB backup / restore  | `./scripts/backup.sh [--list\|--prune]` (= `DB_ROLE=migrator manage.py backup` → `dx-backups` bucket or `backend/backups/`), `./scripts/restore.sh <name>\|--latest [-y]`, `./scripts/roundtrip.sh` (dev only, drops the DB); see "Backups" |
-| New feature module   | `cd backend && uv run python manage.py startmodule <name> [--model Item]` (scaffold + register + makemigrations; see "Backend") |
+| New feature app      | `cd backend && uv run python manage.py newapp <name> [--model Item]` (scaffold + register + makemigrations; see "Backend") |
 | Versioning/lineage demo | `/notes` in the SPA → edit a note, merge two, then "History" / "Lineage" (`apps/notes`, a showcase — see its section) |
 | Reference command    | `cd backend && uv run python manage.py hello_world [NAME] --shout` (django-click + rich; see "Management commands") |
 | Build production image | `./scripts/build.sh` → `dx-app:latest` (`--run` also starts it on :8080 via the dev compose `app` profile, plain http) |
@@ -169,12 +173,12 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
 - Layout (see `NOTES.md` §9):
   - `config/` — `settings.py`, `urls.py`, `api.py` (root `NinjaAPI`, mount routers here),
     `env.py` (typed env via pydantic-settings — read config from `env`, never `os.environ`).
-  - `apps/<feature>/` — one Django app per feature module: `api.py` (schemas, logic and the
+  - `apps/<name>/` — one Django app per feature: `api.py` (schemas, logic and the
     ninja `Router`), `models.py`, `admin.py`, `tests/test_*.py`. Register new apps in
-    `INSTALLED_APPS` as `"apps.<feature>"` and their router in `config/api.py`.
+    `INSTALLED_APPS` as `"apps.<name>"` and their router in `config/api.py`.
     **No `apps.py`**: Django synthesises the `AppConfig` from the `INSTALLED_APPS` entry (label =
     last component, `datasets`), so a stub that only restates `name` is a file to keep in sync
-    for nothing. Add one only when the module needs `ready()` — Django picks it up
+    for nothing. Add one only when the app needs `ready()` — Django picks it up
     automatically, no settings change. `apps/core/apps.py` is the one that earns it (system
     checks, the `connection_created` receiver, `register_event_admins`).
   - `apps/core/` — infrastructure: `health.py` (`GET /api/health`, `GET /api/ready`, see "Health
@@ -186,13 +190,13 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
     context + escape hatches, `lineage.py` the derivation graph, `revisions.py` the revision
     page's data layer — see "Versioning, history and lineage"), `schemas.py`
     (`StrictSchema` for inputs),
-    `backups.py` (see "Backups"), `scaffold.py` + `backend/scaffold/module/` (`manage.py
-    startmodule`), `storage.py` (buckets), the sample Celery tasks + `tenant_task` (`tasks.py`,
+    `backups.py` (see "Backups"), `scaffold.py` + `backend/scaffold/app/` (`manage.py
+    newapp`), `storage.py` (buckets), the sample Celery tasks + `tenant_task` (`tasks.py`,
     `/api/tasks/...` in `api.py`, tag `tasks`) and the cross-cutting tests
     (`tests/test_security.py`, `test_openapi.py`, `test_errors.py`, `test_ownership.py`,
     `test_tenancy.py`).
   - `apps/accounts/` — authentication, see "Auth" below.
-  - `apps/datasets/` — demo feature module and the reference for new ones (`startmodule`
+  - `apps/datasets/` — demo feature app and the reference for new ones (`newapp`
     generates the same shape): `models.py` (`Dataset(OwnedModel)`, `DatasetId = NewType(...,
     uuid.UUID)`, `DatasetOptions` = typed JSON column, plus `Tag` and the explicit `DatasetTag`
     through model), `api.py` — the schemas (`DatasetOut`, `DatasetIn`, `DatasetPatch`), the
@@ -258,8 +262,8 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
   `# type: ignore[code]` needs the error code and a reason and is checked by
   `warn_unused_ignores`. `django_stubs_ext.monkeypatch()` runs in settings so generics like
   `ModelAdmin[Dataset]` work at runtime.
-- New feature module: `uv run python manage.py startmodule <name> [--model Item]` scaffolds
-  `apps/<name>/` from `backend/scaffold/module/` (owned model with `name`/`description`, and one
+- New feature app: `uv run python manage.py newapp <name> [--model Item]` scaffolds
+  `apps/<name>/` from `backend/scaffold/app/` (owned model with `name`/`description`, and one
   `api.py` with the Out/In/Patch schemas, a `get_<model>_for` lookup and a router with paginated
   list + get/POST/PUT/PATCH/DELETE; plus admin and tests), inserts it at the `# needle:` comments
   in `settings.py` (`INSTALLED_APPS`) and `config/api.py`, runs `makemigrations` + ruff. Then:
@@ -267,12 +271,12 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
   new table *and its event table*), `manage.py history_schema --write` after any field change,
   add the resource to `RESOURCES` in `apps/core/tests/test_ownership.py`,
   `./scripts/sync_schema.sh` (view names become hook names), frontend route + nav entry. A new
-  module is a tenant app automatically (`TENANT_APPS`); `test_tenancy.py` covers its model
+  app is a tenant app automatically (`TENANT_APPS`); `test_tenancy.py` covers its model
   without registration. Logic in `apps/core/scaffold.py` (tested on temp copies).
 
 ## `apps/notes` — showcase, safe to delete
 
-A note-taking module that exists to *demonstrate* versioning and lineage end to end, not because
+A note-taking app that exists to *demonstrate* versioning and lineage end to end, not because
 the product needs notes. It is deliberately self-contained.
 
 - `Note(OwnedModel)` — title, body, and `tags` as a plain comma-separated string, normalised on
@@ -337,7 +341,7 @@ default-deny).
   the context by `save()` when a service does not pass it (`NoTenantContext` otherwise),
   `on_delete=CASCADE`, indexed as `(owner, -created, -id)` (the index name is left to Django:
   `Index.max_name_length` is 30, so a literal `%(app_label)s_%(class)s…` pattern in the abstract
-  base would break `makemigrations` for any longer module name). `bulk_create` skips `save()`,
+  base would break `makemigrations` for any longer app name). `bulk_create` skips `save()`,
   so pass `owner=` explicitly there — the policy rejects the row otherwise, NULL owner included.
   `User`, `ApiToken`, `RefreshToken` are shared tables:
   no RLS, no scope (authentication runs before any context exists). There is no user list or
@@ -440,7 +444,7 @@ version* of a source, not at the live row.
 - **Tracking a model**: `@tracked` from `apps/core/history.py`, on the concrete model. Never on an
   abstract base — pghistory accepts the decorator there and then generates one concrete event
   model pointing at the abstract class (`fields.E300`) while installing **no triggers at all** on
-  the subclasses. `startmodule` writes `@tracked` for you. Opting out means adding the label to
+  the subclasses. `newapp` writes `@tracked` for you. Opting out means adding the label to
   `HISTORY_EXEMPT` with a reason (currently the two `accounts` token models: high-churn
   credential bookkeeping with no lineage value). `test_history.py` fails on anything untracked
   and unlisted, and checks what the event model actually tracks rather than
@@ -608,14 +612,14 @@ with it (they need an admin session to log in with). Administer production throu
   the explicit half; `OwnedManager` adds the ambient tenant scope and Postgres RLS the
   guarantee (see "Multitenancy"). Services take the acting `User` first
   (`create_dataset(user, name=...)`, `get_dataset(user, id)`) and set `owner=user`; foreign
-  rows raise the module's `*NotFound` → 404, never 403. `apps/core/tests/test_ownership.py`
+  rows raise the app's `*NotFound` → 404, never 403. `apps/core/tests/test_ownership.py`
   runs the HTTP isolation contract (empty list, 404 on get/put/patch/delete) for every resource
-  in `RESOURCES` — register new owned modules there; `test_tenancy.py` covers the model layers
+  in `RESOURCES` — register new owned apps there; `test_tenancy.py` covers the model layers
   automatically. Signed links (`/media/…?sig=`, downloads) are the one exception: the
   signature stands in for the user (download links carry the owner id and open their context).
 - **Input schemas extend `StrictSchema`** (`extra="forbid"`): unknown fields are a 422 instead of
   being ignored (a typo in a PATCH would otherwise be a silent no-op). Output schemas stay
-  `Schema`/`ModelSchema`. All of a module's schemas live in its `api.py`, next to the routes that
+  `Schema`/`ModelSchema`. All of an app's schemas live in its `api.py`, next to the routes that
   use them.
 - **Typed JSON columns**: `django_pydantic_field.SchemaField(Model, default=Model)`
   (`Dataset.options: DatasetOptions`) — stored as `jsonb`, validated on load and save, and a
@@ -624,8 +628,8 @@ with it (they need an admin session to log in with). Administer production throu
 - **Lists are paginated** with ninja's `@paginate(PageNumberPagination)`: `?page=&page_size=`
   (`NINJA_PAGINATION_PER_PAGE=50`, max 500) → `{"items": [...], "count": n}` (`PagedDatasetOut`,
   `useListDatasets({ page })`). Services return the `QuerySet`; the view paginates it.
-- Every module exposes the same surface: paginated `GET /x`, `POST /x` (201),
-  `GET/PUT/PATCH/DELETE /x/{id}`. `apps/datasets` is the reference; `startmodule` reproduces it.
+- Every app exposes the same surface: paginated `GET /x`, `POST /x` (201),
+  `GET/PUT/PATCH/DELETE /x/{id}`. `apps/datasets` is the reference; `newapp` reproduces it.
 
 ## Auth (`apps/accounts/`)
 
@@ -656,7 +660,7 @@ with it (they need an admin session to log in with). Administer production throu
 - `POST /api/auth/register` only works with `REGISTRATION_OPEN=true` (403 otherwise).
 - Inside operations use `current_user(request)` (`apps/accounts/api.py`); helper functions take
   a `User`, never a request, and scope owned data with it (see "Data model conventions").
-  Every other module imports it as `from apps.accounts.api import current_user`.
+  Every other app imports it as `from apps.accounts.api import current_user`.
 - Files that a browser fetches via plain `<a href>`/`<img src>` (no header) use signed, expiring
   URLs: `DocumentOut.download_url` carries `?sig=` (`documents/api.py::sign_download`),
   every `FileField.url` does too (`config/media.py::media_url`).
@@ -884,7 +888,7 @@ store stays private, and the bundled compose works without a browser-reachable `
   options, rich panel + table, structured log line) — copy it for new commands. Logic beyond
   parsing and printing goes to a service module; long work is a Celery task.
 - Existing: `createadmin`, `token` (accounts); `ensure_bucket`, `backup`, `restore`,
-  `startmodule`, `hello_world`, `rls_sync`, `pull_tenant`, `load_tenant` (core). Exception to
+  `newapp`, `hello_world`, `rls_sync`, `pull_tenant`, `load_tenant` (core). Exception to
   the click rule: `shell_as` and `shell_admin` subclass Django's `shell` command (`BaseCommand`)
   so the REPL runs in-process inside the pinned tenant context; test them with `call_command`.
 - Tests use `click.testing.CliRunner().invoke(module.command, [...])` and assert on

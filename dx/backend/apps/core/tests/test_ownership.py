@@ -1,7 +1,7 @@
 """Every owned resource is invisible to other users: listing shows nothing, and get/update/
 delete answer 404 (never 403 — no information about what exists).
 
-Register every module that exposes an `OwnedModel` in RESOURCES; the tests are generated.
+Register every app that exposes an `OwnedModel` in RESOURCES; the tests are generated.
 """
 
 import json

@@ -1,4 +1,4 @@
-"""Admin pages for the notes module (see apps/datasets/admin.py for the rules)."""
+"""Admin pages for the notes app (see apps/datasets/admin.py for the rules)."""
 
 from django.contrib import admin
 

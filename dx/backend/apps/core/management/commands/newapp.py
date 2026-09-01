@@ -1,7 +1,10 @@
-"""`manage.py startmodule NAME` — scaffold a feature module (apps/core/scaffold.py).
+"""`manage.py newapp NAME` — scaffold a feature app (apps/core/scaffold.py).
 
-    uv run python manage.py startmodule reports              # model Report
-    uv run python manage.py startmodule inventory --model Item
+    uv run python manage.py newapp reports              # model Report
+    uv run python manage.py newapp inventory --model Item
+
+Not named `startapp`: a management command shadows Django's own, and losing plain
+`manage.py startapp` to a project-specific one is a surprise nobody asked for.
 
 Creates apps/<name>/ (owned model, admin, tests and one api.py holding the schemas, the logic
 and a router with paginated list + get/POST/PUT/PATCH/DELETE), registers it in INSTALLED_APPS
@@ -27,11 +30,11 @@ console = Console()
 @click.option("--model", default=None, help="Model class (default: singular CamelCase of NAME).")
 @click.option("--no-migrations", is_flag=True, help="Skip `makemigrations NAME`.")
 def command(name: str, model: str | None, no_migrations: bool) -> None:
-    """Create apps/NAME from the module template and register it."""
+    """Create apps/NAME from the app template and register it."""
     try:
-        spec = scaffold.module_spec(name, model)
-        files = scaffold.render_module(spec, BASE_DIR / "apps")
-        scaffold.register_module(
+        spec = scaffold.app_spec(name, model)
+        files = scaffold.render_app(spec, BASE_DIR / "apps")
+        scaffold.register_app(
             spec, BASE_DIR / "config" / "settings.py", BASE_DIR / "config" / "api.py"
         )
     except scaffold.ScaffoldError as exc:
@@ -60,14 +63,14 @@ def command(name: str, model: str | None, no_migrations: bool) -> None:
         Panel(
             f"Model [bold]{spec.model}[/bold] at [bold]/api/{spec.name}[/bold]\n\n"
             "Next:\n"
-            f"  1. edit apps/{spec.name}/models.py (+ makemigrations) and schemas.py\n"
+            f"  1. edit apps/{spec.name}/models.py (+ makemigrations) and api.py\n"
             "  2. ./scripts/migrate.sh  → tables + the RLS policy for the model and its "
             "history\n"
             "  3. manage.py history_schema --write (after any field change)\n"
             "  4. ./scripts/sync_schema.sh  → typed client in frontend/src/api/\n"
             f"  5. add the resource to RESOURCES in apps/core/tests/test_ownership.py\n"
             f"  6. frontend: src/routes/{spec.name}.tsx + nav entry in __root.tsx",
-            title="module created",
+            title="app created",
             expand=False,
         )
     )

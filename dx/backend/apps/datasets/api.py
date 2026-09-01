@@ -1,6 +1,6 @@
 """Datasets: schemas, logic and the ninja router in one module.
 
-This is the template for new feature modules (`manage.py startmodule <name>` copies the same
+This is the template for new feature apps (`manage.py newapp <name>` copies the same
 shape): paginated list, get, create, PUT, PATCH, delete — all scoped to the caller. Reads go
 through `Dataset.objects.for_user(user)`, so another user's dataset does not exist from the
 caller's point of view: 404, never 403.

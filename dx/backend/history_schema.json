@@ -1,0 +1,142 @@
+{
+  "current": "2026-09",
+  "tags": {
+    "2026-08": {
+      "datasets.Dataset": [
+        "created",
+        "deleted_at",
+        "description",
+        "id",
+        "modified",
+        "name",
+        "options",
+        "owner",
+        "row_count",
+        "version"
+      ],
+      "datasets.DatasetTag": [
+        "created",
+        "dataset",
+        "deleted_at",
+        "id",
+        "modified",
+        "owner",
+        "tag",
+        "version"
+      ],
+      "datasets.Tag": [
+        "created",
+        "deleted_at",
+        "id",
+        "modified",
+        "name",
+        "owner",
+        "version"
+      ],
+      "documents.Document": [
+        "content_type",
+        "created",
+        "deleted_at",
+        "file",
+        "id",
+        "modified",
+        "name",
+        "owner",
+        "size",
+        "version"
+      ],
+      "gallery.MediaItem": [
+        "content_type",
+        "created",
+        "deleted_at",
+        "file",
+        "id",
+        "kind",
+        "modified",
+        "name",
+        "owner",
+        "size",
+        "version"
+      ],
+      "notes.Note": [
+        "body",
+        "created",
+        "deleted_at",
+        "id",
+        "modified",
+        "owner",
+        "title",
+        "version"
+      ]
+    },
+    "2026-09": {
+      "datasets.Dataset": [
+        "created",
+        "deleted_at",
+        "description",
+        "id",
+        "modified",
+        "name",
+        "options",
+        "owner",
+        "row_count",
+        "version"
+      ],
+      "datasets.DatasetTag": [
+        "created",
+        "dataset",
+        "deleted_at",
+        "id",
+        "modified",
+        "owner",
+        "tag",
+        "version"
+      ],
+      "datasets.Tag": [
+        "created",
+        "deleted_at",
+        "id",
+        "modified",
+        "name",
+        "owner",
+        "version"
+      ],
+      "documents.Document": [
+        "content_type",
+        "created",
+        "deleted_at",
+        "file",
+        "id",
+        "modified",
+        "name",
+        "owner",
+        "size",
+        "version"
+      ],
+      "gallery.MediaItem": [
+        "content_type",
+        "created",
+        "deleted_at",
+        "file",
+        "id",
+        "kind",
+        "modified",
+        "name",
+        "owner",
+        "size",
+        "version"
+      ],
+      "notes.Note": [
+        "body",
+        "created",
+        "deleted_at",
+        "id",
+        "modified",
+        "owner",
+        "tags",
+        "title",
+        "version"
+      ]
+    }
+  }
+}

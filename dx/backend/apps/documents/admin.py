@@ -1,4 +1,4 @@
-"""Admin pages for the documents module (see apps/datasets/admin.py for the rules)."""
+"""Admin pages for the documents app (see apps/datasets/admin.py for the rules)."""
 
 from django.contrib import admin
 

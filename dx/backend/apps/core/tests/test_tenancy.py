@@ -1,5 +1,5 @@
 """The multitenancy contract (CLAUDE.md "Multitenancy"), checked for every owned model at once
-so new modules are covered automatically:
+so new apps are covered automatically:
 
 - ORM layer: outside a scope an owned queryset raises; inside, only the scope's rows exist.
 - Database layer: row-level security hides and rejects other users' rows even for raw SQL and
@@ -122,7 +122,7 @@ def label(model: type[models.Model]) -> str:
 # --- both isolation layers, every owned model --------------------------------------------------
 
 
-def test_every_feature_module_has_owned_models_only() -> None:
+def test_every_feature_app_has_owned_models_only() -> None:
     assert OWNED_MODELS, "no owned models found"
     assert checks.tenant_model_errors(rls.tenant_models()) == []
     assert {m._meta.app_label for m in OWNED_MODELS} == checks.tenant_app_labels()
@@ -319,7 +319,7 @@ def test_tenant_task_runs_in_the_owners_context(user: User, other_user: User) ->
 
 
 def test_tenant_apps_define_tasks_with_tenant_task_only() -> None:
-    """`@shared_task` in a feature module would run without a tenant context."""
+    """`@shared_task` in a feature app would run without a tenant context."""
     pattern = re.compile(r"@(shared_task|app\.task)\b")
     offenders = [
         str(path.relative_to(BASE_DIR))
@@ -949,9 +949,9 @@ def test_the_admin_does_not_offer_a_user_deletion_it_cannot_perform(
 
 
 @isolate_apps("apps.datasets", "apps.accounts")  # accounts: the owner FK must resolve
-def test_long_module_names_still_get_a_valid_owner_index() -> None:
+def test_long_app_names_still_get_a_valid_owner_index() -> None:
     """`Index.max_name_length` is 30. The abstract base must not pin a literal name pattern, or
-    `manage.py startmodule subscriptions --model Subscription` would die in its own
+    `manage.py newapp subscriptions --model Subscription` would die in its own
     `makemigrations` with models.E034 and leave the repo half-scaffolded."""
 
     class SubscriptionRenewalReminder(OwnedModel):

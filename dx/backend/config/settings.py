@@ -70,14 +70,14 @@ INSTALLED_APPS = [
     "django_scopes",  # ORM tenant scope (apps/core/models.py::OwnedManager)
     "pgtrigger",  # database triggers as model Meta (apps/core/models.py::BaseModel)
     "pghistory",  # trigger-captured version history (apps/core/history.py)
-    # Feature modules live under apps/<feature>/
+    # Feature apps live under apps/<name>/
     "apps.core",
     "apps.accounts",
     "apps.datasets",
     "apps.documents",
     "apps.gallery",
     "apps.notes",
-    # needle: installed-apps (manage.py startmodule inserts new modules above this line)
+    # needle: installed-apps (manage.py newapp inserts new apps above this line)
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -170,7 +170,7 @@ if _audit_credentials is not None:
 
 # The infrastructure apps hold shared tables (users, tokens, sessions); every other app under
 # apps/ is a tenant app: all of its concrete models must inherit OwnedModel (apps/core/checks.py,
-# tenant.E001). A new module is a tenant app by default — nothing to register.
+# tenant.E001). A new app is a tenant app by default — nothing to register.
 SHARED_APPS = ["apps.core", "apps.accounts"]
 TENANT_APPS = [app for app in INSTALLED_APPS if app.startswith("apps.") and app not in SHARED_APPS]
 # Models inside tenant apps that are deliberately unowned ("app_label.Model"). Keep this empty;

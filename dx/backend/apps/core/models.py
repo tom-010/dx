@@ -298,7 +298,7 @@ class OwnedModel(BaseModel):
         abstract = True
         # Lists are always "this owner's rows, newest first" (BaseModel.ordering). The name is
         # left to Django: `Index.max_name_length` is 30, so a literal `%(app_label)s_%(class)s`
-        # pattern would make every module with a longer name fail `makemigrations` (models.E034).
+        # pattern would make every app with a longer name fail `makemigrations` (models.E034).
         indexes = [models.Index(fields=["owner", "-created", "-id"])]
 
     def save(
