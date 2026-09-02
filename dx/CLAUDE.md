@@ -47,7 +47,8 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
   this run* ("14 chunks, opus, prompt v3"). `sources` are the rows this one was **computed
   from** — the test is "if that row changed, would this have to be recomputed?" — not structural
   foreign keys (`owner`, a tag's dataset). Full guidance in `VersionedModel.save.__doc__`;
-  the why in `docs/history_lineage_delete_tenants.md`.
+  the why in `docs/history_lineage_delete_tenants.md`. Every write also records **who made
+  it**: `version.caller`/`.stack`/`.release` for a version, the same three on a lineage edge.
 - **Soft delete in one line**: `obj.delete()` / `qs.delete()` are soft (a versioned UPDATE of
   `deleted_at`, no cascade), `obj.hard_delete()` / `qs.hard_delete()` really remove the row and
   its history (erasure, credential purging, test teardown only), `Model.objects` hides deleted

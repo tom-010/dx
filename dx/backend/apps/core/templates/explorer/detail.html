@@ -52,7 +52,13 @@ context and belongs to the same revision, even when it touched several tables.">
         </h3>
         <table>
           <thead>
-            <tr><th scope="col">Version</th><th scope="col">What changed</th></tr>
+            <tr>
+              <th scope="col">Version</th>
+              <th scope="col">What changed</th>
+              <th scope="col" title="The line that wrote this version, and the build it ran on.
+Follow it for the whole call stack. Blank for a write that did not go through save() — a bulk
+update, a data migration, raw SQL.">Written by</th>
+            </tr>
           </thead>
           <tbody>
             {% for revision in group.revisions %}
@@ -83,6 +89,16 @@ context and belongs to the same revision, even when it touched several tables.">
                     <article class="frame">{{ name }} (dropped field): {{ value }}</article>
                   {% endfor %}
                 </td>
+              <td class="frame">
+                {% if revision.frame %}
+                  <a href="{{ revision.url }}#written-by"
+                     title="The whole call stack that wrote this version">
+                    <code>{{ revision.frame }}</code></a> @{{ revision.release }}<br>
+                  <code>{{ revision.code }}</code>
+                {% else %}
+                  <span class="empty">not recorded</span>
+                {% endif %}
+              </td>
               </tr>
             {% endfor %}
           </tbody>

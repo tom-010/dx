@@ -288,7 +288,10 @@ class VersionedModel(models.Model):
             if operation
             else nullcontext()
         )
-        with transaction.atomic(using=using), step:
+        # `declare_write_origin` puts the call stack and the build where the capture trigger can
+        # read them, so the *version* this write produces records who made it — the same thing
+        # `Lineage.stack` records for an edge (`apps/core/history.py::Event`).
+        with transaction.atomic(using=using), step, lineage.declare_write_origin():
             super().save(
                 force_insert=force_insert,
                 force_update=force_update,

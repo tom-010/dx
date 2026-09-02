@@ -661,11 +661,12 @@ def test_recorded_by_opens_the_whole_call_stack(staff_client: Client, user: User
     assert "record_derivation" in body
 
 
-def test_the_stack_tells_this_project_apart_from_its_dependencies(
+def test_the_stack_is_this_projects_code_only_shown_relative_to_the_repo(
     staff_client: Client, user: User
 ) -> None:
-    """Most of a stack is framework plumbing; the two or three frames that matter are the app's,
-    and paths inside the repository are shown relative to it."""
+    """The filter runs at capture (`lineage.is_ours`): the forty frames of WSGI, middleware and
+    ninja never reach the table. What is left is ours, and its paths are shown relative to the
+    repository."""
     with acting_as(user):
         source = create_dataset_for(user, name="source")
         derived = create_dataset_for(user, name="derived")
@@ -673,11 +674,11 @@ def test_the_stack_tells_this_project_apart_from_its_dependencies(
 
     frames = explorer._frames(edge.stack)
 
-    assert frames[0].depth == 1  # outermost first
-    ours = [frame for frame in frames if frame.ours]
-    assert ours, [frame.location for frame in frames]
-    assert all(not frame.location.startswith("/") for frame in ours)
-    assert any(".venv" in frame.location for frame in frames)
+    assert frames and frames[0].depth == 1  # outermost first
+    assert all(frame.ours for frame in frames)
+    assert all(not frame.location.startswith("/") for frame in frames)
+    plumbing = (".venv", "site-packages")
+    assert not any(frame.location.startswith(plumbing) for frame in frames)
 
 
 def test_an_unknown_edge_is_a_404(staff_client: Client, user: User) -> None:
@@ -845,3 +846,66 @@ def test_the_version_page_names_the_operation_and_its_description(
     assert "operation</dt>" in body
     assert "convert to EUR" in body
     assert "rates of 2026-09-01" in body
+
+
+def test_every_history_row_links_to_the_stack_that_wrote_it(
+    staff_client: Client, user: User
+) -> None:
+    """The same affordance the lineage tables have, for versions: the caller inline, the whole
+    call stack one click away."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="first")
+        dataset.name = "second"
+        dataset.save(operation=None, sources=[])
+
+    body = staff_client.get(object_url(user, dataset)).content.decode()
+    history = body.split(">History<", 1)[1].split(">Lineage<", 1)[0]
+
+    assert "Written by" in history
+    assert "apps/datasets/api.py" in history  # the caller, inline
+    links = re.findall(r'href="([^"]*)#written-by"', history)
+    assert len(links) == 2  # one per version
+
+    # ...and the link lands on that version's stack, not merely on the page.
+    target = staff_client.get(links[0]).content.decode()
+    assert 'id="written-by"' in target
+    written_by = target.split('id="written-by"', 1)[1].split("</section>", 1)[0]
+    # History is newest first, so the first link is v2 — the edit made right here in this test.
+    assert "apps/core/tests/test_explorer.py" in written_by
+    assert "dataset.save(operation=None, sources=[])" in written_by
+
+
+def test_a_history_row_with_no_recorded_writer_says_so(staff_client: Client, user: User) -> None:
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="before")
+        Dataset.objects.filter(pk=dataset.pk).update(name="after")
+
+    body = staff_client.get(object_url(user, dataset)).content.decode()
+    history = body.split(">History<", 1)[1].split(">Lineage<", 1)[0]
+
+    assert "not recorded" in history
+
+
+def test_the_version_page_shows_who_wrote_it(staff_client: Client, user: User) -> None:
+    """Every version, not only a derivation, names the code and the build behind it."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="a dataset")
+
+    body = staff_client.get(version_url(user, dataset, 1)).content.decode()
+    written_by = body.split(">Written by</h2>", 1)[1].split("</section>", 1)[0]
+
+    assert "frame" in written_by
+    assert "apps/datasets/api.py" in written_by  # the service that made the row
+    assert '<span class="tag">app</span>' in written_by  # ...told apart from the plumbing
+    assert "build</dt>" in body
+
+
+def test_a_version_with_no_recorded_writer_says_so(staff_client: Client, user: User) -> None:
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="before")
+        Dataset.objects.filter(pk=dataset.pk).update(name="after")
+
+    body = staff_client.get(version_url(user, dataset, 2)).content.decode()
+
+    assert "Not recorded" in body
+    assert "a bulk update" in body

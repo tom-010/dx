@@ -44,7 +44,12 @@ event table would make a *write* fail for the sake of a *reference*. pghistory u
 
 from __future__ import annotations
 
+import json
+import linecache
+import site
 import subprocess
+import sys
+import sysconfig
 import traceback
 import uuid
 from collections.abc import Iterable, Iterator, Sequence
@@ -59,7 +64,7 @@ from typing import TYPE_CHECKING, cast
 import pgtrigger
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
-from django.db import models
+from django.db import connection, models
 from django.db.models import Func
 from django.db.models.functions import Now
 from django_pydantic_field import SchemaField
@@ -85,8 +90,50 @@ class LineageError(Exception):
     """A derivation cannot be recorded as stated."""
 
 
+@cache
+def _foreign_roots() -> tuple[Path, ...]:
+    """Where the interpreter and its packages live. Anything under these is not this project.
+
+    Asked of the interpreter once, at first use, rather than kept as a list of our own packages
+    that someone has to remember to extend: `sys.prefix` is the venv, `sys.base_prefix` the
+    Python it was made from, `sysconfig` and `site` the stdlib and site-packages directories —
+    wherever they happen to be, so the answer is right in the container (`/app/backend/.venv`,
+    `/usr/local/lib/python3.14`) as well as here. Everything the interpreter does not claim is
+    ours: `apps/`, `config/`, `manage.py`, `conftest.py`, a script, code typed into a shell.
+    """
+    roots = {sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix}
+    roots.update(sysconfig.get_paths().values())
+    roots.update(site.getsitepackages())
+    roots.add(site.getusersitepackages())
+    return tuple(Path(root).resolve() for root in sorted(roots))
+
+
+def is_ours(filename: str) -> bool:
+    """Is this file this project's code, rather than the interpreter's or a dependency's?
+
+    Decided by exclusion — see `_foreign_roots` — because the set of things that are *not* ours
+    is one the interpreter can enumerate and the set of things that are keeps growing. Frozen
+    stdlib modules report a `<frozen …>` pseudo-path and are not ours either; `<stdin>` is: that
+    is somebody writing in a shell, which is exactly the kind of write worth knowing about.
+    """
+    if filename.startswith("<frozen"):
+        return False
+    if filename.startswith("<"):
+        return True
+    path = Path(filename)
+    return not any(path.is_relative_to(root) for root in _foreign_roots())
+
+
+#: The two files that *are* the recording: this one and the model bases whose `save()` calls
+#: it. Their frames sit under every write and say nothing about who made it, so they are the
+#: one exclusion that is not "foreign code" — and it is two files, fixed, not a list of ours
+#: that grows with the project. Middleware, the tenant context and the like stay in: a little
+#: noise costs a line of reading, a missing frame costs the answer.
+_MECHANISM = frozenset({Path(__file__).resolve(), Path(__file__).with_name("models.py").resolve()})
+
+
 class StackFrame(PydanticModel):
-    """One frame of the call stack that recorded an edge, as `traceback` reports it."""
+    """One frame of the call stack that made a write — an edge's or a version's."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -96,16 +143,19 @@ class StackFrame(PydanticModel):
     #: The source line itself, stripped. Empty when the file is no longer readable — the stack
     #: is a record of a past run, and the code it names can be deleted or edited afterwards.
     code: str = ""
+    #: The module the frame belongs to (`apps.datasets.api`). Empty on rows written before it
+    #: was recorded.
+    module: str = ""
 
     def __str__(self) -> str:
         return f"{self.file}:{self.line} in {self.func}"
 
     @property
     def ours(self) -> bool:
-        """This project's own code, as opposed to Django, click, the test client and the rest of
-        the plumbing a stack is mostly made of."""
-        path = Path(self.file)
-        return path.is_relative_to(BASE_DIR) and ".venv" not in path.parts
+        """This project's own code, as opposed to the interpreter's and its packages'. Every
+        frame captured since the filter moved to recording time is; rows from before still hold
+        the whole stack, and this is what tells the two apart on them."""
+        return is_ours(self.file)
 
     @property
     def location(self) -> str:
@@ -268,6 +318,48 @@ def ambient_sources() -> tuple[VersionedModel, ...] | None:
     return _ambient_sources.get()
 
 
+#: The settings `Event.pgh_stack` / `pgh_release` read their defaults from. Transaction-local,
+#: like pghistory's own context, so they never outlive the write that set them.
+STACK_SETTING = "dx.stack"
+RELEASE_SETTING = "dx.release"
+
+
+@contextmanager
+def declare_write_origin() -> Iterator[None]:
+    """Tell the database which code is about to write, so the capture trigger can record it.
+
+        with declare_write_origin():
+            super().save(...)          # the version row gets pgh_stack and pgh_release
+
+    Python never inserts a version row — the trigger does — so the stack cannot be passed in as
+    a value. It is handed over the way pghistory hands over its context: a transaction-local
+    setting the column defaults read (`apps/core/history.py::Event`). Cleared on the way out, or
+    the next write in the same transaction — a bulk `.update()`, say — would be recorded as
+    having come from here.
+
+    Must run inside the transaction that does the write, and immediately before it.
+    """
+    frames = [frame.model_dump() for frame in _capture_stack()]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT set_config(%s, %s, true), set_config(%s, %s, true)",
+            [STACK_SETTING, json.dumps(frames), RELEASE_SETTING, _release()],
+        )
+    try:
+        yield
+    finally:
+        # Only when the transaction is still usable. A failed write rolls the block back and
+        # takes the `SET LOCAL` with it, so there is nothing to clear — and running SQL on an
+        # aborted transaction would replace the real error with "You can't execute queries until
+        # the end of the 'atomic' block" (`apps/core/db.py` guards its own reset the same way).
+        if not connection.needs_rollback:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_config(%s, '', true), set_config(%s, '', true)",
+                    [STACK_SETTING, RELEASE_SETTING],
+                )
+
+
 def record_sources(
     target: VersionedModel, sources: Sequence[VersionedModel] | None
 ) -> list[Lineage]:
@@ -331,26 +423,34 @@ def _git_release() -> str:
 
 
 def _capture_stack() -> list[StackFrame]:
-    """The call stack leading here, outermost frame first, without this module's own frames.
+    """The frames of *this project's* code on the stack right now, outermost first.
 
-    `extract_stack` resolves each frame's source line through `linecache`, so the first call in
-    a process touches the files on disk; afterwards it is cached. That cost buys the one thing a
-    `producer` string cannot give: the exact line that asserted the derivation.
+    A raw stack is forty-odd frames of which one or two matter: the request went through the
+    WSGI server, twelve middlewares and ninja before it reached the view that called `save()`,
+    and none of that is what "who wrote this version" asks. So the filter runs at capture —
+    `is_ours`, which asks the interpreter what is not ours rather than us what is — and only the
+    frames that survive have their source line looked up, which also makes this cheaper than
+    `extract_stack()`, whose `linecache` reads are the bulk of its cost.
+
+    Every frame of ours is kept, in calling order: a write five calls deep into the project
+    records all five, not just the last, so the chain that led there can be read back.
     """
-    # This module and the model bases are plumbing between the caller and the edge — with
-    # `save(sources=...)` the recording call is in `apps/core/models.py`, and the frame anybody
-    # wants is the one that called `save()`.
-    plumbing = {__file__, str(Path(__file__).with_name("models.py"))}
-    return [
-        StackFrame(
-            file=frame.filename,
-            line=frame.lineno or 0,
-            func=frame.name,
-            code=(frame.line or "").strip(),
+    kept = []
+    for frame, lineno in traceback.walk_stack(None):
+        filename = frame.f_code.co_filename
+        if not is_ours(filename) or Path(filename).resolve() in _MECHANISM:
+            continue
+        kept.append(
+            StackFrame(
+                file=filename,
+                line=lineno,
+                func=frame.f_code.co_name,
+                code=linecache.getline(filename, lineno).strip(),
+                module=frame.f_globals.get("__name__", ""),
+            )
         )
-        for frame in traceback.extract_stack()
-        if frame.filename not in plumbing
-    ]
+    kept.reverse()  # walk_stack yields innermost first
+    return kept
 
 
 def record_derivation(

@@ -239,6 +239,12 @@ class RevisionRow:
     unknown_fields: list[str]
     archived: dict[str, str]
     url: str | None
+    #: The innermost frame of this project's code that wrote the version, and the build it ran
+    #: on — the same pair the lineage tables show for an edge. Empty for a write that did not go
+    #: through `save()`.
+    frame: str
+    code: str
+    release: str
 
 
 @dataclass(frozen=True)
@@ -1002,6 +1008,10 @@ def object_version(
                 "event_label": current.event.pgh_label,
                 "schema_tag": current.event.pgh_schema,
                 "pgh_id": str(current.event.pgh_id),
+                # Who wrote this version — the same record an edge keeps (`Lineage.stack`),
+                # for every version rather than only for a derivation.
+                "release": current.release,
+                "frames": _frames(current.stack),
                 "index_url": reverse("explorer:index", args=[tenant.pk]),
                 "model_url": reverse(
                     "explorer:model",
@@ -1091,6 +1101,7 @@ def _history(user_id: uuid.UUID, obj: models.Model) -> list[HistoryGroup]:
     descriptions = revisions.context_descriptions(
         {group.context_id for group in groups if group.context_id}
     )
+    writers = _writers([revision for group in groups for revision in group.revisions])
     return [
         HistoryGroup(
             source=group.source,
@@ -1107,12 +1118,46 @@ def _history(user_id: uuid.UUID, obj: models.Model) -> list[HistoryGroup]:
                     unknown_fields=revision.unknown_fields,
                     archived=revision.archived,
                     url=_revision_url(user_id, revision),
+                    frame=(f"{writer.location} in {writer.func}()" if writer else ""),
+                    code=(writer.code if writer else ""),
+                    release=release,
                 )
                 for revision in group.revisions
+                for writer, release in (writers.get(revision.pgh_id, (None, "")),)
             ],
         )
         for group in groups
     ]
+
+
+def _writers(
+    rows: list[revisions.Revision],
+) -> dict[uuid.UUID, tuple[lineage.StackFrame | None, str]]:
+    """Who wrote each of these versions: the caller frame and the build, by `pgh_id`.
+
+    Grouped by model — one query per event table rather than one per revision — because a
+    revision list mixes the object's own versions with the child rows written in the same save,
+    and those live in other tables.
+    """
+    by_model: dict[str, list[uuid.UUID]] = {}
+    for revision in rows:
+        by_model.setdefault(revision.model, []).append(revision.pgh_id)
+
+    found: dict[uuid.UUID, tuple[lineage.StackFrame | None, str]] = {}
+    for name, pgh_ids in by_model.items():
+        model = _model_by_name(name)
+        event_model = event_model_for(model) if model is not None else None
+        if event_model is None:  # pragma: no cover - a revision always names a tracked model
+            continue
+        # Through a plain handle: the mirrored columns exist on the generated subclass only.
+        table: type[models.Model] = event_model
+        for event in table._base_manager.filter(pgh_id__in=sorted(pgh_ids)).values(
+            "pgh_id", "pgh_stack", "pgh_release"
+        ):
+            frames = [lineage.StackFrame(**frame) for frame in event["pgh_stack"] or ()]
+            caller = next((frame for frame in reversed(frames) if frame.ours), None)
+            found[event["pgh_id"]] = (caller, event["pgh_release"] or "")
+    return found
 
 
 def _revision_url(user_id: uuid.UUID, revision: revisions.Revision) -> str | None:

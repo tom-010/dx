@@ -88,8 +88,9 @@ import pghistory.models
 import pgtrigger
 from django.conf import settings
 from django.db import connection, models
-from django.db.models import Func
+from django.db.models import Func, Value
 from django.db.models.fields.files import FieldFile
+from django.db.models.functions import Cast, NullIf
 from pghistory import runtime
 
 from config.env import BASE_DIR
@@ -98,6 +99,7 @@ if TYPE_CHECKING:
     from django.http import HttpRequest
     from django.http.response import HttpResponseBase
 
+    from apps.core.lineage import StackFrame
     from apps.core.models import VersionedModel
 
 # The tracked field set this code writes. Bump on every change to a tracked model's fields.
@@ -120,6 +122,19 @@ HISTORY_EXEMPT = {
 }
 
 
+def _from_setting(name: str, field: models.Field[Any, Any]) -> Cast:
+    """`NULLIF(current_setting('<name>', true), '')::<type>` — a column default that reads a
+    transaction-local setting, and is NULL when nothing set it.
+
+    `current_setting(..., true)` returns NULL rather than raising for a setting that was never
+    defined, and the `NULLIF` turns the blank left by a cleared one into NULL as well, so both
+    "never set" and "deliberately cleared" arrive as "this write did not say".
+    """
+    return Cast(
+        NullIf(Func(Value(name), Value(True), function="current_setting"), Value("")), field
+    )
+
+
 class Event(pghistory.models.Event):
     """Base for every generated event model.
 
@@ -139,6 +154,23 @@ class Event(pghistory.models.Event):
     )
     pgh_schema = models.TextField(db_default=SCHEMA_TAG)
     pgh_archive = models.JSONField(null=True, default=None)
+
+    # Which code wrote this version, and on which build — the same question `Lineage.stack` and
+    # `Lineage.release` answer for an edge, for every version rather than only for a derivation.
+    #
+    # Filled by the *database*, because Python never inserts these rows: the capture trigger
+    # does, and it omits any column it does not manage, which is exactly what makes a
+    # `db_default` fire. The value comes from a transaction-local setting that
+    # `VersionedModel.save()` puts in place immediately before the write
+    # (`lineage.declare_write_origin`) — the same mechanism pghistory uses for `pgh_context_id`.
+    # A write that sets nothing (a bulk `.update()`, a migration, raw SQL) leaves them NULL,
+    # which is the honest answer rather than the previous write's stack.
+    pgh_stack = models.JSONField(
+        null=True, db_default=_from_setting("dx.stack", models.JSONField())
+    )
+    pgh_release = models.TextField(
+        null=True, db_default=_from_setting("dx.release", models.TextField())
+    )
 
     class Meta:
         abstract = True
@@ -183,6 +215,8 @@ class EventRow(Protocol):
     pgh_context_id: uuid.UUID | None
     pgh_schema: str
     pgh_archive: dict[str, Any] | None
+    pgh_stack: list[dict[str, Any]] | None
+    pgh_release: str | None
 
     id: uuid.UUID
     owner_id: uuid.UUID
@@ -273,6 +307,31 @@ class Version[ModelT: models.Model]:
     def object_id(self) -> uuid.UUID:
         """The row this is a version of — how to reach the live one."""
         return self.event.pgh_obj_id
+
+    @property
+    def stack(self) -> list[StackFrame]:
+        """The call stack that wrote this version, outermost frame first.
+
+        The same record `Lineage.stack` keeps for an edge, for every version: which code made
+        this state. Empty for a write that did not declare one — a bulk `.update()`, a data
+        migration, raw SQL — since only `VersionedModel.save()` puts it where the trigger can
+        see it (`lineage.declare_write_origin`).
+        """
+        from apps.core.lineage import StackFrame  # noqa: PLC0415 - layered on top of this module
+
+        return [StackFrame(**frame) for frame in self.event.pgh_stack or ()]
+
+    @property
+    def release(self) -> str:
+        """The build that wrote this version (`APP_VERSION`, or the working tree's commit),
+        or "" for a write that did not declare one."""
+        return self.event.pgh_release or ""
+
+    @property
+    def caller(self) -> StackFrame | None:
+        """The innermost frame of *this project's* code in `stack` — the line that wrote this
+        version. What a page shows; the whole stack is for when that is not enough."""
+        return next((frame for frame in reversed(self.stack) if frame.ours), None)
 
     def is_current(self) -> bool:
         """Is this still the row's latest version, or has it moved on since?
@@ -541,8 +600,10 @@ def _forget_injected_context() -> None:
     Only the outermost block needs this: a nested one restores the outer context, and the next
     write injects that.
     """
-    if not connection.in_atomic_block:
-        return  # the transaction is over; the setting went with it
+    if not connection.in_atomic_block or connection.needs_rollback:
+        # No transaction, or one that is already rolling back: the setting goes with it either
+        # way, and querying an aborted transaction would mask whatever actually failed.
+        return
     with connection.cursor() as cursor:
         cursor.execute(
             "SELECT set_config('pghistory.context_id', '', true), "

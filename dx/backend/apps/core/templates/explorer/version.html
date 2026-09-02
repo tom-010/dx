@@ -45,6 +45,11 @@ version was written, and whether this version is still the row's current state."
       <dd><a href="{{ object_page }}"><code>{{ object_id }}</code></a></dd>
       <dt>version row</dt>
       <dd><code>{{ pgh_id }}</code> · schema {{ schema_tag }}</dd>
+      {% if release %}
+        <dt title="APP_VERSION: the short commit the image was built from, or the working tree's
+commit when the write happened outside one.">build</dt>
+        <dd><code>{{ release }}</code></dd>
+      {% endif %}
     </dl>
   </section>
 
@@ -83,6 +88,43 @@ version was written, and whether this version is still the row's current state."
         <dd>{{ field.value }}</dd>
       {% endfor %}
     </dl>
+  </section>
+
+  <section>
+    <h2 id="written-by" title="The call stack as it stood when this version was written, outermost frame first.
+Frames of this project are marked; the rest is framework plumbing. Empty for a write that did
+not go through save() — a bulk update, a data migration, raw SQL.">Written by</h2>
+    {% if frames %}
+      <table>
+        <caption>{{ frames|length }} frame{{ frames|length|pluralize }}, outermost first</caption>
+        <thead>
+          <tr>
+            <th scope="col">#</th>
+            <th scope="col">Where</th>
+            <th scope="col">Function</th>
+            <th scope="col">Line</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for frame in frames %}
+            <tr>
+              <th scope="row">{{ frame.depth }}</th>
+              <td>
+                <code>{{ frame.location }}</code>
+                {% if frame.ours %}<span class="tag">app</span>{% endif %}
+              </td>
+              <td><code>{{ frame.func }}()</code></td>
+              <td><code>{{ frame.code|default:"—" }}</code></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">
+        Not recorded — this version came from a write that does not go through
+        <code>save()</code>: a bulk update, a data migration, or raw SQL.
+      </p>
+    {% endif %}
   </section>
 
   <section>

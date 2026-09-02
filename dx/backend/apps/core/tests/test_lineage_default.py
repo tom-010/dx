@@ -1,10 +1,13 @@
-"""Lineage as the default: the write itself says what it was built from and which step did it.
+"""Lineage as the default: the write itself says which operation made it and what it was built
+from.
 
 `record_derivation()` is correct and complete and it is a second statement, which is exactly why
 it gets forgotten. These tests pin the shape that inverts that: `Model.create(...)` and
-`save(...)` take `sources=` and `operation=`, a `deriving()` block supplies sources to every write
-inside it, and not recording lineage is something you have to say (`sources=[]`).
+`save(...)` *require* `operation=` and `sources=`, a `deriving()` block supplies sources to every
+write inside it, and not recording lineage is something you have to say (`sources=[]`).
 """
+
+from pathlib import Path
 
 import pytest
 
@@ -43,7 +46,7 @@ def test_constructing_then_saving_takes_the_same_keywords(user: User) -> None:
     with acting_as(user):
         source = Dataset.create(operation=None, sources=[], name="source")
         derived = Dataset(name="derived")
-        derived.save(sources=[source], operation="via save")
+        derived.save(operation="via save", sources=[source])
 
         assert [v.object_id for v in derived.sources()] == [source.pk]
         assert label_of(derived) == "via save"
@@ -60,6 +63,27 @@ def test_none_defers_to_the_enclosing_blocks(user: User) -> None:
         assert label_of(derived) == "in a block"
 
 
+def test_objects_create_is_refused_with_directions(user: User) -> None:
+    """A manager's `create()` cannot carry the two keywords, so it cannot be explicit — and a
+    write that cannot state its lineage is not a write this project makes."""
+    with acting_as(user), pytest.raises(TypeError, match="Dataset.create"):
+        Dataset.objects.create(name="no lineage")
+
+
+def test_the_keywords_have_no_defaults(user: User) -> None:
+    with acting_as(user):
+        row = Dataset.create(operation=None, sources=[], name="row")
+        with pytest.raises(TypeError):
+            row.save()  # type: ignore[call-arg]  # the omission under test
+        with pytest.raises(TypeError):
+            Dataset.create(name="no keywords")  # type: ignore[call-arg]
+
+
+def test_a_description_needs_an_operation_to_describe(user: User) -> None:
+    with acting_as(user), pytest.raises(ValueError, match="operation="):
+        Dataset.create(operation=None, sources=[], operation_description="of nothing", name="row")
+
+
 # --- updating -------------------------------------------------------------------------------------
 
 
@@ -71,7 +95,7 @@ def test_a_rebuild_records_edges_against_the_new_version(user: User) -> None:
         rates.save(operation=None, sources=[])
 
         report.name = "report (rebuilt)"
-        report.save(sources=[rates], operation="rebuild")
+        report.save(operation="rebuild", sources=[rates])
 
         versions = [v.version for v in report.sources()]
         assert versions == [1, 2]  # one edge per build, each pinned to the rates as then read
@@ -84,7 +108,7 @@ def test_a_partial_save_takes_the_same_keywords(user: User) -> None:
         source = Dataset.create(operation=None, sources=[], name="source")
         derived = Dataset.create(operation=None, sources=[], name="derived")
         derived.name = "derived (renamed)"
-        derived.save(update_fields=["name"], sources=[source], operation="partial")
+        derived.save(operation="partial", sources=[source], update_fields=["name"])
 
         assert [v.object_id for v in derived.sources()] == [source.pk]
         assert label_of(derived) == "partial"
@@ -167,22 +191,6 @@ def test_repeats_and_the_row_itself_are_not_sources(user: User) -> None:
         assert [v.object_id for v in derived.sources()] == [source.pk]
 
 
-def test_the_edge_names_the_line_that_asked_for_it(user: User) -> None:
-    """Not the `save()` plumbing, and not `create()`'s either: both are in `apps/core/`, which
-    is skipped at capture, so the innermost frame left is the line that asked for the row."""
-    with acting_as(user):
-        source = Dataset.create(operation=None, sources=[], name="source")
-        with lineage.deriving(source):
-            derived = Dataset.create(operation=None, sources=None, name="derived")
-        (edge,) = lineage.all_sources_of(derived)
-
-        caller = edge.caller
-        assert caller is not None
-        assert caller.file.endswith("test_lineage_default.py")
-        assert caller.func == "test_the_edge_names_the_line_that_asked_for_it"
-        assert "Dataset.create" in caller.code
-
-
 # --- the history context, nested ------------------------------------------------------------------
 
 
@@ -233,3 +241,108 @@ def test_the_same_holds_for_a_block(user: User) -> None:
 
         assert label_of(inside) == "a step"
         assert after.history()[-1].event.pgh_context_id is None
+
+
+# --- who wrote it: the stack, on edges and on versions --------------------------------------------
+
+
+def test_a_version_records_the_code_that_wrote_it(user: User) -> None:
+    """The same record `Lineage.stack` keeps for an edge, for every version.
+
+    Python never inserts a version row — the capture trigger does — so the stack is handed over
+    in a transaction-local setting the column default reads
+    (`lineage.declare_write_origin`, `history.Event`).
+    """
+    with acting_as(user):
+        dataset = Dataset.create(operation=None, sources=[], name="written here")
+        version = dataset.history()[-1]  # event rows are tenant data too: read them in context
+        caller = version.caller
+
+        assert caller is not None
+        assert caller.module == __name__
+        assert caller.func == "test_a_version_records_the_code_that_wrote_it"
+        assert "Dataset.create" in caller.code
+        assert version.release  # the build, exactly as an edge records it
+
+
+def test_an_edit_records_the_line_that_edited_it(user: User) -> None:
+    with acting_as(user):
+        dataset = Dataset.create(operation=None, sources=[], name="first")
+        dataset.name = "second"
+        dataset.save(operation=None, sources=[])
+
+        first, second = dataset.history()
+        assert first.caller is not None and "Dataset.create" in first.caller.code
+        assert second.caller is not None and "dataset.save" in second.caller.code
+        assert first.caller.line != second.caller.line
+
+
+def test_a_write_that_bypasses_save_records_no_stack(user: User) -> None:
+    """A bulk `.update()` never calls `save()`, so nothing declares an origin. The version is
+    still written — the trigger sees to that — and honestly says it does not know who wrote it,
+    rather than inheriting the previous write's stack."""
+    with acting_as(user):
+        dataset = Dataset.create(operation=None, sources=[], name="before")
+        Dataset.objects.filter(pk=dataset.pk).update(name="after")
+        dataset.refresh_from_db()
+
+        first, second = dataset.history()
+        assert first.stack and first.caller is not None
+        assert second.version == 2
+        assert second.stack == []
+        assert second.caller is None
+        assert second.release == ""
+
+
+def test_only_this_projects_frames_are_recorded_and_all_of_them(user: User) -> None:
+    """The filter runs at capture and asks the interpreter what is *not* ours (`lineage.is_ours`):
+    forty frames of WSGI, middleware and ninja are not what "who wrote this" asks. But *every*
+    frame of our own code stays — a write five calls deep into the project's code records all
+    five, outermost first, so the chain that led there can be read back, not just its last step.
+    """
+
+    def step_one() -> Dataset:
+        return step_two()
+
+    def step_two() -> Dataset:
+        return step_three()
+
+    def step_three() -> Dataset:
+        return step_four()
+
+    def step_four() -> Dataset:
+        return step_five()
+
+    def step_five() -> Dataset:
+        return Dataset.create(operation="deep", sources=[], name="five deep")
+
+    with acting_as(user):
+        dataset = step_one()
+        stack = dataset.history()[-1].stack
+    funcs = [frame.func for frame in stack]
+
+    assert all(frame.ours for frame in stack)  # nothing from Django, pytest or the stdlib
+    assert not any("site-packages" in frame.file for frame in stack)
+    # The whole chain, in calling order — not merely the innermost frame.
+    assert funcs[-5:] == ["step_one", "step_two", "step_three", "step_four", "step_five"]
+    assert funcs[-6] == "test_only_this_projects_frames_are_recorded_and_all_of_them"
+    # And none of the recording mechanism itself, which would otherwise be every stack's tail.
+    assert not any(frame.module in ("apps.core.lineage", "apps.core.models") for frame in stack)
+
+
+def test_ours_is_decided_by_the_interpreter_not_by_a_list() -> None:
+    """No package list to keep extending: whatever the interpreter does not claim is ours.
+
+    Checked against the roots the running interpreter reports, so the same assertions hold in
+    the container, where the venv and the stdlib live somewhere else entirely.
+    """
+    import sys
+
+    assert lineage.is_ours(__file__)
+    assert lineage.is_ours(str(Path(__file__).parents[3] / "manage.py"))
+    assert lineage.is_ours("/anywhere/else/a_new_app/api.py")  # a package added tomorrow
+    assert lineage.is_ours("<stdin>")  # typed into a shell — worth knowing about
+
+    assert not lineage.is_ours(f"{sys.prefix}/lib/python3/site-packages/django/db/models/base.py")
+    assert not lineage.is_ours(f"{sys.base_prefix}/lib/python3/contextlib.py")
+    assert not lineage.is_ours("<frozen importlib._bootstrap>")
