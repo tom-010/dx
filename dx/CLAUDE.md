@@ -132,6 +132,7 @@ Other little ideas:
 | API docs / spec      | http://127.0.0.1:8000/api/docs · `/api/openapi.json`        |
 | Dev home page        | http://127.0.0.1:8000/ (DEBUG only): links to the docs, explorer, admin and the Vite server, behind the admin login, with a logout button (`config/home.py`) |
 | Why any of this      | `docs/history_lineage_delete_tenants.md` (lineage → history → soft delete → tenancy, in that order) |
+| What a write records | `docs/history_lineage_what_is_recorded.md` (version, edge, function source, request — every column and the mechanism behind it) |
 | Soft delete API      | `docs/soft-delete.md` (delete, read, restore, cascade, the one escape hatch) |
 | Lineage demo data    | `cd backend && uv run python manage.py lineage_demo [--clean]` (builds 11 lineage shapes out of ModelA/ModelB — chain, merge, split, diamond, feedback, rebuild, erased, hub, churn, restore, moving — and prints an explorer link per shape) |
 | Lineage explorer     | http://127.0.0.1:8000/explorer/ (dev only, staff session): pick a user → models → rows → one row's versions and lineage (`apps/core/explorer.py`) |
