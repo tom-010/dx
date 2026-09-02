@@ -26,7 +26,6 @@ from ninja.security import HttpBearer
 
 from apps.accounts.models import API_TOKEN_PREFIX, ApiToken, ApiTokenId, RefreshToken, User
 from apps.core.db import current_user_id
-from apps.core.history import hard_delete
 from apps.core.schemas import StrictSchema
 from config.env import env
 
@@ -147,8 +146,7 @@ def issue_tokens(user: User) -> TokenOut:
     # A real delete, not a soft one: an expired session is a spent credential, and keeping a
     # row per login forever would grow without bound. RefreshToken is exempt from versioning
     # for the same reason (apps/core/history.py::HISTORY_EXEMPT).
-    with hard_delete():
-        RefreshToken.objects.filter(user=user, expires__lt=datetime.now(UTC)).delete()
+    RefreshToken.objects.filter(user=user, expires__lt=datetime.now(UTC)).hard_delete()
     return TokenOut(access_token=issue_access_token(user), refresh_token=issue_refresh_token(user))
 
 

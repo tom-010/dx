@@ -27,7 +27,6 @@ from django_scopes import scopes_disabled
 
 from apps.accounts.models import ApiToken, User
 from apps.core import history, lineage, revisions
-from apps.core.history import hard_delete
 from apps.core.models import VersionedModel
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
@@ -271,15 +270,39 @@ def test_event_tables_are_append_only(user: User) -> None:
             rows.delete()
 
 
-def test_hard_delete_is_refused(user: User) -> None:
+def test_delete_is_soft_and_hard_delete_is_not(user: User) -> None:
+    """`delete()` is the soft one — on the instance and on a queryset — and `hard_delete()` is
+    the deliberate exception, used by erasure, credential purging and test teardown."""
+    with acting_as(user):
+        one = create_dataset_for(user, name="one")
+        many = create_dataset_for(user, name="many")
+
+        one.delete()
+        Dataset.objects.filter(pk=many.pk).delete()
+
+        # Gone from the application, still in the table, and each with a version row for it.
+        assert Dataset.objects.count() == 0
+        assert Dataset.all_objects.count() == 2
+        assert [version.deleted for version in one.history()] == [False, True]
+
+        Dataset.all_objects.filter(pk=one.pk).hard_delete()
+        assert not Dataset.all_objects.filter(pk=one.pk).exists()
+        assert not history.event_rows(Dataset, one.pk).exists()  # its history goes too
+
+
+def test_raw_deletes_are_still_refused_by_the_database(user: User) -> None:
+    """The override makes `delete()` soft; the trigger is what makes it impossible to lose a
+    row *anyway* — through raw SQL, a data migration, or `_base_manager`, none of which the
+    Python override can reach."""
     with acting_as(user):
         dataset = create_dataset_for(user, name="x")
-        with pytest.raises(Exception, match="Cannot delete rows"), transaction.atomic():
-            Dataset.objects.filter(pk=dataset.pk).delete()
 
-        with hard_delete():  # the deliberate exception, used by erasure and test teardown
-            Dataset.objects.filter(pk=dataset.pk).delete()
-        assert not Dataset.all_objects.filter(pk=dataset.pk).exists()
+        with pytest.raises(Exception, match="Cannot delete rows"), transaction.atomic():
+            Dataset._base_manager.filter(pk=dataset.pk).delete()
+
+        with pytest.raises(Exception, match="Cannot delete rows"), transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM datasets_dataset WHERE id = %s", [dataset.pk])
 
 
 def test_soft_delete_is_a_version(user: User) -> None:

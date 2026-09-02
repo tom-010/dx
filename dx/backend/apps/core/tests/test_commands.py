@@ -157,7 +157,7 @@ def test_backup_and_restore_commands(user: User, backup_dir: Path) -> None:
     assert dump.name in listed.output
 
     with acting_as(user), hard_delete():
-        Dataset.all_objects.all().delete()
+        Dataset.all_objects.all().hard_delete()
     restored = runner.invoke(restore.command, ["--latest", "--yes"])
     assert restored.exit_code == 0, restored.output
     with acting_as(user):

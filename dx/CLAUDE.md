@@ -26,6 +26,11 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
 - **Everything is versioned and nothing is deleted**: every write to a feature model is mirrored
   into an append-only event table by a database trigger, and deletes are soft. See
   `.claude/rules/versioning.md` — those invariants are not negotiable either.
+- **Soft delete in one line**: `obj.delete()` / `qs.delete()` are soft (a versioned UPDATE of
+  `deleted_at`, no cascade), `obj.hard_delete()` / `qs.hard_delete()` really remove the row and
+  its history (erasure, credential purging, test teardown only), `Model.objects` hides deleted
+  rows, `Model.all_objects` includes them, and a raw `DELETE` is refused by the database
+  trigger either way — `docs/soft-delete.md`.
 
 ## Where the detail lives
 
@@ -93,6 +98,9 @@ Other little ideas:
 | Backend lint/format  | `cd backend && uv run ruff check . && uv run ruff format .` |
 | Backend type-check   | `cd backend && uv run mypy .` (strict + django-stubs)       |
 | API docs / spec      | http://127.0.0.1:8000/api/docs · `/api/openapi.json`        |
+| Dev home page        | http://127.0.0.1:8000/ (DEBUG only): links to the docs, explorer, admin and the Vite server (`config/home.py`) |
+| Why any of this      | `docs/history_lineage_delete_tenants.md` (lineage → history → soft delete → tenancy, in that order) |
+| Soft delete API      | `docs/soft-delete.md` (delete, read, restore, cascade, the one escape hatch) |
 | Lineage demo data    | `cd backend && uv run python manage.py lineage_demo [--clean]` (builds 11 lineage shapes out of ModelA/ModelB — chain, merge, split, diamond, feedback, rebuild, erased, hub, churn, restore, moving — and prints an explorer link per shape) |
 | Lineage explorer     | http://127.0.0.1:8000/explorer/ (dev only, staff session): pick a user → models → rows → one row's versions and lineage (`apps/core/explorer.py`) |
 | Health / readiness   | `curl http://127.0.0.1:8000/api/health` (liveness) · `/api/ready` (503 + failing checks; see `.claude/rules/health-checks.md`) |

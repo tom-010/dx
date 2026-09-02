@@ -32,6 +32,11 @@ ADMIN_ENABLED = env.admin_enabled
 # `config/urls.py`, because Django's test runner sets DEBUG to False *after* settings are
 # imported — a URLconf gated on it directly would silently vanish for the whole test suite.
 EXPLORER_ENABLED = DEBUG
+# The development front door at `/` (config/home.py): links to the pages above, in place of the
+# SPA catch-all, which in development answers "frontend not built" (the SPA runs on Vite). Read
+# from a setting rather than from `settings.DEBUG` in `config/urls.py` for the same reason as
+# EXPLORER_ENABLED above.
+DEV_HOME_ENABLED = DEBUG
 # Container health checks (Docker HEALTHCHECK, compose) reach the app via loopback; those names
 # are always allowed next to the public ones — they cannot be used for host-header poisoning.
 # While DEBUG with an empty list, Django allows them by itself.

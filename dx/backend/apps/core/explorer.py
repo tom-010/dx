@@ -77,6 +77,14 @@ from config.env import BASE_DIR
 #: the date range rather than by scrolling.
 PAGE_SIZE = 20
 
+#: Which rows a listing shows, `DEFAULT_STATE` first. Soft delete means "gone from the app,
+#: still in the database", and the app's own default is to hide those (`Model.objects`), so the
+#: explorer matches it — a table is mostly retired rows soon enough that showing everything by
+#: default buries the ones anybody is looking for. Nothing is hidden *silently*: the caption
+#: always counts what the filter left out and links to it.
+STATES = (("live", "Live"), ("deleted", "Deleted"), ("all", "All"))
+DEFAULT_STATE = "live"
+
 #: The one-click ranges offered next to the date inputs, as `(key, label)`. Each is an open
 #: range ending now — "since", not "between" — which is what a person checking whether a write
 #: landed actually wants.
@@ -183,6 +191,10 @@ class ModelRow:
     kind: str
     tracked: bool
     count: int
+    #: How many of those are soft-deleted. `None` on a table without `deleted_at`, where the
+    #: question does not apply — a count of 0 would read as "none deleted" rather than "cannot
+    #: be deleted".
+    deleted: int | None
     url: str
 
 
@@ -245,6 +257,10 @@ class EdgeRow:
     label: str
     version: int
     is_stale: bool
+    #: The row at the far end is soft-deleted *now*. Different from `is_stale` (its version has
+    #: moved on) and from the version's own `deleted` (it was already gone when consumed): a
+    #: source can be current, superseded, deleted, or any combination.
+    gone: bool
     at: datetime
     release: str
     frame: str
@@ -278,6 +294,13 @@ def _day_start(day: date) -> datetime:
 
 
 @dataclass(frozen=True)
+class StateLink:
+    key: str
+    label: str
+    active: bool
+
+
+@dataclass(frozen=True)
 class RangeLink:
     """One quick range, and whether it is the one in force."""
 
@@ -304,20 +327,32 @@ class DateFilter:
     error: str
     #: One of `RANGES`, or "" when the two date inputs are in force.
     preset: str
+    #: One of `STATES`. Only meaningful on a table that has `deleted_at`; "" there.
+    state: str
+    #: False on a table with no `deleted_at` column, where the choice would be a lie.
+    soft_deletable: bool
 
     @property
     def active(self) -> bool:
-        return bool(self.field and (self.preset or self.start or self.end))
+        """Whether anything other than the defaults is in force — what "clear" would undo."""
+        narrowed_dates = self.field and (self.preset or self.start or self.end)
+        return bool(narrowed_dates or (self.state and self.state != DEFAULT_STATE))
 
     @property
     def ranges(self) -> list[RangeLink]:
         return [RangeLink(key, label, key == self.preset) for key, label in RANGES]
 
     @property
+    def states(self) -> list[StateLink]:
+        return [StateLink(key, label, key == self.state) for key, label in STATES]
+
+    @property
     def summary(self) -> str:
         """The range in words, for the table's caption."""
         if not self.active:
             return ""
+        if self.state and not self.preset and not self.start and not self.end:
+            return "" if self.state == "all" else self.state
         if self.preset:
             return {"today": "today", "24h": "in the last 24 hours", "week": "this week"}[
                 self.preset
@@ -343,7 +378,16 @@ class DateFilter:
             return _day_start(today - timedelta(days=today.weekday()))
         return None
 
-    def apply(self, queryset: models.QuerySet[models.Model]) -> models.QuerySet[models.Model]:
+    def apply_state(self, queryset: models.QuerySet[models.Model]) -> models.QuerySet[models.Model]:
+        """Live, deleted, or both. Kept apart from the dates so the page can count what this
+        step alone left out — a hidden row nobody is told about is the failure mode here."""
+        if self.state == "live":
+            return queryset.filter(deleted_at__isnull=True)
+        if self.state == "deleted":
+            return queryset.filter(deleted_at__isnull=False)
+        return queryset
+
+    def apply_dates(self, queryset: models.QuerySet[models.Model]) -> models.QuerySet[models.Model]:
         if not self.field:
             return queryset
         if (since := self.since()) is not None:
@@ -378,13 +422,29 @@ def read_date_filter(request: HttpRequest, model: type[models.Model]) -> DateFil
     start = "" if preset else request.GET.get("from", "").strip()
     end = "" if preset else request.GET.get("to", "").strip()
 
+    soft_deletable = any(field.name == "deleted_at" for field in model._meta.fields)
+    state = request.GET.get("state", "").strip()
+    if not soft_deletable:
+        state = ""
+    elif state not in dict(STATES):
+        state = DEFAULT_STATE
+
     bad = [
         name
         for name, value in (("from", start), ("to", end))
         if value and _parse_day(value) is None
     ]
     error = f"Ignored {' and '.join(bad)}: expected a date like 2026-09-01." if bad else ""
-    return DateFilter(field=field, fields=fields, start=start, end=end, error=error, preset=preset)
+    return DateFilter(
+        field=field,
+        fields=fields,
+        start=start,
+        end=end,
+        error=error,
+        preset=preset,
+        state=state,
+        soft_deletable=soft_deletable,
+    )
 
 
 @dataclass(frozen=True)
@@ -396,6 +456,15 @@ class Page:
     total: int
     previous_url: str | None
     next_url: str | None
+
+
+def _page_url_with(request: HttpRequest, changes: dict[str, str]) -> str:
+    """This page with some query parameters replaced — the rest kept, so a link out of a
+    filtered listing does not quietly drop the filter it came from."""
+    params = request.GET.copy()
+    for key, value in changes.items():
+        params[key] = value
+    return f"{request.path}?{params.urlencode()}"
 
 
 def _page_url(request: HttpRequest, number: int) -> str:
@@ -509,6 +578,17 @@ def users(request: HttpRequest) -> HttpResponse:
     )
 
 
+def _deleted_count(model: type[models.Model]) -> int | None:
+    """How many rows of this table are soft-deleted, or None where the column does not exist.
+
+    Counted separately rather than subtracted from a filtered total: the listing shows every
+    row by default, and a count that quietly left the retired ones out would disagree with it.
+    """
+    if not any(field.name == "deleted_at" for field in model._meta.fields):
+        return None
+    return model._base_manager.filter(deleted_at__isnull=False).count()
+
+
 def index(request: HttpRequest, user_id: uuid.UUID) -> HttpResponse:
     """Every model, grouped by app, with the number of rows this tenant has."""
     denied = _guard(request)
@@ -527,6 +607,7 @@ def index(request: HttpRequest, user_id: uuid.UUID) -> HttpResponse:
                     kind=kind_of(model),
                     tracked=event_model_for(model) is not None,
                     count=model._base_manager.count(),
+                    deleted=_deleted_count(model),
                     url=reverse(
                         "explorer:model", args=[tenant.pk, meta.app_label, meta.model_name]
                     ),
@@ -558,7 +639,15 @@ def model_rows(
 
     with tenant_context(tenant.pk):
         date_filter = read_date_filter(request, model)
-        queryset = date_filter.apply(model._base_manager.order_by(_order_by(model)))
+        in_range = date_filter.apply_dates(model._base_manager.order_by(_order_by(model)))
+        queryset = date_filter.apply_state(in_range)
+        # How many retired rows the default is keeping out of sight, counted on the same date
+        # range so the number is about the rows you would actually be looking at. Only for the
+        # "live" view: asking for the deleted ones hides the live ones, and calling *those*
+        # retired would be false.
+        hidden = (
+            in_range.filter(deleted_at__isnull=False).count() if date_filter.state == "live" else 0
+        )
         paginator = Paginator(queryset, PAGE_SIZE)
         # `get_page`, not `page`: an out-of-range or non-numeric ?page is a clamped page rather
         # than a 404. Nobody types that by hand — it comes from a stale link.
@@ -588,6 +677,8 @@ def model_rows(
                 "model_key": model._meta.label_lower,
                 "index_url": reverse("explorer:index", args=[tenant.pk]),
                 "filter": date_filter,
+                "hidden": hidden,
+                "show_all_url": _page_url_with(request, {"state": "all", "page": "1"}),
                 "page": Page(
                     number=page.number,
                     count=paginator.num_pages,
@@ -738,6 +829,7 @@ def edge_detail(request: HttpRequest, user_id: uuid.UUID, edge_id: uuid.UUID) ->
 
         source = lineage.source_versions([edge])[0]
         target = lineage.target_versions([edge])[0]
+        gone = _deleted_now([(edge, source), (edge, target)])
         labels = revisions.context_sources({edge.pgh_context} if edge.pgh_context else set())
         return render(
             request,
@@ -745,8 +837,8 @@ def edge_detail(request: HttpRequest, user_id: uuid.UUID, edge_id: uuid.UUID) ->
             {
                 "tenant": tenant,
                 "index_url": reverse("explorer:index", args=[tenant.pk]),
-                "source": _edge_row(tenant.pk, edge, source),
-                "target": _edge_row(tenant.pk, edge, target),
+                "source": _edge_row(tenant.pk, edge, source, source.object_id in gone),
+                "target": _edge_row(tenant.pk, edge, target, target.object_id in gone),
                 "at": edge.created,
                 "release": edge.release or "unknown",
                 "producer": (
@@ -791,6 +883,7 @@ def object_detail(
                 "object_id": str(obj.pk),
                 "label": _render(obj),
                 "version": getattr(obj, "version", None),
+                "deleted_at": getattr(obj, "deleted_at", None),
                 "index_url": reverse("explorer:index", args=[tenant.pk]),
                 "model_url": reverse(
                     "explorer:model",
@@ -841,6 +934,7 @@ def object_version(
         changes, unknown = revisions.diff(
             model._meta.label, previous.event if previous else None, current.event
         )
+        live = model._base_manager.filter(pk=pk).first()  # for "is the row gone now"?
         state = current.to_object()
         untracked = current.untracked_fields()
         context_id = current.event.pgh_context_id
@@ -860,6 +954,8 @@ def object_version(
                 "of": len(chain),
                 "is_current": current.is_current(),
                 "deleted": current.deleted,
+                # The row's state *now*, which a version written before the delete cannot show.
+                "gone_now": getattr(live, "deleted_at", None) is not None,
                 "at": current.at,
                 "written_by": labels.get(context_id, "unknown") if context_id else "unknown",
                 "event_label": current.event.pgh_label,
@@ -984,7 +1080,10 @@ def _revision_url(user_id: uuid.UUID, revision: revisions.Revision) -> str | Non
 
 
 def _edge_row(
-    user_id: uuid.UUID, edge: lineage.Lineage, far_end: Version[VersionedModel]
+    user_id: uuid.UUID,
+    edge: lineage.Lineage,
+    far_end: Version[VersionedModel],
+    gone: bool = False,
 ) -> EdgeRow:
     """One edge plus the version at its far end. The frame and the release come from the edge
     itself (`Lineage.stack`, `Lineage.release`): which code claimed this derivation, and which
@@ -997,6 +1096,7 @@ def _edge_row(
         label=_render(far_end.to_object()),
         version=far_end.version,
         is_stale=not far_end.is_current(),
+        gone=gone,
         at=edge.created,
         release=edge.release or "unknown",
         frame=f"{frame.file.rsplit('/', 1)[-1]}:{frame.line} in {frame.func}()" if frame else "",
@@ -1009,6 +1109,29 @@ def _edge_row(
             else None
         ),
     )
+
+
+def _deleted_now(
+    pairs: list[tuple[lineage.Lineage, Version[VersionedModel]]],
+) -> set[uuid.UUID]:
+    """Which rows at the far end of these edges have since been soft-deleted.
+
+    A deleted source is the case the edge exists for — the derivation still happened, and the
+    version it consumed is still readable — so the page has to say so rather than link to a row
+    that is no longer anywhere. One query per model, not per edge.
+    """
+    by_model: dict[type[VersionedModel], set[uuid.UUID]] = {}
+    for _edge, far_end in pairs:
+        by_model.setdefault(far_end.model, set()).add(far_end.object_id)
+
+    gone: set[uuid.UUID] = set()
+    for model, ids in by_model.items():
+        gone.update(
+            model._base_manager.filter(pk__in=sorted(ids), deleted_at__isnull=False).values_list(
+                "pk", flat=True
+            )
+        )
+    return gone
 
 
 def _group_edges(
@@ -1026,6 +1149,7 @@ def _group_edges(
         groups.setdefault(key, []).append((edge, far_end))
 
     labels = revisions.context_sources({edge.pgh_context for edge, _ in pairs if edge.pgh_context})
+    gone = _deleted_now(pairs)
     return [
         EdgeGroup(
             source=(
@@ -1034,7 +1158,10 @@ def _group_edges(
                 else labels.get(members[0][0].pgh_context, "unknown")
             ),
             at=members[0][0].created,
-            edges=[_edge_row(user_id, edge, far_end) for edge, far_end in members],
+            edges=[
+                _edge_row(user_id, edge, far_end, far_end.object_id in gone)
+                for edge, far_end in members
+            ],
         )
         for members in groups.values()
     ]

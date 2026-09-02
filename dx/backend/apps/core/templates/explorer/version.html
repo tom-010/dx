@@ -30,10 +30,12 @@
       <dd><time datetime="{{ at|date:'c' }}">{{ at|date:"Y-m-d H:i:s" }}</time></dd>
       <dt>by</dt>
       <dd>{{ written_by }} <small>({{ event_label }})</small></dd>
-      <dt>state</dt>
+      <dt title="Two different questions: whether the row was already deleted when this
+version was written, and whether this version is still the row's current state.">state</dt>
       <dd>
-        {% if deleted %}<del>deleted at this version</del>{% else %}live{% endif %} ·
+        {% if deleted %}<del>deleted at this version</del>{% else %}live at this version{% endif %} ·
         {% if is_current %}current{% else %}<mark>superseded</mark>{% endif %}
+        {% if gone_now and not deleted %}· <del>the row is deleted now</del>{% endif %}
       </dd>
       <dt>object</dt>
       <dd><a href="{{ object_page }}"><code>{{ object_id }}</code></a></dd>

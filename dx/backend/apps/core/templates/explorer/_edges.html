@@ -24,7 +24,13 @@ the same either way: the far end is always a *version*, and that is where it lin
           <span class="tag">{{ edge.model }}</span>
         </th>
         <td>v{{ edge.version }}</td>
-        <td>{% if edge.is_stale %}<mark>superseded</mark>{% else %}current{% endif %}</td>
+        <td>
+          {% if edge.is_stale %}<mark>superseded</mark>{% else %}current{% endif %}
+          {% if edge.gone %}·
+            <del title="The row has since been soft-deleted. The version this edge names is
+still readable — that is what soft delete is for.">deleted</del>
+          {% endif %}
+        </td>
         <td class="frame">
           <a href="{{ edge.edge_url }}" title="The whole call stack that recorded this edge">
             <code>{{ edge.frame }}</code></a> @{{ edge.release }}<br>

@@ -12,7 +12,6 @@ from django.core.files.storage import FileSystemStorage
 
 from apps.accounts.models import User
 from apps.core import backups
-from apps.core.history import hard_delete
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
@@ -37,8 +36,8 @@ def test_backup_round_trip(user: User, other_user: User, storage: FileSystemStor
     assert backup.size > 0
     assert backups.list_backups(storage=storage) == [backup]
 
-    with acting_as(user), hard_delete():  # the one sanctioned real delete: test teardown
-        Dataset.all_objects.all().delete()
+    with acting_as(user):  # the one sanctioned real delete: test teardown
+        Dataset.all_objects.all().hard_delete()
     backups.restore_backup(backup.name, storage=storage)
 
     with acting_as(user):

@@ -8,10 +8,21 @@
 {% endblock %}
 
 {% block content %}
-  <h1>{{ label }} <span class="tag">object</span></h1>
+  <h1>
+    {{ label }}
+    <span class="tag">object</span>
+    {% if deleted_at %}
+      <span class="tag" title="Soft-deleted: gone from the app, still in the database with its
+whole history. `objects` hides it, `all_objects` does not, and a real DELETE is refused by the
+no_hard_delete trigger."><del>deleted</del></span>
+    {% endif %}
+  </h1>
   <p>
     {{ model }} <span class="tag">{{ kind }}</span>
     {% if version %}· now at v{{ version }}{% endif %} · <code>{{ object_id }}</code>
+    {% if deleted_at %}
+      · deleted <time datetime="{{ deleted_at|date:'c' }}">{{ deleted_at|date:"Y-m-d H:i" }}</time>
+    {% endif %}
   </p>
 
   <section>

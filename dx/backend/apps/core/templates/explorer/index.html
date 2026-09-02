@@ -25,6 +25,7 @@ security.">owned</span>
             <th scope="col">Kind</th>
             <th scope="col">Versioned</th>
             <th scope="col">Rows</th>
+            <th scope="col" title="Soft-deleted: still in the table, hidden from `objects`.">Retired</th>
           </tr>
         </thead>
         <tbody>
@@ -34,6 +35,11 @@ security.">owned</span>
               <td><span class="tag">{{ model.kind }}</span></td>
               <td>{% if model.tracked %}yes{% else %}<span class="empty">no</span>{% endif %}</td>
               <td>{{ model.count }}</td>
+              <td>
+                {% if model.deleted is None %}<span class="empty">n/a</span>
+                {% elif model.deleted %}<del>{{ model.deleted }}</del>
+                {% else %}0{% endif %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>

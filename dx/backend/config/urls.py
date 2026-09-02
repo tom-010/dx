@@ -34,6 +34,19 @@ if settings.EXPLORER_ENABLED:
 
     urlpatterns += [path("explorer/", include((explorer.urlpatterns, "explorer")))]
 
+# `/` in development: the SPA lives on the Vite server then, so Django's own root would be the
+# catch-all below, answering "frontend not built". A link list to the pages above instead, behind
+# the same login they need, with the button that ends that session next to it (config/home.py).
+# `DEV_HOME_ENABLED` defaults to DEBUG (config/settings.py); both paths have to sit above the
+# catch-all to be reached at all.
+if settings.DEV_HOME_ENABLED:
+    from config.home import dev_home, dev_logout
+
+    urlpatterns += [
+        path("", dev_home, name="dev-home"),
+        path("logout/", dev_logout, name="dev-logout"),
+    ]
+
 urlpatterns += [
     path("api/", api.urls),
     # Uploaded files, streamed from the object store (signed links, see config/media.py).

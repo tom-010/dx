@@ -157,17 +157,21 @@ def test_one_tenant_never_sees_another_s_rows(
     assert staff_client.get(url).status_code == 404
 
 
-def test_a_soft_deleted_row_is_still_there(staff_client: Client, user: User) -> None:
-    """`_base_manager`, on purpose: a row the app has stopped showing still has a history, and
-    an explorer that hid it would be lying about the one property this schema guarantees."""
+def test_a_soft_deleted_row_is_hidden_but_never_silently(staff_client: Client, user: User) -> None:
+    """The default matches the app's own (`Model.objects` hides them), because a table is mostly
+    retired rows soon enough. What must not happen is hiding them *quietly*: the caption counts
+    what was left out and links to it."""
     with acting_as(user):
-        dataset = create_dataset_for(user, name="retired")
+        dataset = create_dataset_for(user, name="a retired row")
         dataset.soft_delete()
 
-    body = staff_client.get(model_url(user, Dataset)).content.decode()
+    default = staff_client.get(model_url(user, Dataset)).content.decode()
+    everything = staff_client.get(f"{model_url(user, Dataset)}?state=all").content.decode()
 
-    assert "retired" in body
-    assert "deleted" in body
+    assert "a retired row" not in default
+    assert "1 retired hidden" in default
+    assert "a retired row" in everything
+    assert "deleted" in everything
 
 
 def test_the_object_page_shows_the_version_history(staff_client: Client, user: User) -> None:
@@ -680,3 +684,101 @@ def test_an_unknown_edge_is_a_404(staff_client: Client, user: User) -> None:
     missing = reverse("explorer:edge", args=[user.pk, uuid.uuid4()])
 
     assert staff_client.get(missing).status_code == 404
+
+
+# --- soft delete, on every surface that can show it -----------------------------------------------
+
+
+def test_a_deleted_row_says_so_at_the_top_of_its_page(staff_client: Client, user: User) -> None:
+    """It was only in the field list before, which reads as alive at a glance."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="retired dataset")
+        dataset.soft_delete()
+
+    body = staff_client.get(object_url(user, dataset)).content.decode()
+
+    assert "<del>deleted</del>" in body.split("</h1>")[0]
+    assert "deleted <time" in body  # ...and when
+
+
+def test_an_edge_says_when_its_far_end_is_gone(staff_client: Client, user: User) -> None:
+    """A deleted source is the case the edge exists for: the derivation still happened and the
+    version it consumed is still readable, so the page must not link to it as though the row
+    were still there."""
+    with acting_as(user):
+        source = create_dataset_for(user, name="the source")
+        derived = create_dataset_for(user, name="the derived")
+        lineage.record_derivation(derived, sources=[source])
+        source.soft_delete()
+
+    body = staff_client.get(object_url(user, derived)).content.decode()
+    cell = body.split("the source")[1][:700]
+
+    assert ">deleted</del>" in cell  # the <del> carries a title, so match its content
+    # The version it consumed is still reachable — that is the whole point of soft delete.
+    assert version_url(user, source, 1) in body
+
+
+def test_three_different_questions_about_deletion(staff_client: Client, user: User) -> None:
+    """Was it deleted *at this version*, is this version *current*, and is the row gone *now* —
+    a version written before the delete must answer them differently."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="doomed")
+        dataset.soft_delete()
+
+    first = staff_client.get(version_url(user, dataset, 1)).content.decode()
+    second = staff_client.get(version_url(user, dataset, 2)).content.decode()
+
+    assert "live at this version" in first
+    assert "the row is deleted now" in first
+    assert "deleted at this version" in second
+
+
+def test_the_listing_can_show_live_or_deleted_rows(staff_client: Client, user: User) -> None:
+    """Three ways to ask, and the default is the one the app itself uses."""
+    with acting_as(user):
+        kept = create_dataset_for(user, name="still here")
+        gone = create_dataset_for(user, name="retired")
+        gone.soft_delete()
+
+    default = staff_client.get(model_url(user, Dataset)).content.decode()
+    both = staff_client.get(f"{model_url(user, Dataset)}?state=all").content.decode()
+    deleted = staff_client.get(f"{model_url(user, Dataset)}?state=deleted").content.decode()
+
+    assert _row_ids(default) == [str(kept.pk)]  # live by default, like `Model.objects`
+    assert str(kept.pk) in _row_ids(both) and str(gone.pk) in _row_ids(both)
+    assert _row_ids(deleted) == [str(gone.pk)]
+
+
+def test_the_state_filter_is_not_offered_where_it_makes_no_sense(
+    staff_client: Client, user: User
+) -> None:
+    """`Lineage` has no `deleted_at`: it is append-only, so "live or deleted" is not a question
+    it can answer, and a filter that silently did nothing would be worse than none."""
+    with acting_as(user):
+        source = create_dataset_for(user, name="source")
+        derived = create_dataset_for(user, name="derived")
+        lineage.record_derivation(derived, sources=[source])
+
+    edges = staff_client.get(reverse("explorer:model", args=[user.pk, "core", "lineage"]))
+    body = edges.content.decode()
+
+    assert "Rows to show" not in body
+    # ...and asking for it anyway changes nothing rather than raising.
+    assert staff_client.get(f"{edges.request['PATH_INFO']}?state=live").status_code == 200
+
+
+def test_the_model_list_counts_the_retired_rows_separately(
+    staff_client: Client, user: User
+) -> None:
+    """The row count includes soft-deleted rows, so the page has to say how many that is."""
+    with acting_as(user):
+        create_dataset_for(user, name="kept")
+        gone = create_dataset_for(user, name="retired")
+        gone.soft_delete()
+
+    body = staff_client.get(index_url(user)).content.decode()
+    row = next(chunk for chunk in body.split("<tr>") if ">Dataset</a>" in chunk)
+
+    assert "<td>2</td>" in row  # both rows counted
+    assert "<del>1</del>" in row  # one of them retired

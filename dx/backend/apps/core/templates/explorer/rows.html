@@ -39,6 +39,17 @@ pages.">Objects</strong>, newest first — soft-deleted rows included.
         {% endfor %}
         {% if filter.active %}<a href="{{ request.path }}">clear</a>{% endif %}
       </fieldset>
+      {% if filter.soft_deletable %}
+        <fieldset>
+          <legend>Rows to show</legend>
+          {% for state in filter.states %}
+            <button type="submit" name="state" value="{{ state.key }}"
+                    aria-pressed="{{ state.active|yesno:'true,false' }}"
+                    title="Soft delete keeps the row and its history; only `objects` stops
+showing it.">{{ state.label }}</button>
+          {% endfor %}
+        </fieldset>
+      {% endif %}
     </form>
     {% if filter.error %}<p class="error">{{ filter.error }}</p>{% endif %}
   {% endif %}
@@ -49,6 +60,10 @@ pages.">Objects</strong>, newest first — soft-deleted rows included.
     <caption>
       {{ page.total }} row{{ page.total|pluralize }}{% if filter.summary %}
       {{ filter.summary }}{% endif %} · page {{ page.number }} of {{ page.count }}
+      {% if hidden %}
+        · <a href="{{ show_all_url }}" title="Soft-deleted rows are hidden by default, the same
+way `Model.objects` hides them from the app.">{{ hidden }} retired hidden</a>
+      {% endif %}
     </caption>
     <thead>
       <tr>

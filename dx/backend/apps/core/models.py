@@ -32,7 +32,7 @@ from pydantic import BaseModel as PydanticModel
 
 from apps.core import lineage
 from apps.core.db import NoTenantContext, current_user_id
-from apps.core.history import Version, versions
+from apps.core.history import Version, event_model_for, hard_delete, versions
 
 # Django only imports `models.py` when it populates the app registry, so the lineage model
 # has to be pulled in from here. `apps.core.lineage` imports nothing from this module at
@@ -67,6 +67,33 @@ class ActiveQuerySet(models.QuerySet[_ModelT]):
     def deleted(self) -> Self:
         return self.filter(deleted_at__isnull=False)
 
+    def delete(self) -> tuple[int, dict[str, int]]:
+        """Soft delete every matched row. One UPDATE, and still fully versioned.
+
+        `.update()` goes round `save()`, but the capture is a *database trigger*, so each row
+        still gets its version bump and its event row (`.claude/rules/versioning.md`). Rows that
+        are already deleted are skipped rather than re-stamped: deleting twice is not an event.
+
+        Django's cascade does not run here, by design — cascade is application logic in this
+        project (`apps/datasets/api.py` is the worked example), because a collector that fired
+        on a soft delete would also have to be right about restores and erasure, and it is not.
+        """
+        count = self.alive().update(deleted_at=timezone.now())
+        return count, {self.model._meta.label: count} if count else {}
+
+    def hard_delete(self) -> tuple[int, dict[str, int]]:
+        """Really remove the matched rows *and their version history*.
+
+        The deliberate exception to "nothing is deleted": tenant erasure, credential purging and
+        test teardown. Everything else means `delete()`.
+        """
+        with hard_delete():
+            ids = list(self.values_list("pk", flat=True))
+            events = event_model_for(self.model)
+            if events is not None and ids:
+                events._base_manager.filter(**{"pgh_obj_id__in": ids}).delete()
+            return super().delete()
+
 
 class ActiveManager(models.Manager[_ModelT]):
     """Default manager of every `VersionedModel`: soft-deleted rows are simply not there.
@@ -79,6 +106,21 @@ class ActiveManager(models.Manager[_ModelT]):
 
     def get_queryset(self) -> ActiveQuerySet[_ModelT]:
         return ActiveQuerySet(model=self.model, using=self._db).alive()
+
+    # django-stubs types `Manager.all()` and `.filter()` as returning a plain `QuerySet`, which
+    # loses `alive()`, `deleted()` and `hard_delete()` the moment a caller goes through the
+    # manager — `Model.objects.filter(...).hard_delete()` would not type-check even though it
+    # works. Narrowed here so the queryset's own API survives the hop.
+    def all(self) -> ActiveQuerySet[_ModelT]:
+        return self.get_queryset()
+
+    def filter(self, *args: models.Q, **kwargs: object) -> ActiveQuerySet[_ModelT]:
+        return self.get_queryset().filter(*args, **kwargs)
+
+    def deleted(self) -> ActiveQuerySet[_ModelT]:
+        """The soft-deleted rows. Only ever non-empty on `all_objects`, which is the point:
+        `objects.deleted()` asks for rows `objects` has already filtered out."""
+        return self.get_queryset().deleted()
 
 
 class VersionedModel(models.Model):
@@ -168,12 +210,45 @@ class VersionedModel(models.Model):
             # (An INSERT needs no such read: Django fetches database defaults with RETURNING.)
             self.refresh_from_db(fields=["version", "modified"])
 
+    def delete(
+        self, using: str | None = None, keep_parents: bool = False
+    ) -> tuple[int, dict[str, int]]:
+        """Deleting is soft. `soft_delete()` is the same thing, said explicitly.
+
+        Overridden rather than left to raise, because "delete" is what every caller already
+        writes — Django's admin, a `ModelForm`, a service, a shell — and the useful behaviour is
+        for all of them to do the right thing rather than to fail. The database trigger stays
+        where it is: it now guards raw SQL and data migrations, the paths this override cannot
+        reach.
+
+        Returns Django's `(count, {label: count})` so it is a drop-in; nothing cascades, because
+        cascade is application logic here.
+        """
+        self.soft_delete()
+        return 1, {self._meta.label: 1}
+
     def soft_delete(self) -> None:
         """Mark the row deleted. This is an UPDATE, so it bumps `version` and writes a version
         row like any other change: "was deleted" is a state the object had, and lineage edges
         pointing at earlier versions stay resolvable forever."""
         self.deleted_at = timezone.now()
         self.save(update_fields=["deleted_at"])
+
+    def hard_delete(self) -> tuple[int, dict[str, int]]:
+        """Really remove this row and the version rows that describe it.
+
+        The exception, not the tool: erasing a tenant, purging a spent credential, tearing down
+        a test. It lifts the `no_hard_delete` trigger for the duration, so Django's cascade —
+        which *does* run here — can take the related rows with it.
+
+        It removes **this row's** history, not the history of whatever the cascade collected;
+        walking a tenant's tables is `apps/core/tenants.py`'s job and it does it explicitly.
+        """
+        with hard_delete():
+            events = event_model_for(type(self))
+            if events is not None:
+                events._base_manager.filter(**{"pgh_obj_id": self.pk}).delete()
+            return super().delete()
 
     def history(self) -> list[Version[Self]]:
         """Every past state of this row, oldest first — `[0]` is how it was created, `[-1]` how
@@ -320,6 +395,17 @@ class OwnedManager(ActiveManager[_OwnedT]):
 
     def for_user(self, user: User) -> OwnedQuerySet[_OwnedT]:
         return self.get_queryset().for_user(user)
+
+    # Same narrowing as `ActiveManager`, one step further down: these return the *owned*
+    # queryset, so `for_user()` stays reachable after a `.filter()`.
+    def all(self) -> OwnedQuerySet[_OwnedT]:
+        return self.get_queryset()
+
+    def filter(self, *args: models.Q, **kwargs: object) -> OwnedQuerySet[_OwnedT]:
+        return self.get_queryset().filter(*args, **kwargs)
+
+    def deleted(self) -> OwnedQuerySet[_OwnedT]:
+        return self.get_queryset().deleted()
 
 
 class AllOwnedManager(OwnedManager[_OwnedT]):
