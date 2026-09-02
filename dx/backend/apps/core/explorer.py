@@ -634,7 +634,13 @@ def _deleted_count(model: type[models.Model]) -> int | None:
 
 
 def index(request: HttpRequest, user_id: uuid.UUID) -> HttpResponse:
-    """Every model, grouped by app, with the number of rows this tenant has."""
+    """Every model this project writes, grouped by app, with the number of rows this tenant has.
+
+    Event tables are left out: `DatasetEvent` is not a thing anyone has, it is the history of a
+    `Dataset`, and listing it beside its model doubles the index while saying nothing the
+    "Versioned" column does not already say. They stay browsable — a row's page links to its
+    versions, and `/explorer/<user>/datasets/datasetevent/` is still a page.
+    """
     denied = _guard(request)
     if denied is not None:
         return denied
@@ -643,6 +649,8 @@ def index(request: HttpRequest, user_id: uuid.UUID) -> HttpResponse:
     with tenant_context(tenant.pk):
         groups: dict[str, list[ModelRow]] = {}
         for model in explorer_models():
+            if is_event_model(model):
+                continue
             meta = model._meta
             groups.setdefault(meta.app_label, []).append(
                 ModelRow(

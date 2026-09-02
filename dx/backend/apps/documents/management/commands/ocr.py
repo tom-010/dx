@@ -24,7 +24,7 @@ import structlog
 from rich.console import Console
 from rich.table import Table
 
-from apps.documents import snapshot
+from apps.documents import pipeline, snapshot
 from apps.documents.ocr import assembly, run
 from apps.documents.ocr.gemini_client import MODEL, GeminiPageReader
 from apps.documents.ocr.preview import write_previews
@@ -72,7 +72,7 @@ def _extract(pdf: Path, out: Path, dpi: int, pages: str, force: bool, model: str
             state = f"[red]failed[/red] {page.error}"
         else:
             done += 1
-            state = f"{len(page.blocks or [])} blocks"
+            state = f"{len(page.html or '')} characters of html"
         console.print(f"page {page.number:>4}: {state}")
     console.print(f"{done} read, {skipped} kept, {failed} failed → {out}/raw/")
     log.info("ocr_extracted", pdf=str(pdf), pages=len(wanted), read=done, failed=failed)
@@ -82,9 +82,17 @@ def _assemble(out: Path, merge_tables: bool) -> None:
     records = run.existing_raw(out)
     if not records:
         raise click.ClickException(f"no raw pages under {out}/raw/ — run `ocr extract` first")
-    pages = [assembly.PageInput.from_raw(record) for _, record in sorted(records.items())]
-    extraction = assembly.assemble(pages, merge_tables=merge_tables)
+    inputs = [assembly.PageInput.from_raw(record) for _, record in sorted(records.items())]
+    pages, problems = assembly.page_contents(inputs)
+    # The pipeline's own product first — the augmented document, the thing to iterate on —
+    # and only then the form the database stores.
+    document, report = pipeline.assemble_html(pages, merge_tables=merge_tables)
+    problems += pipeline.review(document)
+    extraction = pipeline.extraction_from_html(
+        document, pages, raw=assembly.raw_payload(inputs), stats={"pipeline": report.as_dict()}
+    )
     built = snapshot.build(extraction)
+    (out / "document.html").write_text(document)
     (out / "content.html").write_text(built.html)
     (out / "content.txt").write_text(built.text)
     (out / "nodes.json").write_text(
@@ -96,16 +104,17 @@ def _assemble(out: Path, merge_tables: bool) -> None:
     table.add_column("Value")
     for key in ("pages", "failed_pages", "nodes", "regions", "html_chars", "text_chars"):
         table.add_row(key, str(built.stats.get(key)))
-    ocr = built.stats.get("ocr")
-    if isinstance(ocr, dict):
-        table.add_row("merged across pages", str(ocr.get("merged")))
-        table.add_row("furniture dropped", str(ocr.get("furniture")))
-        anomalies = ocr.get("anomalies") or []
-        table.add_row("anomalies", "\n".join(str(a) for a in anomalies) or "none")
+    table.add_row("merged across pages", str(report.merged))
+    table.add_row("furniture dropped", str(report.furniture))
+    table.add_row("empty pages", str(report.empty_pages) or "none")
+    table.add_row("problems", "\n".join(problems) if problems else "[green]none[/green]")
     if built.report.content is not None:
         table.add_row("dated", built.report.content.display())
     console.print(table)
-    console.print(f"content.html, content.txt, nodes.json and {len(previews)} previews → {out}/")
+    console.print(
+        f"document.html, content.html, content.txt, nodes.json and {len(previews)} previews "
+        f"→ {out}/"
+    )
     log.info("ocr_assembled", out=str(out), nodes=built.stats.get("nodes"))
 
 

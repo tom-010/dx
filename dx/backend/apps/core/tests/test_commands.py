@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError
 from click.testing import CliRunner
 from django.apps import apps as django_apps
 from django.db import DatabaseError
+from PIL import Image
 from pytest_django.fixtures import Settings
 from watchfiles import Change
 
@@ -24,6 +25,7 @@ from apps.core.management.commands import (
     ensure_bucket,
     hello_world,
     newcommand,
+    playground,
     restore,
     tui,
 )
@@ -32,6 +34,7 @@ from apps.core.storage import ensure_bucket as ensure_bucket_fn
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
+from config.env import env
 
 runner = CliRunner()
 
@@ -492,3 +495,39 @@ def test_deleteapp_refuses_infrastructure_and_unknown_apps() -> None:
     assert unknown.exit_code == 1
     assert "no app named apps.nope" in unknown.output
     assert "datasets" in unknown.output  # ...and it says which apps there are
+
+
+# --- playground ---------------------------------------------------------------------------------
+
+
+def test_playground_gemini_refuses_to_run_without_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(env, "GEMINI_API_KEY", None)
+    result = runner.invoke(playground.command, ["gemini"])
+
+    assert result.exit_code == 1
+    assert "GEMINI_API_KEY" in result.output
+
+
+def test_playground_render_writes_one_png_per_page_into_a_fresh_out_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "two-pages.pdf"
+    white = Image.new("RGB", (60, 80), "white")
+    white.save(source, "PDF", resolution=72, save_all=True, append_images=[white])
+    monkeypatch.setattr(playground, "SAMPLE_PDF", source)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "stale.txt").write_text("from an earlier run")
+
+    result = runner.invoke(
+        playground.command,
+        ["render", "--out", str(out), "--dpi", "72", "--thumb", "40", "--row", "20"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(p.name for p in out.iterdir()) == ["0001.png", "0002.png", "row", "thumb"]
+    for sub in ("thumb", "row"):
+        assert sorted(p.name for p in (out / sub).iterdir()) == ["0001.png", "0002.png"]
+    assert Image.open(out / "0001.png").size == (60, 80)
+    assert Image.open(out / "thumb" / "0001.png").size == (30, 40)
+    assert Image.open(out / "row" / "0001.png").size == (15, 20)

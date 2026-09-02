@@ -18,6 +18,11 @@ declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;
   }
+  /** Per-route layout hints the shell reads (`__root.tsx`). */
+  interface StaticDataRouteOption {
+    /** Let the page use the full window width — for side-by-side workspaces. */
+    wide?: boolean;
+  }
 }
 
 const rootElement = document.getElementById("root");

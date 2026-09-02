@@ -20,4 +20,6 @@ export interface ExtractionOut {
   started_at: string | null;
   stats: ExtractionOutStats;
   status: ExtractionStatus;
+  /** Signed SSE endpoint of the run's task (`GET /api/tasks/{id}/events`): one `status` event per state change, with the page count while it works. */
+  stream_url: string;
 }

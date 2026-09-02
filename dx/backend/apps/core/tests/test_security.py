@@ -19,6 +19,7 @@ PUBLIC_OPERATIONS = {
     "refresh_token": "renews an expired access token; the refresh token in the body is the key",
     "logout": "revokes the refresh token in the body; must work after the access token expired",
     "download_document": "protected by a signed, expiring URL instead of a header",
+    "get_page_image": "a page render for an <img> (no headers): the same signed link as the file",
     "stream_task_events": "SSE for EventSource (no headers): signed, expiring URL instead",
 }
 

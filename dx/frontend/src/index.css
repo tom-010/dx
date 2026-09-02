@@ -141,7 +141,33 @@
   padding-bottom: env(safe-area-inset-bottom);
 }
 
-/* Extracted document html (apps/documents): the sanitized snapshot rendered as-is. */
+/* The extracted document (apps/documents), rendered as the reading surface it is.
+
+   `content.html` is one semantic tree — sections, headings, lists, tables — and the relations
+   inside it are most of what an extraction is worth, so it is set as a document and not cut
+   into cards. What ties it back to the paper lives in the margin instead: `data-marker`, set
+   by the text pane on the first node of every page (routes/documents.$documentId.tsx). */
+.document-html {
+  --gutter: 4.5rem;
+  max-width: 50rem;
+  margin-inline: auto;
+  /* Symmetric padding, so it is the text column that sits in the middle of the pane and not
+     the box around it — the gutter is margin, not content. */
+  padding: 2rem calc(var(--gutter) + 0.5rem) 4rem;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  text-wrap: pretty;
+}
+/* No margin to put it in on a phone: the page marker becomes a line above the node, and the
+   text gets the whole width. */
+@media (width < 48rem) {
+  .document-html {
+    --gutter: 0rem;
+    padding: 1.5rem 1.25rem 3rem;
+    font-size: 1rem;
+  }
+}
+
 .document-html h1,
 .document-html h2,
 .document-html h3,
@@ -149,51 +175,186 @@
 .document-html h5,
 .document-html h6 {
   font-weight: 600;
-  margin-top: 1.25rem;
+  line-height: 1.3;
+  margin-top: 2rem;
   margin-bottom: 0.5rem;
+  text-wrap: balance;
+}
+.document-html :is(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
 }
 .document-html h1 {
-  font-size: 1.5rem;
+  font-size: 1.625rem;
+  letter-spacing: -0.02em;
 }
 .document-html h2 {
-  font-size: 1.25rem;
+  font-size: 1.3rem;
+  letter-spacing: -0.01em;
+}
+.document-html h3 {
+  font-size: 1.125rem;
 }
 .document-html p,
 .document-html blockquote,
-.document-html figure {
-  margin-bottom: 0.75rem;
+.document-html figure,
+.document-html table {
+  margin-bottom: 1rem;
 }
 .document-html ul,
 .document-html ol {
-  margin: 0 0 0.75rem 1.5rem;
+  margin: 0 0 1rem 1.5rem;
   list-style: disc;
 }
 .document-html ol {
   list-style: decimal;
 }
+.document-html li {
+  margin-bottom: 0.25rem;
+}
 .document-html blockquote {
-  border-left: 3px solid var(--border, #ddd);
-  padding-left: 0.75rem;
+  border-left: 3px solid var(--border);
+  padding-left: 1rem;
+  color: var(--muted-foreground);
 }
 .document-html pre {
   overflow-x: auto;
   font-family: ui-monospace, monospace;
   font-size: 0.875rem;
-  background: var(--muted, #f5f5f5);
-  padding: 0.5rem;
-  margin-bottom: 0.75rem;
+  background: var(--muted);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  margin-bottom: 1rem;
 }
 .document-html table {
   border-collapse: collapse;
-  margin-bottom: 0.75rem;
+  font-size: 0.9375rem;
+  display: block;
+  overflow-x: auto;
 }
 .document-html th,
 .document-html td {
-  border: 1px solid var(--border, #ddd);
-  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
   text-align: left;
+}
+.document-html th {
+  background: var(--muted);
+  font-weight: 600;
 }
 .document-html figcaption {
   font-size: 0.875rem;
-  color: var(--muted-foreground, #666);
+  color: var(--muted-foreground);
+}
+
+/* The artifact is a reading surface *and* a map: every structural tag carries `data-nid`, so
+   clicking one selects it and the page pane jumps to where it is drawn. */
+.document-html [data-nid] {
+  scroll-margin: 2rem;
+  border-radius: 3px;
+}
+/* Only the innermost node reacts to the pointer: a section wraps its whole chapter, and
+   hovering a paragraph must not light all of it up. */
+.document-html [data-nid]:not(:has([data-nid])) {
+  cursor: pointer;
+}
+.document-html [data-nid]:not(:has([data-nid])):hover {
+  background: color-mix(in oklab, var(--accent) 70%, transparent);
+}
+.document-html [data-selected] {
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+  outline: 2px solid color-mix(in oklab, var(--primary) 55%, transparent);
+  outline-offset: 3px;
+}
+.document-html section[data-selected] {
+  background: none;
+}
+
+/* Where each page begins, in the margin: the paper's rhythm kept, the text left in one flow. */
+.document-html [data-marker] {
+  position: relative;
+}
+.document-html [data-marker]::before {
+  content: attr(data-marker);
+  position: absolute;
+  top: 0.2em;
+  left: calc(-1 * var(--gutter));
+  width: calc(var(--gutter) - 0.75rem);
+  text-align: right;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+}
+/* A hairline where the sheet changes, on the node itself rather than beside it: set by the
+   pane on every page but the first, because a page can open on the first child of a section
+   and `:first-child` would miss it. */
+.document-html [data-marker-rule] {
+  border-top: 1px dashed var(--border);
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+}
+.document-html [data-marker-rule]::before {
+  top: calc(1.25rem + 0.2em);
+}
+@media (width < 48rem) {
+  .document-html [data-marker]::before {
+    position: static;
+    display: block;
+    width: auto;
+    text-align: left;
+    margin-bottom: 0.35rem;
+  }
+}
+
+/* A figure holds no image on purpose (the pixels are cropped from the page on demand,
+   documents_agent_brief.md §8.1) — show where it sits. */
+.document-html figure {
+  border: 1px dashed var(--border);
+  padding: 0.5rem;
+  min-height: 2.5rem;
+}
+
+/* One block of the page as the extractor outlined it. `clip-path` carries the polygon where
+   there is one, and clips hit-testing with it, so the target is the shape it shows. */
+.page-region {
+  position: absolute;
+  cursor: pointer;
+  /* Barely there at rest: the scan is the thing being read, the outlines only say
+     what the extractor found. They come forward under the pointer and the selection. */
+  background: color-mix(in oklab, var(--primary) 4%, transparent);
+  transition: background-color 120ms ease;
+}
+.page-region:hover,
+.page-region:focus-visible {
+  background: color-mix(in oklab, var(--primary) 22%, transparent);
+  outline: none;
+}
+.page-region[data-selected] {
+  background: color-mix(in oklab, var(--primary) 34%, transparent);
+  animation: page-region-flash 2.4s ease forwards;
+}
+/* Bright on arrival, then settled: the jump is seen, and the mark stays as the selection. */
+@keyframes page-region-flash {
+  0% {
+    opacity: 0.15;
+  }
+  12% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.7;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-region[data-selected] {
+    animation: none;
+  }
+  .document-html {
+    scroll-behavior: auto;
+  }
 }

@@ -23,8 +23,9 @@ from django.core import signing
 from django.core.files.uploadedfile import UploadedFile
 from django.db.models import Count, IntegerField, OuterRef, QuerySet, Subquery, Value
 from django.db.models.functions import Coalesce
-from django.http import FileResponse, HttpRequest
-from ninja import File, ModelSchema, Router, Schema, Status
+from django.http import FileResponse, HttpRequest, HttpResponse
+from django.views.decorators.clickjacking import xframe_options_exempt
+from ninja import Field, File, ModelSchema, Router, Schema, Status
 from ninja.errors import HttpError
 from ninja.files import UploadedFile as NinjaUploadedFile
 from ninja.pagination import PageNumberPagination, paginate
@@ -33,6 +34,7 @@ from apps.accounts.api import current_user
 from apps.accounts.models import User
 from apps.core.db import tenant_context
 from apps.core.schemas import StrictSchema
+from apps.core.tasks import sign_stream
 from apps.documents import snapshot, strategies
 from apps.documents.dating import DateSource, InvalidDate, UncertainDate
 from apps.documents.models import (
@@ -45,6 +47,7 @@ from apps.documents.models import (
     Node,
     Page,
 )
+from apps.documents.ocr import render
 
 router = Router(tags=["documents"])
 
@@ -54,6 +57,16 @@ DOWNLOAD_LINK_MAX_AGE = 60 * 60  # seconds
 _DOWNLOAD_SALT = "documents.download"
 SEARCH_LIMIT = 20
 SNIPPET_BEFORE, SNIPPET_AFTER = 60, 120
+#: Rendered page images: the sizes a client may ask for (a query parameter is untrusted, and
+#: rendering is the one thing here that costs real work), each as the (dpi, long edge) it is
+#: rasterized at. A list row asks for `row`: one per document on screen, so it is rendered at
+#: the size it is shown at rather than at reading dpi and then thrown away.
+IMAGE_SIZES: dict[str, tuple[int, int | None]] = {
+    "full": (render.DPI, None),
+    "thumb": (render.THUMB_DPI, render.THUMB_PX),
+    "row": (render.ROW_DPI, render.ROW_PX),
+}
+IMAGE_MAX_AGE = 60 * 60  # seconds; the bytes for one (document, page, size) never change
 
 
 # --- Schemas -------------------------------------------------------------------------------------
@@ -99,6 +112,11 @@ class DocumentOut(ModelSchema):
     #: The current snapshot's information-origin date; None until one is extracted.
     date: DateOut | None
     download_url: str
+    #: The same signed link, served inline — an `<iframe>` showing the original PDF.
+    view_url: str
+    #: The first page as a thumbnail, so a list can show the paper rather than a file name;
+    #: None where there is no page to render.
+    thumb_url: str | None
 
     class Meta:
         model = Document
@@ -131,6 +149,18 @@ class DocumentOut(ModelSchema):
         # Served by download_document below (signed, expires); later a presigned storage URL.
         return f"/api/documents/{obj.pk}/download?sig={sign_download(obj)}"
 
+    @staticmethod
+    def resolve_view_url(obj: Document) -> str:
+        return f"/api/documents/{obj.pk}/download?sig={sign_download(obj)}&inline=true"
+
+    @staticmethod
+    def resolve_thumb_url(obj: Document) -> str | None:
+        # A PDF renders page 1 on demand; anything else only has one if a run stored it.
+        pages: int = getattr(obj, "page_count", 0)  # annotated by `listing`, absent on detail
+        if obj.source_blob.mime_type != "application/pdf" and pages == 0:
+            return None
+        return page_image_url(obj, 1, "row")
+
 
 class DocumentPatch(StrictSchema):
     title: str | None = None
@@ -149,6 +179,12 @@ class ExtractionOut(Schema):
     created: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    #: The Celery task that runs (or ran) this snapshot — its id *is* the snapshot's id
+    #: (`snapshot.start_extraction`), so a client can follow a run it did not start.
+    stream_url: str = Field(
+        description="Signed SSE endpoint of the run's task (`GET /api/tasks/{id}/events`): "
+        "one `status` event per state change, with the page count while it works."
+    )
 
 
 class OutlineEntryOut(Schema):
@@ -200,15 +236,34 @@ class TimelineEntryOut(Schema):
 
 
 class RegionOut(Schema):
+    """Where a node is on a page — `x0`…`y1` are null when the extractor knew the page but
+    not the place (`PageRegion`), and the overlay then has nothing to draw."""
+
     nid: int
     tag: str
     order: int
-    x0: float
-    y0: float
-    x1: float
-    y1: float
+    x0: float | None
+    y0: float | None
+    x1: float | None
+    y1: float | None
     polygon: list[list[float]] | None
     text: str
+
+
+class PageSummaryOut(Schema):
+    """One page as a navigator shows it — no text, no regions."""
+
+    number: int
+    label: str | None
+    width: float | None
+    height: float | None
+    date: DateOut | None
+    region_count: int
+    #: The extractor could not read this page (a `PARTIAL` run): the row exists, empty.
+    failed: bool
+    #: The page rendered from the source file (signed, like the download link).
+    image_url: str
+    thumb_url: str
 
 
 class PageOut(Schema):
@@ -220,7 +275,20 @@ class PageOut(Schema):
     text: str
     confidence: ConfStats | None
     date: DateOut | None
+    failed: bool
+    image_url: str
+    thumb_url: str
     regions: list[RegionOut]
+
+
+class StrategyOut(Schema):
+    """An extraction strategy a client may ask for (`POST …/reextract?strategy=`)."""
+
+    name: str
+    tool_version: str
+    description: str
+    #: The MIME types this strategy is the default for; empty = opt-in only.
+    mime_types: list[str]
 
 
 class SearchHitOut(Schema):
@@ -299,12 +367,16 @@ def store_documents(user: User, files: Sequence[UploadedFile[bytes]]) -> list[Do
     documents = []
     for file in files:
         blob = snapshot.store_blob(user.pk, file, mime_type_of(file))
+        name = (file.name or "")[:500]
         documents.append(
             Document.create(
                 operation=None,
                 sources=[],
                 owner=user,
-                title=(file.name or "")[:500],
+                title=name,
+                # Kept so the extraction may replace the file name with what the document
+                # calls itself, while never overwriting a name a person typed.
+                meta={"filename": name},
                 source_blob=blob,
             )
         )
@@ -333,8 +405,10 @@ def verify_download(document_id: DocumentId, signature: str) -> uuid.UUID | None
 
 
 def extraction_out(content: DocumentContent) -> ExtractionOut:
+    task_id = str(content.pk)
     return ExtractionOut(
         id=content.pk,
+        stream_url=f"/api/tasks/{task_id}/events?sig={sign_stream(task_id)}",
         status=ExtractionStatus(content.status),
         extractor=str(content.extractor),
         is_current=content.is_current,
@@ -376,6 +450,28 @@ def timeline_out(node: Node) -> TimelineEntryOut:
     )
 
 
+def render_page_image(document: Document, page: Page | None, number: int, size: str) -> bytes:
+    """The PNG for one page: the snapshot's stored thumbnail when it has one and a thumbnail
+    is what was asked for, else the source PDF rendered on the spot.
+
+    Rendering rather than storing: only an OCR run keeps page images, every other strategy
+    would leave the pane empty — and a snapshot is frozen, so nothing may add them later.
+    At this scale (a few pages per click, cached for an hour by the browser) that is cheaper
+    than a second copy of every document.
+    """
+    if size != "full" and page is not None and page.thumbnail is not None:
+        # Stored by the extractor at THUMB_PX; small enough that a row can have it as it is.
+        return page.thumbnail.read_bytes()
+    if document.source_blob.mime_type != "application/pdf":
+        raise HttpError(404, "This document has no page images")
+    data = document.source_blob.read_bytes()
+    dpi, long_edge = IMAGE_SIZES[size]
+    try:
+        return render.render_image(data, number, dpi=dpi, long_edge=long_edge)
+    except (IndexError, ValueError) as exc:
+        raise HttpError(404, f"Page {number} cannot be rendered") from exc
+
+
 def parse_period(period: str) -> UncertainDate:
     """A `?period=` query value: EDTF, or a 422 that says what is wrong with it."""
     try:
@@ -402,7 +498,36 @@ def content_out(document: Document) -> ContentOut:
     )
 
 
-def page_out(page: Page) -> PageOut:
+def page_image_url(document: Document, number: int, size: str = "full") -> str:
+    sig = sign_download(document)
+    return f"/api/documents/{document.pk}/pages/{number}/image?sig={sig}&size={size}"
+
+
+def failed_pages(content: DocumentContent | None) -> set[int]:
+    """The pages the extractor gave up on, as its run recorded them (`stats["failed_pages"]`)
+    — an empty page and an unreadable one look the same otherwise."""
+    stats = content.stats if content is not None and isinstance(content.stats, dict) else {}
+    listed = stats.get("failed_pages")
+    return {int(number) for number in listed} if isinstance(listed, list) else set()
+
+
+def page_summary_out(
+    document: Document, page: Page, region_count: int, failed: bool
+) -> PageSummaryOut:
+    return PageSummaryOut(
+        number=page.number,
+        label=page.label,
+        width=page.width,
+        height=page.height,
+        date=date_out(page),
+        region_count=region_count,
+        failed=failed,
+        image_url=page_image_url(document, page.number),
+        thumb_url=page_image_url(document, page.number, "thumb"),
+    )
+
+
+def page_out(document: Document, page: Page, failed: bool) -> PageOut:
     regions = list(page.regions.select_related("node").order_by("node__nid", "order"))
     for region in regions:
         region.node.content = page.content  # loaded already; no query per region
@@ -415,6 +540,9 @@ def page_out(page: Page) -> PageOut:
         text=page.text(),
         confidence=page.conf_stats,
         date=date_out(page),
+        failed=failed,
+        image_url=page_image_url(document, page.number),
+        thumb_url=page_image_url(document, page.number, "thumb"),
         regions=[
             RegionOut(
                 nid=region.node.nid,
@@ -497,6 +625,36 @@ def list_documents(request: HttpRequest, period: str | None = None) -> QuerySet[
     return documents
 
 
+#: How much of a strategy's docstring a picker shows.
+DESCRIPTION_LIMIT = 220
+
+
+def strategy_description(strategy: strategies.ExtractionStrategy) -> str:
+    """The first paragraph of the strategy's docstring, on one line — it is written for the
+    person choosing one, so there is nothing else to maintain."""
+    first = (strategy.__doc__ or "").strip().split("\n\n")[0]
+    text = " ".join(first.split())
+    if len(text) <= DESCRIPTION_LIMIT:
+        return text
+    return text[:DESCRIPTION_LIMIT].rsplit(" ", 1)[0] + "…"
+
+
+@router.get("/documents/strategies", response=list[StrategyOut])
+def list_extraction_strategies(request: HttpRequest) -> list[StrategyOut]:
+    """Every registered extraction strategy — what a client may pass to `reextract`."""
+    return [
+        StrategyOut(
+            name=strategy.name,
+            tool_version=strategy.tool_version,
+            description=strategy_description(strategy),
+            mime_types=sorted(
+                mime for mime, name in strategies.MIME_STRATEGIES.items() if name == strategy.name
+            ),
+        )
+        for strategy in sorted(strategies.STRATEGIES.values(), key=lambda s: s.name)
+    ]
+
+
 @router.get("/documents/search", response=list[SearchHitOut])
 def search_documents(request: HttpRequest, q: str) -> list[SearchHitOut]:
     """Full-text search across the caller's documents (their current snapshots)."""
@@ -542,28 +700,83 @@ def update_document(
     return get_document_for(user, DocumentId(document_id))
 
 
-@router.get("/documents/{document_id}/download", auth=None)
-def download_document(request: HttpRequest, document_id: uuid.UUID, sig: str) -> FileResponse:
-    """Streams the stored file as an attachment (binary response, not part of the JSON contract).
+def signed_document(document_id: uuid.UUID, sig: str) -> Document:
+    """The document a signed link names, read in its owner's tenant context.
 
-    Public but signed: use the `download_url` from `DocumentOut`, links expire after an hour.
-    The signature names the owner; their tenant context is opened just for the lookup.
+    The verified signature stands in for the user: a browser fetching an `<img>` or an
+    `<iframe>` sends no bearer header, the ORM scope and the policy need a context, and only
+    that owner's row can match.
     """
     owner_id = verify_download(DocumentId(document_id), sig)
     if owner_id is None:
         raise HttpError(403, "Invalid or expired download link")
     with tenant_context(owner_id):
-        # The verified signature stands in for the user: the ORM scope and the policy need the
-        # owner's context, and only that owner's row can match.
         try:
-            document = Document.objects.select_related("source_blob").get(
+            return Document.objects.select_related("source_blob").get(
                 pk=document_id, owner_id=owner_id
             )
         except Document.DoesNotExist:
             raise HttpError(404, "Document not found") from None
+
+
+@router.get("/documents/{document_id}/download", auth=None)
+@xframe_options_exempt
+def download_document(
+    request: HttpRequest, document_id: uuid.UUID, sig: str, inline: bool = False
+) -> FileResponse:
+    """Streams the stored file (binary response, not part of the JSON contract).
+
+    Public but signed: use `download_url` from `DocumentOut` (an attachment, under the original
+    file name) or `view_url` (`inline=true`, for an `<iframe>` showing the PDF); links expire
+    after an hour.
+
+    **Inline is for PDFs only**, whatever the caller asks for: the browser renders an inline
+    response on *this* origin, and an uploaded HTML file rendered there would be stored XSS
+    against the admin session. A PDF goes to the browser's own sandboxed viewer. For the same
+    reason the type comes from the stored blob rather than from the file name.
+
+    `xframe_options_exempt` because the site-wide `X-Frame-Options: DENY` would otherwise stop
+    the SPA from framing the viewer — the response is a file, not a page of ours, so there is
+    no UI here to click-jack.
+    """
+    document = signed_document(document_id, sig)
+    mime_type = document.source_blob.mime_type
+    viewable = inline and mime_type == "application/pdf"
     return FileResponse(
-        document.source_blob.file.open("rb"), as_attachment=True, filename=document.title
+        document.source_blob.file.open("rb"),
+        as_attachment=not viewable,
+        filename=document.title,
+        content_type=mime_type or "application/octet-stream",
     )
+
+
+@router.get("/documents/{document_id}/pages/{number}/image", auth=None)
+def get_page_image(
+    request: HttpRequest, document_id: uuid.UUID, number: int, sig: str, size: str = "full"
+) -> HttpResponse:
+    """One page of the source file as a PNG — what the region overlay is drawn on.
+
+    Public but signed like the download, because an `<img src>` carries no bearer header; the
+    bytes for one (document, page, size) never change, so the browser may keep them.
+    """
+    if size not in IMAGE_SIZES:
+        raise HttpError(422, f"size must be one of {', '.join(sorted(IMAGE_SIZES))}")
+    document = signed_document(document_id, sig)
+    with tenant_context(document.owner_id):
+        page = (
+            document.current_content.pages.filter(number=number).first()
+            if document.current_content is not None
+            else None
+        )
+        image = render_page_image(document, page, number, size)
+        media_type = (
+            page.thumbnail.mime_type
+            if size == "thumb" and page is not None and page.thumbnail is not None
+            else render.IMAGE_MIME
+        )
+    response = HttpResponse(image, content_type=media_type)
+    response["Cache-Control"] = f"private, max-age={IMAGE_MAX_AGE}"
+    return response
 
 
 @router.delete("/documents/{document_id}", response={204: None})
@@ -641,6 +854,18 @@ def get_document_timeline(
     return [timeline_out(node) for node in nodes]
 
 
+@router.get("/documents/{document_id}/pages", response=list[PageSummaryOut])
+def list_document_pages(request: HttpRequest, document_id: uuid.UUID) -> list[PageSummaryOut]:
+    """Every page of the current snapshot, in order — the page navigator's data."""
+    document = get_document_for(current_user(request), DocumentId(document_id))
+    pages = document.pages.annotate(regions_on_page=Count("regions"))
+    unreadable = failed_pages(document.current_content)
+    return [
+        page_summary_out(document, page, page.regions_on_page, page.number in unreadable)
+        for page in pages
+    ]
+
+
 @router.get("/documents/{document_id}/pages/{number}", response=PageOut)
 def get_document_page(request: HttpRequest, document_id: uuid.UUID, number: int) -> PageOut:
     """One page of the current snapshot: its reduced html, text and the regions on it."""
@@ -648,7 +873,7 @@ def get_document_page(request: HttpRequest, document_id: uuid.UUID, number: int)
     page = document.pages.filter(number=number).first()
     if page is None:
         raise HttpError(404, "Page not found")
-    return page_out(page)
+    return page_out(document, page, number in failed_pages(document.current_content))
 
 
 @router.get("/documents/{document_id}/hit", response=DocumentNodeOut | None)

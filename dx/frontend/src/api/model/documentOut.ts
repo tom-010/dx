@@ -19,6 +19,8 @@ export interface DocumentOut {
   page_count: number;
   size: number;
   status: ExtractionStatus | null;
+  thumb_url: string | null;
   title: string;
   version: number;
+  view_url: string;
 }

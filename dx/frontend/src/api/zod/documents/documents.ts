@@ -62,8 +62,10 @@ export const ListDocumentsResponse = zod.object({
         zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
         zod.null(),
       ]),
+      thumb_url: zod.union([zod.string(), zod.null()]),
       title: zod.string(),
       version: zod.int(),
+      view_url: zod.string(),
     }),
   ),
 });
@@ -151,6 +153,24 @@ export const SearchDocumentsResponseItem = zod.object({
 export const SearchDocumentsResponse = zod.array(SearchDocumentsResponseItem);
 
 /**
+ * Every registered extraction strategy — what a client may pass to `reextract`.
+ * @summary List Extraction Strategies
+ */
+export const ListExtractionStrategiesResponseItem = zod
+  .object({
+    description: zod.string(),
+    mime_types: zod.array(zod.string()),
+    name: zod.string(),
+    tool_version: zod.string(),
+  })
+  .describe(
+    "An extraction strategy a client may ask for (`POST …\/reextract?strategy=`).",
+  );
+export const ListExtractionStrategiesResponse = zod.array(
+  ListExtractionStrategiesResponseItem,
+);
+
+/**
  * Upload one or more files as multipart/form-data (field name `files`). Each gets an
  * extraction queued when an extractor handles its type.
  * @summary Upload Documents
@@ -199,8 +219,10 @@ export const UploadDocumentsResponseItem = zod.object({
     zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
     zod.null(),
   ]),
+  thumb_url: zod.union([zod.string(), zod.null()]),
   title: zod.string(),
   version: zod.int(),
+  view_url: zod.string(),
 });
 export const UploadDocumentsResponse = zod.array(UploadDocumentsResponseItem);
 
@@ -266,8 +288,10 @@ export const GetDocumentResponse = zod.object({
     zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
     zod.null(),
   ]),
+  thumb_url: zod.union([zod.string(), zod.null()]),
   title: zod.string(),
   version: zod.int(),
+  view_url: zod.string(),
 });
 
 /**
@@ -324,8 +348,10 @@ export const UpdateDocumentResponse = zod.object({
     zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
     zod.null(),
   ]),
+  thumb_url: zod.union([zod.string(), zod.null()]),
   title: zod.string(),
   version: zod.int(),
+  view_url: zod.string(),
 });
 
 /**
@@ -410,6 +436,11 @@ export const GetDocumentContentResponse = zod
             "partial",
             "failed",
           ]),
+          stream_url: zod
+            .string()
+            .describe(
+              "Signed SSE endpoint of the run's task (`GET \/api\/tasks\/{id}\/events`): one `status` event per state change, with the page count while it works.",
+            ),
         })
         .describe(
           "One extraction run — process state, never the snapshot's rows (`extraction_out`).",
@@ -438,18 +469,31 @@ export const GetDocumentContentResponse = zod
   );
 
 /**
- * Streams the stored file as an attachment (binary response, not part of the JSON contract).
+ * Streams the stored file (binary response, not part of the JSON contract).
  *
- * Public but signed: use the `download_url` from `DocumentOut`, links expire after an hour.
- * The signature names the owner; their tenant context is opened just for the lookup.
+ * Public but signed: use `download_url` from `DocumentOut` (an attachment, under the original
+ * file name) or `view_url` (`inline=true`, for an `<iframe>` showing the PDF); links expire
+ * after an hour.
+ *
+ * **Inline is for PDFs only**, whatever the caller asks for: the browser renders an inline
+ * response on *this* origin, and an uploaded HTML file rendered there would be stored XSS
+ * against the admin session. A PDF goes to the browser's own sandboxed viewer. For the same
+ * reason the type comes from the stored blob rather than from the file name.
+ *
+ * `xframe_options_exempt` because the site-wide `X-Frame-Options: DENY` would otherwise stop
+ * the SPA from framing the viewer — the response is a file, not a page of ours, so there is
+ * no UI here to click-jack.
  * @summary Download Document
  */
 export const DownloadDocumentParams = zod.object({
   document_id: zod.uuid(),
 });
 
+export const downloadDocumentQueryInlineDefault = false;
+
 export const DownloadDocumentQueryParams = zod.object({
   sig: zod.string(),
+  inline: zod.boolean().default(downloadDocumentQueryInlineDefault),
 });
 
 export const DownloadDocumentResponse = zod.unknown();
@@ -473,6 +517,11 @@ export const ListExtractionsResponseItem = zod
     started_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
     stats: zod.record(zod.string(), zod.unknown()),
     status: zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+    stream_url: zod
+      .string()
+      .describe(
+        "Signed SSE endpoint of the run's task (`GET \/api\/tasks\/{id}\/events`): one `status` event per state change, with the page count while it works.",
+      ),
   })
   .describe(
     "One extraction run — process state, never the snapshot's rows (`extraction_out`).",
@@ -562,6 +611,57 @@ export const HitDocumentResponse = zod.union([
 ]);
 
 /**
+ * Every page of the current snapshot, in order — the page navigator's data.
+ * @summary List Document Pages
+ */
+export const ListDocumentPagesParams = zod.object({
+  document_id: zod.uuid(),
+});
+
+export const ListDocumentPagesResponseItem = zod
+  .object({
+    date: zod.union([
+      zod
+        .object({
+          conf: zod.union([zod.number(), zod.null()]),
+          display: zod.string(),
+          edtf: zod.string(),
+          max: zod.union([zod.iso.date(), zod.null()]),
+          min: zod.union([zod.iso.date(), zod.null()]),
+          source: zod
+            .enum([
+              "explicit",
+              "metadata",
+              "inferred",
+              "interpolated",
+              "inherited",
+              "aggregated",
+              "curated",
+            ])
+            .describe(
+              "How a row's date is known — a column, because review queues filter on it.",
+            ),
+        })
+        .describe(
+          'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+        ),
+      zod.null(),
+    ]),
+    failed: zod.boolean(),
+    height: zod.union([zod.number(), zod.null()]),
+    image_url: zod.string(),
+    label: zod.union([zod.string(), zod.null()]),
+    number: zod.int(),
+    region_count: zod.int(),
+    thumb_url: zod.string(),
+    width: zod.union([zod.number(), zod.null()]),
+  })
+  .describe("One page as a navigator shows it — no text, no regions.");
+export const ListDocumentPagesResponse = zod.array(
+  ListDocumentPagesResponseItem,
+);
+
+/**
  * One page of the current snapshot: its reduced html, text and the regions on it.
  * @summary Get Document Page
  */
@@ -618,26 +718,54 @@ export const GetDocumentPageResponse = zod.object({
       ),
     zod.null(),
   ]),
+  failed: zod.boolean(),
   height: zod.union([zod.number(), zod.null()]),
   html: zod.string(),
+  image_url: zod.string(),
   label: zod.union([zod.string(), zod.null()]),
   number: zod.int(),
   regions: zod.array(
-    zod.object({
-      nid: zod.int(),
-      order: zod.int(),
-      polygon: zod.union([zod.array(zod.array(zod.number())), zod.null()]),
-      tag: zod.string(),
-      text: zod.string(),
-      x0: zod.number(),
-      x1: zod.number(),
-      y0: zod.number(),
-      y1: zod.number(),
-    }),
+    zod
+      .object({
+        nid: zod.int(),
+        order: zod.int(),
+        polygon: zod.union([zod.array(zod.array(zod.number())), zod.null()]),
+        tag: zod.string(),
+        text: zod.string(),
+        x0: zod.union([zod.number(), zod.null()]),
+        x1: zod.union([zod.number(), zod.null()]),
+        y0: zod.union([zod.number(), zod.null()]),
+        y1: zod.union([zod.number(), zod.null()]),
+      })
+      .describe(
+        "Where a node is on a page — `x0`…`y1` are null when the extractor knew the page but\nnot the place (`PageRegion`), and the overlay then has nothing to draw.",
+      ),
   ),
   text: zod.string(),
+  thumb_url: zod.string(),
   width: zod.union([zod.number(), zod.null()]),
 });
+
+/**
+ * One page of the source file as a PNG — what the region overlay is drawn on.
+ *
+ * Public but signed like the download, because an `<img src>` carries no bearer header; the
+ * bytes for one (document, page, size) never change, so the browser may keep them.
+ * @summary Get Page Image
+ */
+export const GetPageImageParams = zod.object({
+  document_id: zod.uuid(),
+  number: zod.int(),
+});
+
+export const getPageImageQuerySizeDefault = `full`;
+
+export const GetPageImageQueryParams = zod.object({
+  sig: zod.string(),
+  size: zod.string().default(getPageImageQuerySizeDefault),
+});
+
+export const GetPageImageResponse = zod.unknown();
 
 /**
  * Queue a fresh extraction — with the strategy registered for this file type, or the
@@ -668,6 +796,11 @@ export const ReextractDocumentResponse = zod
     started_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
     stats: zod.record(zod.string(), zod.unknown()),
     status: zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+    stream_url: zod
+      .string()
+      .describe(
+        "Signed SSE endpoint of the run's task (`GET \/api\/tasks\/{id}\/events`): one `status` event per state change, with the page count while it works.",
+      ),
   })
   .describe(
     "One extraction run — process state, never the snapshot's rows (`extraction_out`).",

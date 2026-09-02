@@ -14,7 +14,7 @@ below (`HtmlTree`, `pdf_chunks`) are the reusable parts of the built-in ones.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
@@ -100,8 +100,13 @@ class Extraction:
     raw_mime: str = "application/json"
     #: Document-level metadata the file carried (title, author, language).
     meta: dict[str, Any] = field(default_factory=dict)
+    #: What this reading calls the document (`DocumentContent.title`).
+    title: str = ""
     #: Extractor-specific figures for `DocumentContent.stats` (`{"ocr": {...}}`).
     stats: dict[str, Any] = field(default_factory=dict)
+    #: What a model made of each node's date, by `nid` — an `INFERRED` estimate the dating
+    #: stage uses where the document itself carries no dateline (`apps/documents/dating.py`).
+    dates: dict[int, Any] = field(default_factory=dict)
 
 
 def decode(data: bytes) -> str:
@@ -343,6 +348,73 @@ def _has_content(node: ExtractedNode) -> bool:
     return bool(node.text.strip())
 
 
+# --- What a strategy reads off one page ---------------------------------------------------------
+
+
+@dataclass
+class Block:
+    """One piece of a page, as a strategy read it — the input to the pipeline.
+
+    `tag` is the artifact's vocabulary (`p`, `h1`–`h6`, `li`, `table`, `figure`,
+    `figcaption`, `blockquote`, `pre`) plus the furniture kinds `page_header`, `page_footer`
+    and `page_number`, which never reach the document. Geometry is optional: a strategy
+    without boxes (plain text, HTML) leaves it out and the block simply has no region.
+    """
+
+    tag: str
+    text: str = ""
+    level: int | None = None
+    #: Tables: the cells, and the extractor's own markup when it has any.
+    rows: list[list[str]] | None = None
+    header: bool = False
+    table_html: str | None = None
+    #: Where the block sits on its page, normalized [0, 1].
+    box: tuple[float, float, float, float] | None = None
+    ring: list[Point] | None = None
+    words: list[ExtractedWord] | None = None
+    #: Whether this continues the previous page's last block. `None` = the strategy cannot
+    #: tell, and the pipeline decides from the text.
+    continues: bool | None = None
+    #: Running header, footer or page number (`data-furniture`): never part of the document,
+    #: though a page number becomes the page's label.
+    furniture: str | None = None
+    source: StructureSource = StructureSource.DETECTED
+
+
+# --- Sections: the outline stack ---------------------------------------------------------------
+
+
+def heading_level(node: ExtractedNode) -> int | None:
+    """The semantic level of a heading node, or None for anything else."""
+    if node.level is not None and node.tag in HEADINGS:
+        return node.level
+    return int(node.tag[1]) if node.tag in HEADINGS else None
+
+
+def nest_by_headings(nodes: Sequence[ExtractedNode]) -> list[ExtractedNode]:
+    """A flat block stream becomes a tree: a heading of level L closes every open section of
+    level ≥ L and opens its own, with the heading as its first child; everything else goes
+    into the innermost open section.
+
+    Sections are never asked for — not of a model, not of a PDF — they are derived from the
+    heading stream, which is why a section can span pages, a page can hold several, and a
+    heading at the bottom of one page keeps the body that follows on the next.
+    """
+    root = ExtractedNode(tag="section")
+    stack: list[tuple[int, ExtractedNode]] = []
+    for node in nodes:
+        level = heading_level(node)
+        if level is None:
+            (stack[-1][1] if stack else root).children.append(node)
+            continue
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        section = ExtractedNode(tag="section", level=level, source=node.source, children=[node])
+        (stack[-1][1] if stack else root).children.append(section)
+        stack.append((level, section))
+    return root.children
+
+
 # --- PDF: text runs with their positions (pypdf) --------------------------------------------------
 
 
@@ -377,6 +449,13 @@ class PdfChunk:
     x: float
     y: float
     font_size: float
+    #: The run's base font (`Helvetica-Bold`), when the page names one — a heading hint.
+    font: str = ""
+
+    @property
+    def bold(self) -> bool:
+        name = self.font.lower()
+        return "bold" in name or "black" in name or "heavy" in name
 
 
 def pdf_chunks(page: pypdf.PageObject) -> list[PdfChunk]:
@@ -389,46 +468,280 @@ def pdf_chunks(page: pypdf.PageObject) -> list[PdfChunk]:
         x = tm[4] * cm[0] + tm[5] * cm[2] + cm[4]
         y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
         scale = abs(tm[3] * cm[3]) or abs(tm[0] * cm[0]) or 1.0
-        chunks.append(PdfChunk(text=text, x=x, y=y, font_size=(size or 1.0) * scale))
+        chunks.append(
+            PdfChunk(
+                text=text,
+                x=x,
+                y=y,
+                font_size=(size or 1.0) * scale,
+                font=_font_name(font),
+            )
+        )
 
     visitor: Callable[..., None] = visit
     page.extract_text(visitor_text=visitor)
     return chunks
 
 
-def pdf_page_node(
-    chunks: list[PdfChunk], number: int, width: float, height: float, advance: float
-) -> ExtractedNode | None:
-    """One paragraph for a page: its runs one per line, each run a word box (no confidence:
-    born-digital), the region the envelope of them. None for a page without text."""
-    text_parts: list[str] = []
-    words: list[ExtractedWord] = []
-    cursor = 0
+def _font_name(font: object) -> str:
+    """`/ABCDEF+Helvetica-Bold` → `Helvetica-Bold`; "" when the page names no font."""
+    base = font.get("/BaseFont") if isinstance(font, dict) else None
+    name = str(base).lstrip("/") if base is not None else ""
+    return name.split("+", 1)[-1]
+
+
+@dataclass
+class PdfLine:
+    """Runs that sit on one baseline, joined in reading order."""
+
+    text: str
+    x0: float
+    x1: float
+    baseline: float
+    size: float
+    bold: bool
+    runs: list[PdfChunk]
+
+    @property
+    def words(self) -> int:
+        return len(self.text.split())
+
+
+#: Runs within this fraction of the font size share a baseline.
+BASELINE_TOLERANCE = 0.4
+#: The pen has to have moved at least this far (in points) for a run to start a new word.
+SPACE_GAP = 0.5
+#: A line further from the previous one than this multiple of the usual leading starts a block.
+BLOCK_GAP = 1.55
+#: A line this much larger than the body text is a heading…
+HEADING_SIZE = 1.12
+#: …and so is a short bold line. Longer than this and it is a bold sentence, not a heading.
+HEADING_WORDS = 9
+#: What a list item starts with.
+BULLETS = ("•", "▪", "◦", "-", "–", "—", "*")
+
+
+def pdf_lines(chunks: Sequence[PdfChunk]) -> list[PdfLine]:
+    """Group runs into lines, **in the order the page's content stream emits them**.
+
+    Not sorted by position, and that is the point: a PDF reports the *last positioning
+    operator* for every run, so several runs of one line share one x — sorting by it
+    interleaves the words of neighbouring lines into nonsense. The stream order is the
+    author's own reading order; y only says where one line ends and the next begins.
+    """
+    lines: list[PdfLine] = []
     for chunk in chunks:
         piece = chunk.text.strip()
         if not piece:
             continue
-        if text_parts:
-            text_parts.append("\n")
-            cursor += 1
-        start = cursor
-        text_parts.append(piece)
-        cursor += len(piece)
-        run_width = advance * chunk.font_size * len(piece)
-        x0, y0, x1, y1 = pdf_box(chunk.x, chunk.y, run_width, chunk.font_size, width, height)
-        words.append(ExtractedWord(x0, y0, x1, y1, start, cursor, None))
-    text = "".join(text_parts)
-    if not text:
-        return None
-    region = ExtractedRegion(
-        page=number,
-        envelope=(
-            min(w.x0 for w in words),
-            min(w.y0 for w in words),
-            max(w.x1 for w in words),
-            max(w.y1 for w in words),
-        ),
-        span=(0, len(text)),
-        words=words,
+        current = lines[-1] if lines else None
+        previous = current.runs[-1] if current is not None else None
+        same_line = current is not None and abs(
+            current.baseline - chunk.y
+        ) <= BASELINE_TOLERANCE * max(chunk.font_size, 1.0)
+        if current is not None and previous is not None and same_line:
+            # A word boundary is either written into the run (the author's own leading space,
+            # which `strip()` above has just removed) or implied by the pen having moved on.
+            spaced = chunk.text.startswith(" ") or chunk.x > previous.x + SPACE_GAP
+            current.text = f"{current.text}{' ' if spaced else ''}{piece}"
+            current.x0 = min(current.x0, chunk.x)
+            # Measured from the line's whole text, not from this run's own x: a PDF reports
+            # the last positioning operator for every run of a line, so the runs all claim the
+            # same x and a per-run maximum leaves the line far too narrow.
+            current.x1 = current.x0 + _text_width(current.text, max(current.size, chunk.font_size))
+            current.size = max(current.size, chunk.font_size)
+            current.bold = current.bold or chunk.bold
+            current.runs.append(chunk)
+            continue
+        lines.append(
+            PdfLine(
+                text=piece,
+                x0=chunk.x,
+                x1=chunk.x + _run_width(chunk),
+                baseline=chunk.y,
+                size=chunk.font_size,
+                bold=chunk.bold,
+                runs=[chunk],
+            )
+        )
+    return lines
+
+
+#: Estimated glyph advance as a fraction of the font size (no font metrics are read).
+ADVANCE = 0.5
+
+
+def _run_width(chunk: PdfChunk) -> float:
+    return _text_width(chunk.text.strip(), chunk.font_size)
+
+
+def _text_width(text: str, size: float) -> float:
+    """How wide a run of text is, with no font metrics to ask.
+
+    `ADVANCE` is the average glyph advance as a fraction of the font size. Measured against
+    pdfium's own character boxes on a scanned letter, this lands within a few percent of the
+    truth for body text; it is an estimate, and the exact boxes would mean reading the page a
+    second time through pdfium's text API.
+    """
+    return ADVANCE * size * len(text)
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def body_size(lines: Sequence[PdfLine]) -> float:
+    """The document's body font size — the median line size, so a big letterhead or a stray
+    footnote does not decide what "normal" is."""
+    return _median([line.size for line in lines]) or 1.0
+
+
+def pdf_paragraphs(lines: Sequence[PdfLine]) -> list[list[PdfLine]]:
+    """Lines into blocks: a wider-than-usual vertical gap, a change of font size, or a bullet
+    starts a new one. The usual gap is the page's own median leading, so single- and
+    double-spaced documents are both read correctly."""
+    if not lines:
+        return []
+    gaps = [
+        previous.baseline - line.baseline
+        for previous, line in zip(lines, lines[1:], strict=False)
+        if 0 < previous.baseline - line.baseline
+    ]
+    leading = _median(gaps) or max(lines[0].size, 1.0)
+    blocks: list[list[PdfLine]] = [[lines[0]]]
+    for previous, line in zip(lines, lines[1:], strict=False):
+        gap = previous.baseline - line.baseline
+        starts_block = (
+            gap > BLOCK_GAP * leading
+            or gap < 0  # a column break: the next line sits higher up the page
+            or abs(line.size - previous.size) > 0.15 * max(previous.size, 1.0)
+            or line.bold != previous.bold
+            or _bullet(line.text) is not None
+        )
+        if starts_block:
+            blocks.append([line])
+        else:
+            blocks[-1].append(line)
+    return blocks
+
+
+def _bullet(text: str) -> str | None:
+    """The bullet or numbering a line starts with, if any."""
+    stripped = text.lstrip()
+    for bullet in BULLETS:
+        if stripped.startswith(f"{bullet} "):
+            return bullet
+    head = stripped.split(" ", 1)[0]
+    if len(head) <= 4 and head[:-1].isdigit() and head.endswith((".", ")")):
+        return head
+    return None
+
+
+def block_text(block: Sequence[PdfLine]) -> str:
+    """The block's text, with a hyphen at a line end joined rather than kept."""
+    parts: list[str] = []
+    for line in block:
+        piece = line.text
+        if parts and parts[-1].endswith("-"):
+            parts[-1] = parts[-1][:-1] + piece
+        else:
+            parts.append(piece)
+    return "\n".join(parts)
+
+
+def pdf_page_blocks(
+    chunks: Sequence[PdfChunk], number: int, width: float, height: float, body: float
+) -> list[Block]:
+    """One page's runs as semantic blocks: headings, list items and paragraphs, each with the
+    box it occupies and a word box per run.
+
+    Structure comes from the geometry the PDF already carries — line spacing, font size,
+    boldness, bullets — because a born-digital page has no tags to read. Anything this cannot
+    tell apart stays a paragraph, which is the honest default; joining across pages, grouping
+    and sectioning are the pipeline's job, not this function's.
+    """
+    blocks: list[Block] = []
+    for lines in pdf_paragraphs(pdf_lines(chunks)):
+        text = block_text(lines)
+        if not text.strip() or _is_decoration(lines, body):
+            continue
+        bullet = _bullet(lines[0].text)
+        if bullet is not None:
+            text = text[len(bullet) :].lstrip()
+        tag, level = _classify(lines, body, bullet is not None)
+        region = _block_region(lines, text, number, width, height)
+        blocks.append(
+            Block(
+                tag=tag,
+                text=text,
+                level=level,
+                source=StructureSource.EMBEDDED,
+                box=region.envelope,
+                words=region.words,
+            )
+        )
+    return blocks
+
+
+#: A single glyph this much larger than the body text is a logo, not a word.
+DECORATION_SIZE = 2.5
+
+
+def _is_decoration(block: Sequence[PdfLine], body: float) -> bool:
+    """A lone oversized character — the letterhead's monogram — is not content."""
+    return (
+        len(block) == 1
+        and len(block[0].text.strip()) <= 1
+        and block[0].size > DECORATION_SIZE * body
     )
-    return ExtractedNode(tag="p", text=text, source=StructureSource.EMBEDDED, regions=[region])
+
+
+def _classify(block: Sequence[PdfLine], body: float, is_item: bool) -> tuple[str, int | None]:
+    if is_item:
+        return "li", None
+    first = block[0]
+    single = len(block) == 1
+    large = first.size >= HEADING_SIZE * body
+    if single and (large or (first.bold and first.words <= HEADING_WORDS)):
+        # Two sizes above the body text read as the document's title level, one as a section.
+        level = 2 if first.size >= 1.5 * body else 3
+        return f"h{level}", level
+    return "p", None
+
+
+def _block_region(
+    block: Sequence[PdfLine], text: str, number: int, width: float, height: float
+) -> ExtractedRegion:
+    """The block's envelope and its runs as word boxes, in page coordinates."""
+    words: list[ExtractedWord] = []
+    cursor = 0
+    for index, line in enumerate(block):
+        if index:
+            cursor += 1  # the newline between lines
+        for run in line.runs:
+            piece = run.text.strip()
+            if not piece:
+                continue
+            start = text.find(piece, cursor)
+            if start < 0:
+                continue
+            cursor = start + len(piece)
+            x0, y0, x1, y1 = pdf_box(run.x, run.y, _run_width(run), run.font_size, width, height)
+            words.append(ExtractedWord(x0, y0, x1, y1, start, cursor, None))
+    boxes = [
+        pdf_box(line.x0, line.baseline, line.x1 - line.x0, line.size, width, height)
+        for line in block
+    ]
+    envelope = (
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    )
+    return ExtractedRegion(page=number, envelope=envelope, span=(0, len(text)), words=words or None)

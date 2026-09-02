@@ -5,11 +5,10 @@
 
 {% block content %}
   <h1>{{ tenant }}</h1>
-  <p title="Every model this project defines, by app, with the rows counted for this user —
-soft-deleted ones included.">
+  <p title="Every model this project writes, by app, with the rows counted for this user —
+soft-deleted ones included. History tables are reached from a row, not listed here.">
     <span class="tag" title="Belongs to one user; isolated by the ORM scope and by row-level
 security.">owned</span>
-    <span class="tag" title="An append-only event table mirroring another model's writes.">history</span>
     <span class="tag" title="Belongs to nobody: no owner column, no tenant policy.">shared</span>
   </p>
 

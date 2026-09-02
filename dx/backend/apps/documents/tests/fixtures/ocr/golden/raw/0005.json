@@ -1,51 +1,6 @@
 {
-  "blocks": [
-    {
-      "box_2d": [
-        10,
-        50,
-        40,
-        950
-      ],
-      "continues_from_previous_page": false,
-      "kind": "page_header",
-      "text": "Klinik Musterstadt · Orthopädie"
-    },
-    {
-      "box_2d": [
-        80,
-        100,
-        150,
-        900
-      ],
-      "continues_from_previous_page": false,
-      "kind": "paragraph",
-      "text": "Es besteht der Verdacht auf eine Meniskusläsion; eine MRT wurde veranlasst."
-    },
-    {
-      "box_2d": [
-        200,
-        600,
-        230,
-        900
-      ],
-      "continues_from_previous_page": false,
-      "kind": "other",
-      "text": "gez. Dr. Muster"
-    },
-    {
-      "box_2d": [
-        960,
-        480,
-        985,
-        520
-      ],
-      "continues_from_previous_page": false,
-      "kind": "page_number",
-      "text": "5"
-    }
-  ],
   "height": 842.0,
+  "html": "<p data-furniture=\"header\" data-box=\"10,50,40,950\">Klinik Musterstadt · Orthopädie</p><p data-box=\"80,100,150,900\">Es besteht der Verdacht auf eine Meniskusläsion; eine MRT wurde veranlasst.</p><p data-box=\"200,600,230,900\">gez. Dr. Muster</p><p data-furniture=\"page-number\" data-box=\"960,480,985,520\">5</p>",
   "number": 5,
   "width": 595.0
 }

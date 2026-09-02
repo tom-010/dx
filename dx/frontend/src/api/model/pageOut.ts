@@ -11,11 +11,14 @@ import type { RegionOut } from "./regionOut";
 export interface PageOut {
   confidence: ConfStats | null;
   date: DateOut | null;
+  failed: boolean;
   height: number | null;
   html: string;
+  image_url: string;
   label: string | null;
   number: number;
   regions: RegionOut[];
   text: string;
+  thumb_url: string;
   width: number | null;
 }

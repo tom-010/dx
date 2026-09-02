@@ -56,7 +56,8 @@ paths:
   screen. A command whose module does not import is listed in red with the import error — that
   is the point of a tool for looking at commands.
 - Existing: `createadmin`, `token` (accounts); `ensure_bucket`, `backup`, `restore`,
-  `newapp`, `deleteapp`, `newcommand`, `hello_world`, `tui`, `rls_sync`, `pull_tenant`,
+  `newapp`, `deleteapp`, `newcommand`, `hello_world`, `playground` (a click group of
+  experiments: `gemini` via `GEMINI_API_KEY`, `render` = the sample PDF rasterized page by page to PNGs), `tui`, `rls_sync`, `pull_tenant`,
   `load_tenant`, `delete_tenant` (core; the last three are one user's data — `docs/tenant-data.md`). Exception to
   the click rule: `shell_as` and `shell_admin` subclass Django's `shell` command (`BaseCommand`)
   so the REPL runs in-process inside the pinned tenant context; test them with `call_command`.

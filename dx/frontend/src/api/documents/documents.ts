@@ -24,13 +24,16 @@ import type {
   DownloadDocumentParams,
   ExtractionOut,
   GetDocumentTimelineParams,
+  GetPageImageParams,
   HitDocumentParams,
   ListDocumentsParams,
   PagedDocumentOut,
   PageOut,
+  PageSummaryOut,
   ReextractDocumentParams,
   SearchDocumentsParams,
   SearchHitOut,
+  StrategyOut,
   TimelineEntryOut,
   UploadDocumentsBody,
 } from "../model";
@@ -242,6 +245,83 @@ export function useSearchDocuments<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getSearchDocumentsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export const getListExtractionStrategiesUrl = () => {
+  return `/api/documents/strategies`;
+};
+
+/**
+ * Every registered extraction strategy — what a client may pass to `reextract`.
+ * @summary List Extraction Strategies
+ */
+export const listExtractionStrategies = async (
+  options?: Parameters<typeof customFetch>[1],
+): Promise<StrategyOut[]> => {
+  return customFetch<StrategyOut[]>(getListExtractionStrategiesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListExtractionStrategiesQueryKey = () => {
+  return [`/api/documents/strategies`] as const;
+};
+
+export const getListExtractionStrategiesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listExtractionStrategies>>,
+  TError = unknown,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listExtractionStrategies>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListExtractionStrategiesQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listExtractionStrategies>>
+  > = ({ signal }) => listExtractionStrategies({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listExtractionStrategies>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListExtractionStrategiesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listExtractionStrategies>>
+>;
+export type ListExtractionStrategiesQueryError = unknown;
+
+/**
+ * @summary List Extraction Strategies
+ */
+
+export function useListExtractionStrategies<
+  TData = Awaited<ReturnType<typeof listExtractionStrategies>>,
+  TError = unknown,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listExtractionStrategies>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListExtractionStrategiesQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;
@@ -729,10 +809,20 @@ export const getDownloadDocumentUrl = (
 };
 
 /**
- * Streams the stored file as an attachment (binary response, not part of the JSON contract).
+ * Streams the stored file (binary response, not part of the JSON contract).
  *
- * Public but signed: use the `download_url` from `DocumentOut`, links expire after an hour.
- * The signature names the owner; their tenant context is opened just for the lookup.
+ * Public but signed: use `download_url` from `DocumentOut` (an attachment, under the original
+ * file name) or `view_url` (`inline=true`, for an `<iframe>` showing the PDF); links expire
+ * after an hour.
+ *
+ * **Inline is for PDFs only**, whatever the caller asks for: the browser renders an inline
+ * response on *this* origin, and an uploaded HTML file rendered there would be stored XSS
+ * against the admin session. A PDF goes to the browser's own sandboxed viewer. For the same
+ * reason the type comes from the stored blob rather than from the file name.
+ *
+ * `xframe_options_exempt` because the site-wide `X-Frame-Options: DENY` would otherwise stop
+ * the SPA from framing the viewer — the response is a file, not a page of ours, so there is
+ * no UI here to click-jack.
  * @summary Download Document
  */
 export const downloadDocument = async (
@@ -1036,6 +1126,96 @@ export function useHitDocument<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
+export const getListDocumentPagesUrl = (documentId: string) => {
+  return `/api/documents/${documentId}/pages`;
+};
+
+/**
+ * Every page of the current snapshot, in order — the page navigator's data.
+ * @summary List Document Pages
+ */
+export const listDocumentPages = async (
+  documentId: string,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<PageSummaryOut[]> => {
+  return customFetch<PageSummaryOut[]>(getListDocumentPagesUrl(documentId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListDocumentPagesQueryKey = (documentId: string) => {
+  return [`/api/documents/${documentId}/pages`] as const;
+};
+
+export const getListDocumentPagesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listDocumentPages>>,
+  TError = unknown,
+>(
+  documentId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listDocumentPages>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListDocumentPagesQueryKey(documentId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listDocumentPages>>
+  > = ({ signal }) =>
+    listDocumentPages(documentId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: documentId !== null && documentId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listDocumentPages>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListDocumentPagesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listDocumentPages>>
+>;
+export type ListDocumentPagesQueryError = unknown;
+
+/**
+ * @summary List Document Pages
+ */
+
+export function useListDocumentPages<
+  TData = Awaited<ReturnType<typeof listDocumentPages>>,
+  TError = unknown,
+>(
+  documentId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listDocumentPages>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListDocumentPagesQueryOptions(documentId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
 export const getGetDocumentPageUrl = (documentId: string, number: number) => {
   return `/api/documents/${documentId}/pages/${number}`;
 };
@@ -1129,6 +1309,137 @@ export function useGetDocumentPage<
   const queryOptions = getGetDocumentPageQueryOptions(
     documentId,
     number,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export const getGetPageImageUrl = (
+  documentId: string,
+  number: number,
+  params: GetPageImageParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/documents/${documentId}/pages/${number}/image?${stringifiedParams}`
+    : `/api/documents/${documentId}/pages/${number}/image`;
+};
+
+/**
+ * One page of the source file as a PNG — what the region overlay is drawn on.
+ *
+ * Public but signed like the download, because an `<img src>` carries no bearer header; the
+ * bytes for one (document, page, size) never change, so the browser may keep them.
+ * @summary Get Page Image
+ */
+export const getPageImage = async (
+  documentId: string,
+  number: number,
+  params: GetPageImageParams,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<void> => {
+  return customFetch<void>(getGetPageImageUrl(documentId, number, params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetPageImageQueryKey = (
+  documentId: string,
+  number: number,
+  params?: GetPageImageParams,
+) => {
+  return [
+    `/api/documents/${documentId}/pages/${number}/image`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetPageImageQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPageImage>>,
+  TError = unknown,
+>(
+  documentId: string,
+  number: number,
+  params: GetPageImageParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPageImage>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getGetPageImageQueryKey(documentId, number, params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getPageImage>>> = ({
+    signal,
+  }) => getPageImage(documentId, number, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      documentId !== null &&
+      documentId !== undefined &&
+      number !== null &&
+      number !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPageImage>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPageImageQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPageImage>>
+>;
+export type GetPageImageQueryError = unknown;
+
+/**
+ * @summary Get Page Image
+ */
+
+export function useGetPageImage<
+  TData = Awaited<ReturnType<typeof getPageImage>>,
+  TError = unknown,
+>(
+  documentId: string,
+  number: number,
+  params: GetPageImageParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPageImage>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPageImageQueryOptions(
+    documentId,
+    number,
+    params,
     options,
   );
 

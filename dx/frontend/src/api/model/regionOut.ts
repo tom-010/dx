@@ -5,14 +5,18 @@
  * OpenAPI spec version: 0.1.0
  */
 
+/**
+ * Where a node is on a page — `x0`…`y1` are null when the extractor knew the page but
+ * not the place (`PageRegion`), and the overlay then has nothing to draw.
+ */
 export interface RegionOut {
   nid: number;
   order: number;
   polygon: number[][] | null;
   tag: string;
   text: string;
-  x0: number;
-  x1: number;
-  y0: number;
-  y1: number;
+  x0: number | null;
+  x1: number | null;
+  y0: number | null;
+  y1: number | null;
 }

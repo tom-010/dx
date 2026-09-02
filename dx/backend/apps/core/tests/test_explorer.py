@@ -134,6 +134,19 @@ def _dataset_count(body: str) -> int:
     return int(re.findall(r"<td>(\d+)</td>", row)[-1])
 
 
+def test_the_model_list_leaves_the_event_tables_out(staff_client: Client, user: User) -> None:
+    """`DatasetEvent` is the history of a `Dataset`, not a thing anyone has — listing it beside
+    its model would double the index. The table itself stays browsable by URL."""
+    event_model = event_model_for(Dataset)
+    assert event_model is not None
+
+    body = staff_client.get(index_url(user)).content.decode()
+
+    assert ">Dataset</a>" in body
+    assert "DatasetEvent" not in body
+    assert staff_client.get(model_url(user, event_model)).status_code == 200
+
+
 def test_rows_of_one_model_link_to_the_object_page(staff_client: Client, user: User) -> None:
     with acting_as(user):
         dataset = create_dataset_for(user, name="the one")

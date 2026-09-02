@@ -110,6 +110,11 @@ def test_datelines_are_found_at_the_head_of_a_block_only() -> None:
     found = find_dateline("Montag, 12. Mai 1943\nLanger Text über 1918.")
     assert found is not None and (found.date.edtf, found.text) == ("1943-05-12", "12. Mai 1943")
     assert find_dateline("Wir sprachen lange über den Sommer 1918 und den Frühling 1919.") is None
+    # A sentence that mentions a date is not a dateline, however near the start it sits (§1).
+    assert find_dateline("Eine Abklärung wurde am 20. Mai 1943 veranlasst.") is None
+    # A date the line only carries along: a birth date is not when the letter was written.
+    assert find_dateline("Stadelmann Thomas geb. am 06.04.1994") is None
+    assert find_dateline("Am 20. Mai 1943 kam Besuch, und wir sprachen über den Krieg.") is None
     assert find_dateline("Berlin, den 3. März 1944") is not None
     assert find_dateline("May 12, 1943 — a note") is not None
     assert find_dateline("12th May 1943") is not None

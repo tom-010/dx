@@ -32,7 +32,7 @@ from __future__ import annotations
 import calendar
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from time import struct_time
@@ -330,10 +330,15 @@ _DATELINES: list[tuple[re.Pattern[str], str, float]] = [
     (re.compile(rf"\b{_MONTH}\s+{_YEAR}\b"), "month", 0.8),  # Mai 1943
 ]
 _YEAR_ONLY = re.compile(rf"^\s*(?:(?:im|in|anno)\s+)?{_YEAR}\s*$", re.IGNORECASE)
-#: A dateline sits at the start of a block: within this many characters of the first line…
-DATELINE_LEAD = 40
-#: …or anywhere on a first line this short (a header line, a letter's place-and-date line).
-DATELINE_SHORT_LINE = 80
+#: A dateline sits at the *start* of a block: within this many characters of the first line,
+#: which is room for a place ("Musterstadt, den 12. Mai 1943") and nothing much else. A date
+#: further in is part of a sentence — "Stadelmann Thomas geb. am 06.04.1994" is a birth date,
+#: not the day the letter was written.
+DATELINE_LEAD = 20
+#: …and stands nearly alone on it. "Berlin, den 3. März 1944" is a dateline; "eine Abklärung
+#: wurde am 20. Mai 1943 veranlasst" is a sentence that mentions a date, and mentions are not
+#: what this stores (§1: the information-origin date, not the dates the text talks about).
+DATELINE_CONTEXT = 30
 DATELINE_WINDOW = 160
 _HEADINGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
@@ -349,16 +354,18 @@ class Dateline:
 def find_dateline(text: str, *, heading: bool = False) -> Dateline | None:
     """The date a block is *headed* by, if any — never a date mentioned further in.
 
-    Looks at the first line only, near its start (or anywhere on a short first line, or in a
-    heading of any length), and accepts a bare year only when the block is nothing but the
-    year. German and English month names, ISO and numeric forms; day precision preferred.
+    Looks at the first line only, and takes a date there for a dateline when it stands nearly
+    alone on it: near the start of the line (anywhere in a heading) with little else beside
+    it. A bare year counts only when the block is nothing but the year. German and English
+    month names, ISO and numeric forms; day precision preferred.
     """
     first_line = text.split("\n", 1)[0].strip()
     window = first_line[:DATELINE_WINDOW]
     for pattern, precision, conf in _DATELINES:
         for match in pattern.finditer(window):
-            leading = match.start() <= DATELINE_LEAD or len(first_line) <= DATELINE_SHORT_LINE
-            if not (leading or heading):
+            leading = match.start() <= DATELINE_LEAD or heading
+            alone = len(first_line) - (match.end() - match.start()) <= DATELINE_CONTEXT
+            if not (leading and alone):
                 continue
             parsed = _resolve(match, precision)
             if parsed is not None:
@@ -442,10 +449,14 @@ def date_snapshot(
     *,
     hint: str | None = None,
     metadata_date: str | None = None,
+    inferred: Mapping[int, DateEstimate] | None = None,
 ) -> DatingReport:
     """Assign an estimate to every node and page that can carry one; return the content's.
 
     1. Datelines in leaf blocks and headings ⇒ `EXPLICIT` node estimates (the anchors).
+    1b. `inferred` — what a model made of the nodes it could place (`INFERRED`) — fills the
+       nodes no dateline governs. A printed dateline always wins: a model reads the document,
+       the document states itself.
     2. A page with anchors ⇒ the `AGGREGATED` envelope of them.
     3. Undated pages between anchor pages ⇒ `INTERPOLATED` [previous, next] — only while the
        anchors are in non-decreasing order (reading order ≈ chronological order: diaries,
@@ -476,6 +487,15 @@ def date_snapshot(
                 }
             )
     stats["anchors"] = anchors
+
+    placed = 0
+    for node in nodes:
+        estimate = (inferred or {}).get(node.nid)
+        if node.date is None and estimate is not None:
+            node.date = estimate
+            placed += 1
+    if inferred:
+        stats["inferred"] = {"offered": len(inferred), "used": placed}
 
     explicit_on: dict[int, list[DateEstimate]] = defaultdict(list)
     for node in nodes:

@@ -711,6 +711,17 @@
               }
             ]
           },
+          "thumb_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumb Url"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -718,6 +729,10 @@
           "version": {
             "title": "Version",
             "type": "integer"
+          },
+          "view_url": {
+            "title": "View Url",
+            "type": "string"
           }
         },
         "required": [
@@ -731,6 +746,8 @@
           "page_count",
           "date",
           "download_url",
+          "view_url",
+          "thumb_url",
           "created",
           "modified"
         ],
@@ -860,6 +877,11 @@
           },
           "status": {
             "$ref": "#/components/schemas/ExtractionStatus"
+          },
+          "stream_url": {
+            "description": "Signed SSE endpoint of the run's task (`GET /api/tasks/{id}/events`): one `status` event per state change, with the page count while it works.",
+            "title": "Stream Url",
+            "type": "string"
           }
         },
         "required": [
@@ -871,7 +893,8 @@
           "stats",
           "created",
           "started_at",
-          "finished_at"
+          "finished_at",
+          "stream_url"
         ],
         "title": "ExtractionOut",
         "type": "object"
@@ -1344,6 +1367,10 @@
               }
             ]
           },
+          "failed": {
+            "title": "Failed",
+            "type": "boolean"
+          },
           "height": {
             "anyOf": [
               {
@@ -1357,6 +1384,10 @@
           },
           "html": {
             "title": "Html",
+            "type": "string"
+          },
+          "image_url": {
+            "title": "Image Url",
             "type": "string"
           },
           "label": {
@@ -1385,6 +1416,10 @@
             "title": "Text",
             "type": "string"
           },
+          "thumb_url": {
+            "title": "Thumb Url",
+            "type": "string"
+          },
           "width": {
             "anyOf": [
               {
@@ -1406,9 +1441,93 @@
           "text",
           "confidence",
           "date",
+          "failed",
+          "image_url",
+          "thumb_url",
           "regions"
         ],
         "title": "PageOut",
+        "type": "object"
+      },
+      "PageSummaryOut": {
+        "description": "One page as a navigator shows it — no text, no regions.",
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "boolean"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "image_url": {
+            "title": "Image Url",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "region_count": {
+            "title": "Region Count",
+            "type": "integer"
+          },
+          "thumb_url": {
+            "title": "Thumb Url",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "number",
+          "label",
+          "width",
+          "height",
+          "date",
+          "region_count",
+          "failed",
+          "image_url",
+          "thumb_url"
+        ],
+        "title": "PageSummaryOut",
         "type": "object"
       },
       "PagedDatasetOut": {
@@ -1535,6 +1654,7 @@
         "type": "object"
       },
       "RegionOut": {
+        "description": "Where a node is on a page — `x0`…`y1` are null when the extractor knew the page but\nnot the place (`PageRegion`), and the overlay then has nothing to draw.",
         "properties": {
           "nid": {
             "title": "Nid",
@@ -1570,20 +1690,48 @@
             "type": "string"
           },
           "x0": {
-            "title": "X0",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X0"
           },
           "x1": {
-            "title": "X1",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X1"
           },
           "y0": {
-            "title": "Y0",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y0"
           },
           "y1": {
-            "title": "Y1",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y1"
           }
         },
         "required": [
@@ -1874,6 +2022,38 @@
           "is_stale"
         ],
         "title": "SourceOut",
+        "type": "object"
+      },
+      "StrategyOut": {
+        "description": "An extraction strategy a client may ask for (`POST …/reextract?strategy=`).",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "mime_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mime Types",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "tool_version": {
+            "title": "Tool Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "tool_version",
+          "description",
+          "mime_types"
+        ],
+        "title": "StrategyOut",
         "type": "object"
       },
       "TaskOut": {
@@ -2731,6 +2911,38 @@
         ]
       }
     },
+    "/api/documents/strategies": {
+      "get": {
+        "description": "Every registered extraction strategy — what a client may pass to `reextract`.",
+        "operationId": "list_extraction_strategies",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StrategyOut"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Extraction Strategies",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
     "/api/documents/upload": {
       "post": {
         "description": "Upload one or more files as multipart/form-data (field name `files`). Each gets an\nextraction queued when an extractor handles its type.",
@@ -2942,7 +3154,7 @@
     },
     "/api/documents/{document_id}/download": {
       "get": {
-        "description": "Streams the stored file as an attachment (binary response, not part of the JSON contract).\n\nPublic but signed: use the `download_url` from `DocumentOut`, links expire after an hour.\nThe signature names the owner; their tenant context is opened just for the lookup.",
+        "description": "Streams the stored file (binary response, not part of the JSON contract).\n\nPublic but signed: use `download_url` from `DocumentOut` (an attachment, under the original\nfile name) or `view_url` (`inline=true`, for an `<iframe>` showing the PDF); links expire\nafter an hour.\n\n**Inline is for PDFs only**, whatever the caller asks for: the browser renders an inline\nresponse on *this* origin, and an uploaded HTML file rendered there would be stored XSS\nagainst the admin session. A PDF goes to the browser's own sandboxed viewer. For the same\nreason the type comes from the stored blob rather than from the file name.\n\n`xframe_options_exempt` because the site-wide `X-Frame-Options: DENY` would otherwise stop\nthe SPA from framing the viewer — the response is a file, not a page of ours, so there is\nno UI here to click-jack.",
         "operationId": "download_document",
         "parameters": [
           {
@@ -2962,6 +3174,16 @@
             "schema": {
               "title": "Sig",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "inline",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Inline",
+              "type": "boolean"
             }
           }
         ],
@@ -3092,6 +3314,49 @@
         ]
       }
     },
+    "/api/documents/{document_id}/pages": {
+      "get": {
+        "description": "Every page of the current snapshot, in order — the page navigator's data.",
+        "operationId": "list_document_pages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PageSummaryOut"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Document Pages",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
     "/api/documents/{document_id}/pages/{number}": {
       "get": {
         "description": "One page of the current snapshot: its reduced html, text and the regions on it.",
@@ -3135,6 +3400,61 @@
           }
         ],
         "summary": "Get Document Page",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/documents/{document_id}/pages/{number}/image": {
+      "get": {
+        "description": "One page of the source file as a PNG — what the region overlay is drawn on.\n\nPublic but signed like the download, because an `<img src>` carries no bearer header; the\nbytes for one (document, page, size) never change, so the browser may keep them.",
+        "operationId": "get_page_image",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": true,
+            "schema": {
+              "title": "Sig",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "title": "Size",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Get Page Image",
         "tags": [
           "documents"
         ]

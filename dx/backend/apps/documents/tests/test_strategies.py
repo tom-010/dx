@@ -8,45 +8,25 @@ import pytest
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.documents import extraction, snapshot, strategies
-from apps.documents.extraction import ExtractionError
+from apps.documents import extraction, pipeline, snapshot, strategies
+from apps.documents.extraction import Extraction, ExtractionError
 from apps.documents.models import ExtractionStatus, StructureSource
-from apps.documents.tests.conftest import upload
+from apps.documents.ocr import render
+from apps.documents.tests.conftest import text_pdf, upload
 
 pytestmark = pytest.mark.django_db
 
 
-def close(actual: Sequence[float] | None, expected: Sequence[float]) -> bool:
-    """Elementwise float comparison (mypy's strict equality rejects `pytest.approx` on tuples)."""
+def close(actual: Sequence[float] | None, expected: Sequence[float], *, scale: float = 1.0) -> bool:
+    """Elementwise float comparison (mypy's strict equality rejects `pytest.approx` on tuples).
+
+    The tolerance is the pipeline's own: a box travels through the augmented HTML with
+    `pipeline.BOX_DECIMALS` decimals, which on a 600 pt page is a twentieth of a point.
+    """
     return actual is not None and all(
-        math.isclose(a, b, abs_tol=1e-6) for a, b in zip(actual, expected, strict=True)
+        math.isclose(a, b, abs_tol=scale * 10**-pipeline.BOX_DECIMALS)
+        for a, b in zip(actual, expected, strict=True)
     )
-
-
-def minimal_pdf(text: str = "Hello", x: float = 72, y: float = 700, size: float = 12) -> bytes:
-    """A one-page Letter PDF with one text run at (x, y) in PDF user space (origin bottom-left)."""
-    stream = f"BT /F1 {size} Tf {x} {y} Td ({text}) Tj ET".encode()
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
-        b"/Resources << /Font << /F1 5 0 R >> >> >>",
-        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    ]
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for number, obj in enumerate(objects, 1):
-        offsets.append(len(out))
-        out += f"{number} 0 obj\n".encode() + obj + b"\nendobj\n"
-    xref = len(out)
-    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
-    for offset in offsets:
-        out += f"{offset:010d} 00000 n \n".encode()
-    out += (
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
-    )
-    return bytes(out)
 
 
 # --- plain text ---
@@ -130,38 +110,48 @@ def test_pdf_boxes_flip_the_y_axis_once() -> None:
         extraction.pdf_box(0, 0, 1, 1, 0, 792)
 
 
+def _pdf_tree(data: bytes) -> Extraction:
+    """What `PdfStrategy` reads, without a document: pages of HTML through the pipeline."""
+    strategy = strategies.PdfStrategy()
+    read = strategy._pages(strategy._read_pdf(data))  # noqa: SLF001 - the strategy's own stages
+    extraction, _html = pipeline.assemble(read.pages, meta=read.meta, raw=read.raw)
+    return extraction
+
+
 def test_a_born_digital_pdf_places_its_text_with_no_confidence(user: User) -> None:
-    tree = strategies.PdfStrategy().parse(minimal_pdf(), "application/pdf")
+    tree = _pdf_tree(text_pdf())
     assert [(p.number, p.width, p.height) for p in tree.pages] == [(1, 612.0, 792.0)]
     (node,) = tree.nodes
     assert (node.tag, node.text) == ("p", "Hello")
     (region,) = node.regions
     assert region.page == 1 and region.span == (0, 5)
     assert close(region.envelope, (72 / 612, 82.4 / 792, 102 / 612, 94.4 / 792))
-    assert region.words is not None and region.words[0].conf is None
+    # Word boxes do not survive the augmented HTML — a block's box does, and that is what the
+    # region overlay needs. `words` stays schema-ready for an engine that reports per word.
+    assert region.words is None
     assert tree.raw is not None and b'"Hello"' in tree.raw
 
-    document = upload(user, "hello.pdf", minimal_pdf(), "application/pdf")
+    document = upload(user, "hello.pdf", text_pdf(), "application/pdf")
     with acting_as(user):
-        content = snapshot.extract_now(document)
+        content = snapshot.extract_now(document, strategies.PdfStrategy())
         assert content.status == ExtractionStatus.SUCCEEDED, content.error
         assert content.conf_stats is None  # born-digital: never a fake 1.0
         assert snapshot.verify_snapshot(content) == []
         # Drawn over a render at the page's own size, the box sits where the text is.
         (polygon,) = content.node(1).polygons(612, 792)
         assert polygon.page.number == 1
-        assert close(polygon.points[0], (72, 82.4))
-        assert close(polygon.points[2], (102, 94.4))
+        assert close(polygon.points[0], (72, 82.4), scale=792)  # points, not fractions
+        assert close(polygon.points[2], (102, 94.4), scale=792)
         assert document.hit(1, 80 / 612, 88 / 792) == content.node(1)
         assert content.raw_output is not None
 
 
 def test_an_unreadable_pdf_is_an_extraction_error(user: User) -> None:
     with pytest.raises(ExtractionError, match="not a readable PDF"):
-        strategies.PdfStrategy().parse(b"%PDF-1.4 garbage", "application/pdf")
+        _pdf_tree(b"%PDF-1.4 garbage")
     document = upload(user, "bad.pdf", b"%PDF-1.4 garbage", "application/pdf")
     with acting_as(user):
-        content = snapshot.extract_now(document)
+        content = snapshot.extract_now(document, strategies.PdfStrategy())
         assert content.status == ExtractionStatus.FAILED
         assert content.error.startswith("ExtractionError: not a readable PDF")
 
@@ -172,9 +162,61 @@ def test_an_unreadable_pdf_is_an_extraction_error(user: User) -> None:
 def test_the_registry_maps_mime_types_to_strategies() -> None:
     plain = strategies.STRATEGIES["plain-text"]
     assert strategies.strategy_for_mime("text/plain; charset=utf-8") is plain
-    assert strategies.strategy_for_mime("application/PDF") is strategies.STRATEGIES["pypdf"]
+    # A PDF is a scan until proven otherwise, and a scan's own text layer cannot be trusted.
+    assert strategies.strategy_for_mime("application/PDF") is strategies.STRATEGIES["gemini-ocr"]
+    assert strategies.strategy_named("pypdf").name == "pypdf"  # still there, opt-in
     assert strategies.strategy_for_mime("image/png") is None
     assert strategies.strategy_named("html").tool_version == "1"
     with pytest.raises(strategies.UnknownStrategy):
         strategies.strategy_named("nope")
     assert str(strategies.STRATEGIES["pypdf"]).startswith("pypdf ")
+
+
+def test_rendering_is_serialized_across_threads() -> None:
+    """pdfium keeps process-global state: two threads rendering at once corrupt its heap and
+    take the process down — which a threaded server does the moment two people open a
+    document. Every call goes through one lock (`render.PDFIUM_LOCK`)."""
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415 - only this test
+
+    pdf = text_pdf(3)
+
+    def render_all(_: int) -> list[int]:
+        return [page.number for page in render.render_pages(pdf, dpi=72)]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(render_all, range(16)))
+
+    assert results == [[1, 2, 3]] * 16
+    assert not render.PDFIUM_LOCK.locked()
+
+
+def test_a_page_image_is_a_jpeg_and_costs_what_it_should() -> None:
+    """The serving format is measured, not assumed: on a scanned page PNG took ~67 ms and
+    789 kB, JPEG ~6 ms and 254 kB, and the pdfium render itself is only ~32 ms of either."""
+    pdf = text_pdf(2)
+
+    full = render.render_image(pdf, 1)
+    thumb = render.render_image(pdf, 1, long_edge=render.THUMB_PX)
+
+    assert full.startswith(b"\xff\xd8\xff") and thumb.startswith(b"\xff\xd8\xff")
+    assert len(thumb) < len(full)
+    with pytest.raises(IndexError):
+        render.render_image(pdf, 9)
+
+
+def test_a_line_is_as_wide_as_its_text_not_as_its_widest_run() -> None:
+    """A PDF reports the last positioning operator for every run of a line, so the runs all
+    claim the same x. Measuring each one from its own x left a line as narrow as its longest
+    run: on a real letter the right edge came out ~5% of the page short, now ~1%."""
+    runs = [
+        extraction.PdfChunk(text="Antonie", x=150.0, y=700.0, font_size=10.0),
+        extraction.PdfChunk(text=" Hartmann", x=150.0, y=700.0, font_size=10.0),
+    ]
+
+    (line,) = extraction.pdf_lines(runs)
+
+    assert line.text == "Antonie Hartmann"
+    assert line.x0 == 150.0
+    # The whole line, not the longer of the two runs (which would end at 150 + 9 chars).
+    assert line.x1 == pytest.approx(150.0 + extraction.ADVANCE * 10.0 * len(line.text))
+    assert line.x1 > 150.0 + extraction.ADVANCE * 10.0 * len(" Hartmann".strip())

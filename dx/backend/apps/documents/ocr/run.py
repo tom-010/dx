@@ -12,14 +12,14 @@ from typing import Any
 
 from apps.documents.ocr.assembly import PageInput
 from apps.documents.ocr.gemini_client import FIRST_PAGE, PageFailed, PageReader, tail_context
-from apps.documents.ocr.page_schema import normalize
+from apps.documents.ocr.page_html import parse_page
 from apps.documents.ocr.render import (
     DPI,
     THUMB_PX,
     page_count,
     png_bytes,
     render_pages,
-    thumbnail_png,
+    thumbnail_bytes,
 )
 
 PAGE_NAME = "{:04d}"
@@ -40,26 +40,25 @@ def read_document(
     total = page_count(pdf)
     tail = FIRST_PAGE
     for rendered in render_pages(pdf, dpi=dpi, pages=pages):
-        png = png_bytes(rendered.image)
+        png = png_bytes(rendered.image)  # what the model sees: lossless
         record = (existing or {}).get(rendered.number)
         if record is not None:
             result = PageInput.from_raw(record)
             result.width, result.height = rendered.width, rendered.height
         else:
             try:
-                raw = reader.read(png, rendered.number, total, tail)
                 result = PageInput(
                     number=rendered.number,
                     width=rendered.width,
                     height=rendered.height,
-                    blocks=list(raw.get("blocks", [])),
+                    html=reader.read(png, rendered.number, total, tail),
                 )
             except PageFailed as exc:
                 result = PageInput(number=rendered.number, error=str(exc)[:2000])
         if thumbnails:
-            result.thumbnail = thumbnail_png(rendered.image, THUMB_PX)
-        if result.blocks is not None:
-            blocks, _ = normalize({"blocks": result.blocks}, rendered.number)
+            result.thumbnail = thumbnail_bytes(rendered.image, THUMB_PX)
+        if result.html is not None:
+            blocks, _ = parse_page(result.html, rendered.number)
             tail = tail_context(blocks)
         else:
             tail = "the previous page could not be read"

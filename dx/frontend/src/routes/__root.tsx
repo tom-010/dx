@@ -6,6 +6,7 @@ import {
   type ParsedLocation,
   redirect,
   useLocation,
+  useMatches,
   useNavigate,
 } from "@tanstack/react-router";
 import {
@@ -25,6 +26,7 @@ import {
   setTokens,
   useAccessToken,
 } from "@/lib/auth";
+import { cn } from "@/lib/utils";
 
 const LOGIN_PATH = "/login";
 
@@ -54,6 +56,12 @@ function RootLayout(): JSX.Element {
   const token = useAccessToken();
   const location = useLocation();
   const navigate = useNavigate();
+  // Pages are centred at a readable width; a route with `staticData: { wide: true }` (the
+  // document workspace) asks for the whole window instead, because it shows two panes.
+  const matches = useMatches();
+  const width = matches.some((match) => match.staticData.wide === true)
+    ? "max-w-[120rem]"
+    : "max-w-5xl";
 
   // The session can end while a page is open (refresh rejected, logged out in another tab —
   // see customFetch and src/lib/auth.ts): go back to the login form.
@@ -75,7 +83,12 @@ function RootLayout(): JSX.Element {
     <div className="flex min-h-svh flex-col">
       {/* Sticky so the account controls stay reachable while a long list scrolls. */}
       <header className="sticky top-0 z-40 border-b bg-background/90 pt-safe backdrop-blur">
-        <div className="mx-auto flex w-full max-w-5xl items-center gap-1 px-4 py-2 md:px-6">
+        <div
+          className={cn(
+            "mx-auto flex w-full items-center gap-1 px-4 py-2 md:px-6",
+            width,
+          )}
+        >
           <span className="font-semibold md:mr-4">dx</span>
           <nav className="hidden items-center gap-1 md:flex">
             {navItems.map((item) => (
@@ -96,7 +109,12 @@ function RootLayout(): JSX.Element {
         </div>
       </header>
       {/* The bottom padding clears the fixed tab bar; from md up there is none. */}
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 pt-6 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:px-6 md:py-8">
+      <main
+        className={cn(
+          "mx-auto w-full flex-1 px-4 pt-6 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:px-6 md:py-8",
+          width,
+        )}
+      >
         <Outlet />
       </main>
       <TabBar />

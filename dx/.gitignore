@@ -43,3 +43,5 @@ logs/
 
 # Production stack configuration (docker/docker-compose.prod.yml)
 docker/.env.prod
+# manage.py playground render output
+backend/out/

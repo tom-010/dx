@@ -12,7 +12,7 @@ from pytest_django.fixtures import DjangoCaptureOnCommitCallbacks
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.documents import snapshot
+from apps.documents import snapshot, strategies
 from apps.documents.api import (
     MAX_DOCUMENT_SIZE,
     get_document_for,
@@ -22,7 +22,7 @@ from apps.documents.api import (
     validate_upload,
 )
 from apps.documents.models import Blob, Document, DocumentContent, DocumentId
-from apps.documents.tests.conftest import FakeStrategy, upload
+from apps.documents.tests.conftest import FakeStrategy, text_pdf, upload
 
 pytestmark = pytest.mark.django_db
 
@@ -274,3 +274,105 @@ def test_store_documents_does_not_extract_by_itself(user: User) -> None:
         (document,) = store_documents(user, [_file()])
         assert document.latest_content() is None
         assert DocumentContent.objects.count() == 0
+
+
+# --- The workspace: page images, the page list, and following a run -------------------------------
+
+
+def _pdf_document(user: User) -> Document:
+    """A PDF document with a snapshot — the `pypdf` strategy handles it without a network."""
+    document = upload(user, "born-digital.pdf", text_pdf(2), "application/pdf")
+    with acting_as(user):
+        # Explicitly: a PDF now belongs to `gemini-ocr`, which needs a key and a network.
+        snapshot.extract_now(document, strategies.PdfStrategy())
+    return document
+
+
+def test_the_page_list_describes_every_page_with_its_images(
+    auth_client: Client, user: User
+) -> None:
+    document = _pdf_document(user)
+
+    pages = auth_client.get(f"/api/documents/{document.pk}/pages")
+
+    assert pages.status_code == 200, pages.content
+    body = pages.json()
+    assert [p["number"] for p in body] == [1, 2]
+    assert [p["region_count"] for p in body] == [1, 1]
+    assert (body[0]["width"], body[0]["height"]) == (612.0, 792.0)  # Letter, in points
+    assert body[0]["image_url"].startswith(f"/api/documents/{document.pk}/pages/1/image?sig=")
+    assert body[0]["thumb_url"].endswith("&size=thumb")
+    assert (
+        auth_client.get(f"/api/documents/{document.pk}/pages/1").json()["image_url"]
+        == (body[0]["image_url"])
+    )
+
+
+def test_a_page_image_is_rendered_from_the_pdf_behind_a_signed_link(
+    client: Client, auth_client: Client, user: User
+) -> None:
+    document = _pdf_document(user)
+    listed = auth_client.get(f"/api/documents/{document.pk}/pages").json()
+
+    # An <img src> sends no bearer header: the signature stands in for the user.
+    image = client.get(listed[1]["image_url"])
+    assert image.status_code == 200
+    # JPEG, not PNG: a scanned page is a photograph, and it encodes in a tenth of the time
+    # and a third of the bytes (apps/documents/ocr/render.py).
+    assert image["Content-Type"] == "image/jpeg"
+    assert image.content.startswith(b"\xff\xd8\xff")
+    assert "private" in image["Cache-Control"]
+    thumb = client.get(listed[1]["thumb_url"])
+    assert thumb.status_code == 200 and len(thumb.content) < len(image.content)
+
+    unsigned = listed[1]["image_url"].split("?")[0]
+    assert client.get(unsigned, {"sig": "nope"}).status_code == 403
+    assert client.get(unsigned).status_code == 422  # sig missing
+    assert client.get(f"{unsigned}?sig={sign_download(document)}&size=huge").status_code == 422
+
+
+def test_a_document_without_page_images_says_so(client: Client, user: User) -> None:
+    document = upload(user, "notes.txt", b"Kurze Notiz.", "text/plain")
+    with acting_as(user):
+        snapshot.extract_now(document)
+    url = f"/api/documents/{document.pk}/pages/1/image?sig={sign_download(document)}"
+
+    assert client.get(url).status_code == 404
+
+
+def test_the_original_can_be_opened_inline_for_a_viewer(client: Client, user: User) -> None:
+    document = _pdf_document(user)
+    signature = sign_download(document)
+
+    inline = client.get(f"/api/documents/{document.pk}/download?sig={signature}&inline=true")
+    assert inline.status_code == 200
+    assert "attachment" not in inline.get("Content-Disposition", "")
+    assert inline["Content-Type"] == "application/pdf"
+    # The SPA frames this; the site-wide DENY would stop it, and a file has no UI to click-jack.
+    assert "X-Frame-Options" not in inline
+    # Consumed, not closed: an unread FileResponse leaks the handle into a later test.
+    assert b"".join(inline.streaming_content).startswith(b"%PDF")  # type: ignore[attr-defined]
+
+
+def test_only_a_pdf_is_ever_served_inline(client: Client, user: User) -> None:
+    """An uploaded HTML file rendered inline would run on the API's own origin — stored XSS
+    against the admin session. `inline=true` is honoured for PDFs and nobody else."""
+    document = upload(user, "evil.html", b"<script>alert(1)</script>", "text/html")
+    url = f"/api/documents/{document.pk}/download?sig={sign_download(document)}&inline=true"
+
+    served = client.get(url)
+
+    assert served.status_code == 200
+    assert "attachment" in served["Content-Disposition"]
+    assert served["Content-Type"] == "text/html"
+    assert b"".join(served.streaming_content) == b"<script>alert(1)</script>"  # type: ignore[attr-defined]
+
+
+def test_a_run_can_be_followed_through_its_task_stream(auth_client: Client, user: User) -> None:
+    """The task id *is* the snapshot id, so the client needs no second lookup to watch a run."""
+    document = _pdf_document(user)
+
+    (run,) = auth_client.get(f"/api/documents/{document.pk}/extractions").json()
+    assert run["stream_url"].startswith(f"/api/tasks/{run['id']}/events?sig=")
+    # The signature is the one the tasks endpoint checks (it is public but signed).
+    assert auth_client.get(f"/api/tasks/{run['id']}").json()["id"] == run["id"]

@@ -128,6 +128,66 @@ class FakeStrategy(strategies.TreeStrategy):
         return fake_extraction()
 
 
+def text_pdf(
+    pages: int = 1, text: str = "Hello", x: float = 72, y: float = 700, size: float = 12
+) -> bytes:
+    """A Letter-sized PDF with one text run per page at (x, y) in PDF user space (origin
+    bottom-left) — born-digital, so `pypdf` reads it and pdfium renders it."""
+    # The text is the same on every page: a caller that asserts on geometry (or on the text
+    # of "the" page) gets one predictable run wherever it looks.
+    streams = [f"BT /F1 {size} Tf {x} {y} Td ({text}) Tj ET".encode()] * pages
+    kids = " ".join(f"{3 + index} 0 R" for index in range(pages))
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>".encode(),
+    ]
+    objects += [
+        (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Contents {3 + pages + index} 0 R "
+            f"/Resources << /Font << /F1 {3 + 2 * pages} 0 R >> >> >>"
+        ).encode()
+        for index in range(pages)
+    ]
+    objects += [
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream"
+        for stream in streams
+    ]
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, obj in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(out)
+
+
+def synthetic_pdf(pages: int = 2) -> bytes:
+    """A small scan-like PDF: pages with a printed title and a paragraph, drawn with Pillow —
+    a real PDF for the strategies and the page-image endpoint, and nobody's medical record."""
+    from io import BytesIO  # noqa: PLC0415 - only this helper needs them
+
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+
+    images = []
+    for number in range(1, pages + 1):
+        image = Image.new("RGB", (595, 842), "white")
+        draw = ImageDraw.Draw(image)
+        draw.text((60, 60), f"Seite {number}: Befund", fill="black")
+        draw.text((60, 120), "Die Patientin ist beschwerdefrei.", fill="black")
+        images.append(image)
+    buffer = BytesIO()
+    images[0].save(buffer, format="PDF", save_all=True, append_images=images[1:])
+    return buffer.getvalue()
+
+
 @pytest.fixture(autouse=True)
 def media_root(settings: Settings, tmp_path: Path) -> Path:
     settings.MEDIA_ROOT = tmp_path

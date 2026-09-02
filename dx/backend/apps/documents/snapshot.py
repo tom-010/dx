@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import html
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -83,6 +84,7 @@ from apps.documents.models import (
     content_switched,
     envelope_of,
 )
+from apps.documents.ocr import render as page_images
 
 if TYPE_CHECKING:
     from apps.documents.strategies import ExtractionStrategy
@@ -98,6 +100,10 @@ TITLE_LIMIT = 1000
 #: Coordinates this far outside [0, 1] are clamped; further out is an extractor bug.
 COORDINATE_SLACK = 0.01
 HASH_CHUNK = 1 << 20
+
+
+#: `(pages done, pages in total)` — see `report_progress`.
+type ProgressCallback = Callable[[int, int], None]
 
 
 class SnapshotError(Exception):
@@ -216,7 +222,11 @@ def start_extraction(
     from apps.documents.tasks import extract_content  # noqa: PLC0415 - tasks import this module
 
     owner_id, content_id = document.owner_id, content.pk
-    transaction.on_commit(lambda: extract_content.delay(owner_id, content_id))
+    # The task is given the snapshot's own id, so "which task is running this row" needs no
+    # second column and no lookup: `ExtractionOut.stream_url` signs exactly this id.
+    transaction.on_commit(
+        lambda: extract_content.apply_async(args=(owner_id, content_id), task_id=str(content_id))
+    )
     return content
 
 
@@ -224,6 +234,21 @@ def start_extraction(
 
 #: The queued row the running strategy is expected to fill (`write_extraction` adopts it).
 _running: ContextVar[DocumentContent | None] = ContextVar("running_content", default=None)
+#: Where a running strategy's progress goes — the Celery task, when one is running this.
+_progress: ContextVar[ProgressCallback | None] = ContextVar("progress", default=None)
+
+
+def report_progress(current: int, total: int) -> None:
+    """A strategy says how far it has come: `report_progress(3, 42)` after page 3 of 42.
+
+    A no-op outside a run and outside a worker, so a strategy may call it unconditionally.
+    In the task it becomes Celery's `PROGRESS` state, which the client follows through
+    `ExtractionOut.stream_url` (`apps/core/tasks.py`) — the row itself is not touched, so a
+    long run writes no version rows until it has something to store.
+    """
+    callback = _progress.get()
+    if callback is not None:
+        callback(current, total)
 
 
 def rebuild_source() -> tuple[bytes, str] | None:
@@ -237,12 +262,16 @@ def rebuild_source() -> tuple[bytes, str] | None:
 
 
 def run_extraction(
-    content_id: uuid.UUID, strategy: ExtractionStrategy | None = None
+    content_id: uuid.UUID,
+    strategy: ExtractionStrategy | None = None,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> DocumentContent:
     """The task body: RUNNING, the strategy, the flip — or FAILED with the error.
 
     The strategy is the registered one the row's `Extractor` names, unless the caller hands
-    one in (`extract_now`; an unregistered strategy in a test). Idempotent for a redelivered
+    one in (`extract_now`; an unregistered strategy in a test). `progress` receives whatever
+    the strategy reports while it works (`report_progress`). Idempotent for a redelivered
     task: a row that is already terminal is returned as it is. Runs inside the tenant context
     the task provides.
     """
@@ -257,6 +286,7 @@ def run_extraction(
     content.started_at = timezone.now()
     content.save(operation=None, sources=[], update_fields=["status", "started_at"])
     token = _running.set(content)
+    reporting = _progress.set(progress)
     try:
         if strategy is None:
             strategy = strategies.strategy_named(content.extractor.name)
@@ -276,6 +306,7 @@ def run_extraction(
         return content
     finally:
         _running.reset(token)
+        _progress.reset(reporting)
     if result.pk != content.pk:
         # The strategy built its own row rather than filling the queued one: retire the
         # placeholder so it does not stay PENDING forever.
@@ -705,7 +736,12 @@ def build(
     place(nodes, extraction, text)
     planned_pages = [_PlannedPage(item=page, number=page.number) for page in extraction.pages]
     report = dating.date_snapshot(
-        nodes, planned_pages, text, hint=hint, metadata_date=metadata_date
+        nodes,
+        planned_pages,
+        text,
+        hint=hint,
+        metadata_date=metadata_date,
+        inferred=extraction.dates,
     )
     dated = dating.check_dating(nodes, planned_pages, report.content)
     if dated:
@@ -826,6 +862,7 @@ def write_snapshot(
             ExtractionStatus.PARTIAL if extraction.failed_pages else ExtractionStatus.SUCCEEDED
         )
         content.finished_at = finished
+        content.title = extraction.title[:500]
         content.set_date(report.content)
         content.save(operation=None, sources=None)
 
@@ -841,7 +878,7 @@ def write_snapshot(
                     meta=page.item.meta,
                     conf_stats=page_conf[page.number],
                     thumbnail=(
-                        store_bytes(owner, page.item.thumbnail, "image/png")
+                        store_bytes(owner, page.item.thumbnail, page_images.IMAGE_MIME)
                         if page.item.thumbnail is not None
                         else None
                     ),
@@ -919,6 +956,11 @@ def switch_current(document: Document, new: DocumentContent) -> None:
         extracted = new.stats.get("meta") if isinstance(new.stats, dict) else None
         if isinstance(extracted, dict):
             locked.meta = {**extracted, **locked.meta}
+        # What the document calls itself beats what the scanner called the file — but never a
+        # name a person typed: the upload's own file name is kept in `meta` to tell them apart.
+        filename = locked.meta.get("filename") if isinstance(locked.meta, dict) else None
+        if new.title and locked.title in ("", filename):
+            locked.title = new.title
         if locked.thumbnail_id is None:
             first = new.pages.exclude(thumbnail=None).order_by("number").first()
             if first is not None:
@@ -926,9 +968,10 @@ def switch_current(document: Document, new: DocumentContent) -> None:
         locked.save(
             operation="switch document content",
             sources=[new],
-            update_fields=["current_content", "meta", "thumbnail"],
+            update_fields=["current_content", "meta", "thumbnail", "title"],
         )
         document.current_content = new
+        document.title = locked.title
         document.meta = locked.meta
         document.thumbnail = locked.thumbnail
         document.version = locked.version

@@ -97,6 +97,9 @@ class Env(BaseSettings):
     EMAIL_URL: str | None = None
     DEFAULT_FROM_EMAIL: str = "noreply@localhost"
 
+    # --- Google Gemini (google-genai; `manage.py playground gemini`). Unset = it refuses to run.
+    GEMINI_API_KEY: str | None = None
+
     # --- Error monitoring (https://sentry.io, NOTES.md §8). Unset = off.
     SENTRY_DSN: str | None = None
     # Share of requests/tasks traced for performance monitoring (0 = report errors only).

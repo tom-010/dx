@@ -216,5 +216,8 @@ def logging_config(*, level: str, fmt: LogFormat, sql: bool = False) -> dict[str
             "urllib3": {"level": "INFO"},
             "kombu": {"level": "INFO"},
             "amqp": {"level": "INFO"},
+            # One line per request at INFO (`manage.py playground`).
+            "httpx": {"level": "WARNING"},
+            "google_genai": {"level": "WARNING"},
         },
     }

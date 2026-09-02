@@ -656,6 +656,11 @@ class DocumentContent(Dated):
         max_length=10, choices=ExtractionStatus, default=ExtractionStatus.PENDING
     )
     is_current = models.BooleanField(default=False)
+    #: What this reading of the document calls it — the last thing the pipeline does is read
+    #: the assembled HTML and name it ("Arztbrief Orthopädie, 05.08.2026"). A file name says
+    #: what a scanner called a file; this says what the document is. `switch_current` puts it
+    #: on the `Document` unless a person has renamed it themselves.
+    title = models.CharField(max_length=500, blank=True)
     html = models.TextField(blank=True)
     text = models.TextField(blank=True)
     conf_stats = SchemaField(ConfStats | None, null=True, blank=True, default=None)
@@ -701,6 +706,7 @@ class DocumentContent(Dated):
             blob=document.source_blob,
             extractor=Extractor.example(),
             status=ExtractionStatus.SUCCEEDED,
+            title="Expenses, March",
             html='<p data-nid="1">Rent, 1200</p>',
             text="Rent, 1200",
             stats={"pages": 0, "nodes": 1, "regions": 0},
@@ -789,6 +795,8 @@ class Page(Dated):
     def candidates(self, x: float, y: float) -> list[PageRegion]:
         """Regions whose shape contains the point: envelope filter in SQL, polygon refine in
         Python, smallest area first."""
+        # A region with no box has NULL bounds, and a NULL comparison is never true: it drops
+        # out here without a special case.
         envelope_hits = self.regions.filter(
             x0__lte=x, x1__gte=x, y0__lte=y, y1__gte=y
         ).select_related("node")
@@ -947,10 +955,13 @@ class Node(Dated):
         in pixels of a render of `width` × `height`."""
         sx = width if width is not None else 1.0
         sy = height if height is not None else 1.0
-        return [
-            Polygon(page=region.page, points=[(x * sx, y * sy) for x, y in region.ring()])
-            for region in self.regions.select_related("page")
-        ]
+        polygons = []
+        for region in self.regions.select_related("page"):
+            ring = region.ring()
+            if ring is None:
+                continue  # the region says which page, not where on it
+            polygons.append(Polygon(page=region.page, points=[(x * sx, y * sy) for x, y in ring]))
+        return polygons
 
     def conf(self) -> ConfStats | None:
         return self.conf_stats
@@ -961,9 +972,14 @@ class Node(Dated):
 
 @tracked
 class PageRegion(OwnedModel):
-    """Where a node is on a page. `polygon` (a closed ring of normalized points) is the truth
-    when set — it handles rotation and skew; the envelope `x0..y1` is derived from it for
-    plain indexed SQL. `polygon IS NULL` ⇒ the region *is* its envelope.
+    """That a node occurs on a page — and, when the extractor knows it, where.
+
+    `polygon` (a closed ring of normalized points) is the truth when set — it handles rotation
+    and skew; the envelope `x0..y1` is derived from it for plain indexed SQL, and
+    `polygon IS NULL` ⇒ the region *is* its envelope. **The geometry as a whole is optional**:
+    an extractor that reads a page's text without laying it out (a PDF's own text layer, an
+    HTML source, a model asked only for structure) still records which page a node is on, and
+    a region with no box simply never wins a `hit()`.
 
     `words` holds the word boxes with their global text offsets and confidence; `conf_stats`
     summarizes them. `detect_conf` is a different quantity — the layout model's belief in the
@@ -972,10 +988,10 @@ class PageRegion(OwnedModel):
 
     node = models.ForeignKey(Node, on_delete=models.CASCADE, related_name="regions")
     page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name="regions")
-    x0 = models.FloatField()
-    y0 = models.FloatField()
-    x1 = models.FloatField()
-    y1 = models.FloatField()
+    x0 = models.FloatField(null=True, blank=True)
+    y0 = models.FloatField(null=True, blank=True)
+    x1 = models.FloatField(null=True, blank=True)
+    y1 = models.FloatField(null=True, blank=True)
     polygon = models.JSONField(null=True, blank=True)
     words = models.JSONField(null=True, blank=True)
     conf_stats = SchemaField(ConfStats | None, null=True, blank=True, default=None)
@@ -989,11 +1005,16 @@ class PageRegion(OwnedModel):
     class Meta(OwnedModel.Meta):
         ordering = ["page__number", "order"]
         constraints = [
+            # Either there is a box and it is a unit-square box, or there is none at all.
             models.CheckConstraint(
-                condition=Q(x0__gte=0, x1__lte=1, x0__lte=models.F("x1")), name="region_x_in_unit"
+                condition=Q(x0__isnull=True, x1__isnull=True)
+                | Q(x0__gte=0, x1__lte=1, x0__lte=models.F("x1")),
+                name="region_x_in_unit",
             ),
             models.CheckConstraint(
-                condition=Q(y0__gte=0, y1__lte=1, y0__lte=models.F("y1")), name="region_y_in_unit"
+                condition=Q(y0__isnull=True, y1__isnull=True)
+                | Q(y0__gte=0, y1__lte=1, y0__lte=models.F("y1")),
+                name="region_y_in_unit",
             ),
         ]
 
@@ -1015,18 +1036,40 @@ class PageRegion(OwnedModel):
             conf_stats=ConfStats.of([0.98, 0.91]),
         )
 
-    def ring(self) -> list[Point]:
+    @property
+    def located(self) -> bool:
+        """Whether this region knows *where* on the page it is, not only that it is there."""
+        return self.box() is not None
+
+    def box(self) -> tuple[float, float, float, float] | None:
+        """The envelope, or None for a region that only says which page it is on."""
+        if self.x0 is None or self.y0 is None or self.x1 is None or self.y1 is None:
+            return None
+        return (self.x0, self.y0, self.x1, self.y1)
+
+    def ring(self) -> list[Point] | None:
         if self.polygon:
             return [(float(x), float(y)) for x, y in self.polygon]
-        return [(self.x0, self.y0), (self.x1, self.y0), (self.x1, self.y1), (self.x0, self.y1)]
+        box = self.box()
+        if box is None:
+            return None
+        x0, y0, x1, y1 = box
+        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
 
     def contains(self, x: float, y: float) -> bool:
-        if not (self.x0 <= x <= self.x1 and self.y0 <= y <= self.y1):
+        box = self.box()
+        ring = self.ring()
+        if box is None or ring is None:
             return False
-        return point_in_ring(self.ring(), x, y) if self.polygon else True
+        x0, y0, x1, y1 = box
+        if not (x0 <= x <= x1 and y0 <= y <= y1):
+            return False
+        return point_in_ring(ring, x, y) if self.polygon else True
 
     def area(self) -> float:
-        return ring_area(self.ring())
+        """The area a `hit()` compares; a region with no box never wins one."""
+        ring = self.ring()
+        return ring_area(ring) if ring is not None else float("inf")
 
     def word_list(self) -> list[Word]:
         return [Word(*entry) for entry in (self.words or [])]
