@@ -97,7 +97,12 @@ def minimal_kwargs(model: type[OwnedModel], owner: User) -> dict[str, object]:
 def create_owned(model: type[OwnedModel], owner: User) -> OwnedModel:
     kwargs = minimal_kwargs(model, owner)  # may create the rows this one points at
     with acting_as(owner):
-        return model.objects.create(owner=owner, **kwargs)
+        # A fixture row: built from nothing, by nobody. Every write states that much
+        # (`apps/core/models.py::VersionedModel.save`). Constructed and saved rather than
+        # `create()`d: mypy matches a `**dict[str, object]` against the keyword parameters too.
+        row = model(owner=owner, **kwargs)
+        row.save(operation=None, sources=[], force_insert=True)
+        return row
 
 
 def guc() -> str:
@@ -173,7 +178,7 @@ def test_with_check_rejects_foreign_owner(
 
     with acting_as(user):
         with pytest.raises(DatabaseError, match="row-level security"), transaction.atomic():
-            model.objects.create(owner=other_user, **foreign)
+            model(owner=other_user, **foreign).save(operation=None, sources=[], force_insert=True)
         with pytest.raises(DatabaseError, match="row-level security"), transaction.atomic():
             with scopes_disabled():
                 model.objects.filter(pk=mine.pk).update(owner=other_user)
@@ -184,11 +189,11 @@ def test_with_check_rejects_foreign_owner(
 def test_save_fills_owner_from_the_context(user: User) -> None:
     with acting_as(user):
         dataset = Dataset(name="implicit")
-        dataset.save()
+        dataset.save(operation=None, sources=[])
         assert dataset.owner == user
 
     with pytest.raises(NoTenantContext, match="tenant_context"):
-        Dataset(name="orphan").save()
+        Dataset(name="orphan").save(operation=None, sources=[])
 
 
 def test_scope_needs_the_users_primary_key(user: User) -> None:
@@ -216,7 +221,9 @@ def test_a_failing_block_leaves_no_context_behind(user: User) -> None:
     assert db.current_user_id.get() is None
 
     with pytest.raises(DatabaseError, match="row-level security"), acting_as(user):
-        Dataset.objects.create(owner=User.objects.create_user("carol"), name="foreign")
+        Dataset.create(
+            operation=None, sources=[], owner=User.objects.create_user("carol"), name="foreign"
+        )
     assert guc() == ""  # a database error rolled the block back, including the SET LOCAL
 
 
@@ -644,7 +651,7 @@ def test_owned_upload_path_needs_an_owned_instance_with_an_owner(user: User) -> 
         assert owned_upload_path(Document(), "x.bin").startswith(f"documents/{user.pk}/")
         # The context also fills in the owner when a model instance is saved directly.
         document = Document(name="x.bin", size=1, file=ContentFile(b"x", name="x.bin"))
-        document.save()
+        document.save(operation=None, sources=[])
         assert document.owner == user
         assert str(document.file.name).startswith(f"documents/{user.pk}/")
 

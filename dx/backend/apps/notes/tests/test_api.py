@@ -127,7 +127,7 @@ def test_reordering_tags_is_not_a_change(user: User) -> None:
     with acting_as(user):
         note = create_note_for(user, title="x", tags="walk, birds")
         note.tags = normalize_tags("birds,walk")
-        note.save()
+        note.save(operation=None, sources=[])
         note.refresh_from_db()
 
         assert note.tags == "birds, walk"

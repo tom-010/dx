@@ -1,12 +1,15 @@
 import secrets
 import uuid
+from datetime import timedelta
 from typing import NewType
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
 
+from apps.core.examples import unique
 from apps.core.models import ActiveManager, VersionedModel
+from config.env import env
 
 ApiTokenId = NewType("ApiTokenId", uuid.UUID)
 RefreshTokenId = NewType("RefreshTokenId", uuid.UUID)
@@ -27,6 +30,17 @@ class User(AbstractUser):
 
     class Meta(AbstractUser.Meta):
         ordering = ["username"]
+
+    @staticmethod
+    def example() -> User:
+        # No password: an example user is something to own rows, not something to log in as
+        # (`create_user` is that). The username is unique table-wide, hence `unique()`.
+        return User(
+            username=unique("example"),
+            email="example@example.com",
+            first_name="Example",
+            last_name="User",
+        )
 
 
 def generate_token() -> str:
@@ -60,16 +74,20 @@ class ApiToken(VersionedModel):
             )
         ]
 
+    @staticmethod
+    def example() -> ApiToken:
+        return ApiToken(user=User.example(), name="CI deploy key")
+
     def __str__(self) -> str:
         return f"{self.user} - {self.name}"
 
     def revoke(self) -> None:
         self.is_active = False
-        self.save(update_fields=["is_active"])  # `modified` is set by the bump_version trigger
+        self.save(operation=None, sources=[], update_fields=["is_active"])
 
     def touch(self) -> None:
         self.last_used = timezone.now()
-        self.save(update_fields=["last_used"])
+        self.save(operation=None, sources=[], update_fields=["last_used"])
 
 
 class RefreshToken(VersionedModel):
@@ -87,9 +105,16 @@ class RefreshToken(VersionedModel):
     expires = models.DateTimeField()
     is_active = models.BooleanField(default=True)
 
+    @staticmethod
+    def example() -> RefreshToken:
+        return RefreshToken(
+            user=User.example(),
+            expires=timezone.now() + timedelta(days=env.REFRESH_TOKEN_LIFETIME_DAYS),
+        )
+
     def __str__(self) -> str:
         return f"{self.user} - {self.pk}"
 
     def revoke(self) -> None:
         self.is_active = False
-        self.save(update_fields=["is_active"])  # `modified` is set by the bump_version trigger
+        self.save(operation=None, sources=[], update_fields=["is_active"])

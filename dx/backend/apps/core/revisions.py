@@ -392,7 +392,8 @@ def group_by_context(revisions: list[Revision]) -> list[RevisionGroup]:
 
 
 def context_sources(context_ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
-    """Where each context came from ("api", "task", ...) — never anything tenant-identifying.
+    """Where each context came from ("api", "task", ...) or which operation it was — never
+    anything tenant-identifying.
 
     `pghistory_context` is a shared table, so only the non-identifying `source` key is read
     back; see the "Context" section of `apps/core/history.py`.
@@ -401,3 +402,17 @@ def context_sources(context_ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
         return {}
     rows = pghistory.models.Context.objects.filter(pk__in=context_ids)
     return {row.pk: str(row.metadata.get("source", "unknown")) for row in rows}
+
+
+def context_descriptions(context_ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """The `operation_description` a write gave, per context — empty for contexts without one.
+
+    The optional longer form of the operation's name (`VersionedModel.save`): what the step did
+    in this particular run, for the reviewer reading the lineage graph.
+    """
+    if not context_ids:
+        return {}
+    rows = pghistory.models.Context.objects.filter(pk__in=context_ids)
+    return {
+        row.pk: str(row.metadata["description"]) for row in rows if row.metadata.get("description")
+    }

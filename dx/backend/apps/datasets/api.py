@@ -20,7 +20,7 @@ route already owns the plain name (the route name is the OpenAPI operation id, `
 
 import unicodedata
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from django.db.models import Count, Q, QuerySet
 from django.http import HttpRequest
@@ -30,7 +30,7 @@ from ninja.pagination import PageNumberPagination, paginate
 
 from apps.accounts.api import current_user
 from apps.accounts.models import User
-from apps.core import lineage
+from apps.core.models import VersionedModel
 from apps.core.schemas import StrictSchema
 from apps.datasets.models import Dataset, DatasetId, DatasetOptions, DatasetTag, Tag
 from apps.documents.api import get_document_for
@@ -152,8 +152,10 @@ def set_dataset_tags(user: User, dataset: Dataset, names: Iterable[str]) -> None
         # keeps the user's spelling, and a tag that was retired earlier is deliberately *not*
         # revived — its version chain ended, and a new row starts a new one.
         tag = Tag.objects.for_user(user).filter(name__iexact=name).first()
-        tag = tag or Tag.objects.create(owner=user, name=name)
-        DatasetTag.objects.create(owner=user, dataset=dataset, tag=tag)
+        # A tag and its link are user input and structure, not derived data: no sources, and no
+        # operation of their own — the request or the step that set them is already the context.
+        tag = tag or Tag.create(operation=None, sources=[], owner=user, name=name)
+        DatasetTag.create(operation=None, sources=[], owner=user, dataset=dataset, tag=tag)
 
     prune_unused_tags(user)
 
@@ -185,9 +187,22 @@ def create_dataset_for(
     row_count: int = 0,
     options: DatasetOptions | None = None,
     tags: Iterable[str] = (),
+    operation: str | None = None,
+    sources: Sequence[VersionedModel] = (),
+    operation_description: str | None = None,
 ) -> Dataset:
-    """Create a dataset with its tags — POST and the document import both land here."""
-    dataset = Dataset.objects.create(
+    """Create a dataset with its tags — POST and the document import both land here.
+
+    The two callers differ in exactly one way, which is why the lineage keywords are parameters
+    rather than a `deriving()` block around the call: POST creates a dataset out of what the user
+    typed (the defaults — no sources, no operation, the request context is the whole story),
+    while the import derives one from a document and says so. A block would also have caught the
+    tag rows written below, which are not derived from the document.
+    """
+    dataset = Dataset.create(
+        operation=operation,
+        sources=sources,
+        operation_description=operation_description,
         owner=user,
         name=name,
         description=description,
@@ -269,16 +284,17 @@ def import_dataset_for(
             f"{', '.join(IMPORTABLE_SUFFIXES)})",
         )
     settings = options or DatasetOptions()
-    dataset = create_dataset_for(
+    return create_dataset_for(
         user,
         name=name or document.name.rsplit(".", 1)[0][:200] or "Imported dataset",
         description=f"Imported from {document.name}",
         row_count=count_rows(document, settings),
         options=settings,
         tags=tags,
+        operation="import dataset from document",
+        sources=[document],
+        operation_description=f"counted the rows of {document.name} with {settings.delimiter!r}",
     )
-    lineage.record_derivation(dataset, sources=[document])
-    return dataset
 
 
 # --- Endpoints ----------------------------------------------------------------------------------
@@ -337,7 +353,7 @@ def update_dataset(request: HttpRequest, dataset_id: uuid.UUID, payload: Dataset
     user = current_user(request)
     dataset = get_dataset_for(user, DatasetId(dataset_id))
     dataset.set_payload(payload, exclude=TAG_FIELD)  # tags live in DatasetTag, not on this row
-    dataset.save()
+    dataset.save(operation=None, sources=[])  # a person edited it; the request context says so
     set_dataset_tags(user, dataset, payload.tags)
     return dataset
 
@@ -351,7 +367,7 @@ def patch_dataset(request: HttpRequest, dataset_id: uuid.UUID, payload: DatasetP
     # Only save the row when a column of it actually changed: a PATCH that touches nothing but
     # tags would otherwise bump the dataset's version and add an empty revision to its history.
     if payload.model_fields_set - TAG_FIELD:
-        dataset.save()
+        dataset.save(operation=None, sources=[])
     if payload.tags is not None:
         set_dataset_tags(user, dataset, payload.tags)
     return dataset

@@ -202,7 +202,7 @@ def test_orm_save_versions_and_bumps(user: User) -> None:
         assert dataset.version == 1
 
         dataset.name = "second"
-        dataset.save()
+        dataset.save(operation=None, sources=[])
         dataset.refresh_from_db()
 
         assert dataset.version == 2
@@ -254,7 +254,7 @@ def test_python_cannot_forge_version_or_modified(user: User) -> None:
         dataset = create_dataset_for(user, name="x")
         dataset.version = 99
         dataset.modified = dataset.created
-        dataset.save()
+        dataset.save(operation=None, sources=[])
         dataset.refresh_from_db()
     assert dataset.version == 2
 
@@ -330,9 +330,13 @@ def test_forward_fk_still_resolves_to_a_soft_deleted_row(user: User) -> None:
 
 
 def test_soft_deleted_rows_do_not_reserve_unique_values(user: User) -> None:
-    token = ApiToken.objects.create(user=user, name="ci", token="tk_" + "a" * 20)
+    token = ApiToken.create(
+        operation=None, sources=[], user=user, name="ci", token="tk_" + "a" * 20
+    )
     token.soft_delete()
-    again = ApiToken.objects.create(user=user, name="ci again", token="tk_" + "a" * 20)
+    again = ApiToken.create(
+        operation=None, sources=[], user=user, name="ci again", token="tk_" + "a" * 20
+    )
     assert again.pk != token.pk
 
 
@@ -344,7 +348,7 @@ def test_history_lists_every_version_oldest_first(user: User) -> None:
     with acting_as(user):
         dataset = create_dataset_for(user, name="first")
         dataset.name = "second"
-        dataset.save()
+        dataset.save(operation=None, sources=[])
         Dataset.objects.filter(pk=dataset.pk).update(name="third")
 
         past = dataset.history()
@@ -365,7 +369,7 @@ def test_to_object_returns_the_tracked_model_and_leaves_the_live_row_alone(user:
         )
         dataset.name = "second"
         dataset.options = DatasetOptions()
-        dataset.save()
+        dataset.save(operation=None, sources=[])
 
         original = dataset.history()[0].to_object()
 
@@ -386,7 +390,7 @@ def test_to_object_rebuilds_a_file_field_against_the_tracked_model(user: User) -
         )
         stored_key = document.file.name
         document.name = "renamed.pdf"
-        document.save()
+        document.save(operation=None, sources=[])
 
         original = document.history()[0].to_object()
 
@@ -400,9 +404,9 @@ def test_saving_a_past_version_restores_it_as_a_new_version(user: User) -> None:
     with acting_as(user):
         dataset = create_dataset_for(user, name="first")
         dataset.name = "second"
-        dataset.save()
+        dataset.save(operation=None, sources=[])
 
-        dataset.history()[0].to_object().save()
+        dataset.history()[0].to_object().save(operation=None, sources=[])
 
         dataset.refresh_from_db()
         assert (dataset.name, dataset.version) == ("first", 3)
@@ -420,7 +424,9 @@ def test_a_soft_delete_is_visible_on_the_version_it_happened_in(user: User) -> N
 
 
 def test_history_of_an_unversioned_model_says_which_rule_applies(user: User) -> None:
-    token = ApiToken.objects.create(user=user, name="ci", token="tk_" + "a" * 20)
+    token = ApiToken.create(
+        operation=None, sources=[], user=user, name="ci", token="tk_" + "a" * 20
+    )
     with pytest.raises(history.NotTracked, match="not versioned"):
         token.history()
 
@@ -502,7 +508,7 @@ def test_lineage_pins_the_source_version_and_ignores_later_edits(user: User) -> 
         (edge,) = lineage.record_derivation(target, sources=[source])
 
         source.name = "renamed since"
-        source.save()
+        source.save(operation=None, sources=[])
         source.refresh_from_db()
 
         assert source.version == 2
@@ -543,7 +549,7 @@ def test_lineage_records_one_edge_per_source(user: User) -> None:
 def test_lineage_needs_a_versioned_source(user: User) -> None:
     with acting_as(user):
         target = create_dataset_for(user, name="t")
-        token = ApiToken.objects.create(user=user, name="unversioned")
+        token = ApiToken.create(operation=None, sources=[], user=user, name="unversioned")
         with pytest.raises(history.NotTracked, match="not versioned"):
             lineage.record_derivation(target, sources=[token])
 
@@ -581,7 +587,7 @@ def test_lineage_spans_models(user: User) -> None:
         (edge,) = lineage.record_derivation(dataset, sources=[document])
 
         document.name = "renamed.pdf"
-        document.save()
+        document.save(operation=None, sources=[])
 
         assert edge.source_type == event_type(Document)
         assert edge.target_type == event_type(Dataset)
@@ -621,7 +627,7 @@ def test_sources_survive_a_later_edit_of_the_derived_row(user: User) -> None:
         lineage.record_derivation(target, sources=[source])
 
         target.name = "derived, renamed"
-        target.save()
+        target.save(operation=None, sources=[])
 
         assert lineage.sources_of(target).count() == 0  # v2 consumed nothing
         assert [v.to_object().name for v in target.sources(Dataset)] == ["the source"]
@@ -633,7 +639,7 @@ def test_a_version_names_what_that_version_consumed(user: User) -> None:
         target = create_dataset_for(user, name="derived")
         lineage.record_derivation(target, sources=[source])
         target.name = "renamed"
-        target.save()
+        target.save(operation=None, sources=[])
 
         first, second = target.history()
 
@@ -652,7 +658,7 @@ def test_a_source_version_says_whether_it_is_still_current(user: User) -> None:
         assert target.sources()[0].is_current() is True
 
         source.name = "renamed since"
-        source.save()
+        source.save(operation=None, sources=[])
 
         assert target.sources()[0].is_current() is False
         assert lineage.stale_derivations(source).count() == 1
@@ -665,14 +671,16 @@ def test_one_source_version_feeding_two_versions_is_listed_once(user: User) -> N
         target = create_dataset_for(user, name="derived")
         lineage.record_derivation(target, sources=[source])
         target.name = "renamed"
-        target.save()
+        target.save(operation=None, sources=[])
         lineage.record_derivation(target, sources=[source])  # the same source version again
 
         assert [v.version for v in target.sources()] == [1]
 
 
 def test_lineage_of_an_unversioned_model_says_so(user: User) -> None:
-    token = ApiToken.objects.create(user=user, name="ci", token="tk_" + "b" * 20)
+    token = ApiToken.create(
+        operation=None, sources=[], user=user, name="ci", token="tk_" + "b" * 20
+    )
     with pytest.raises(history.NotTracked, match="no lineage"):
         token.sources()
 
@@ -786,7 +794,7 @@ def test_history_endpoint_links_to_the_source_version_it_consumed(
         derived = create_dataset_for(user, name="derived")
         lineage.record_derivation(derived, sources=[source])
         source.name = "renamed since"
-        source.save()
+        source.save(operation=None, sources=[])
 
     body = auth_client.get(f"/api/history/dataset/{derived.pk}").json()
 
@@ -980,7 +988,7 @@ def test_a_saved_instance_reports_the_version_the_database_gave_it(user: User) -
         before = dataset.modified
 
         dataset.name = "second"
-        dataset.save()
+        dataset.save(operation=None, sources=[])
 
         assert dataset.version == 2  # not the stale 1 the instance was holding
         assert dataset.modified > before

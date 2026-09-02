@@ -68,6 +68,9 @@ way `Model.objects` hides them from the app.">{{ hidden }} retired hidden</a>
     <thead>
       <tr>
         <th scope="col">Row</th>
+        <th scope="col" title="The operation that wrote the version this row is at — the step a
+data reviewer follows. Blank where a person made the write and the request context is the whole
+story.">Operation</th>
         <th scope="col">Version</th>
         <th scope="col">Written</th>
         <th scope="col">Changed</th>
@@ -78,6 +81,7 @@ way `Model.objects` hides them from the app.">{{ hidden }} retired hidden</a>
       {% for row in rows %}
         <tr>
           <th scope="row"><a href="{{ row.url }}">{{ row.label }}</a></th>
+          <td>{% if row.operation %}{{ row.operation }}{% else %}<span class="empty">—</span>{% endif %}</td>
           <td>{% if row.version %}v{{ row.version }}{% else %}<span class="empty">—</span>{% endif %}</td>
           <td>
             {% if row.at %}<time datetime="{{ row.at|date:'c' }}">{{ row.at|date:"Y-m-d H:i" }}</time>
@@ -91,7 +95,7 @@ way `Model.objects` hides them from the app.">{{ hidden }} retired hidden</a>
         </tr>
       {% empty %}
         <tr>
-          <td colspan="5" class="empty">
+          <td colspan="6" class="empty">
             {% if filter.active %}No rows in that date range.{% else %}No rows.{% endif %}
           </td>
         </tr>

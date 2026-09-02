@@ -128,8 +128,11 @@ def issue_access_token(user: User, *, lifetime: timedelta | None = None) -> str:
 def issue_refresh_token(user: User) -> str:
     """JWT bound to a new `RefreshToken` row (REFRESH_TOKEN_LIFETIME_DAYS)."""
     now = datetime.now(UTC)
-    session = RefreshToken.objects.create(
-        user=user, expires=now + timedelta(days=env.REFRESH_TOKEN_LIFETIME_DAYS)
+    session = RefreshToken.create(
+        operation=None,
+        sources=[],
+        user=user,
+        expires=now + timedelta(days=env.REFRESH_TOKEN_LIFETIME_DAYS),
     )
     payload = {
         "token_type": "refresh",
@@ -289,7 +292,10 @@ def list_api_tokens(request: HttpRequest) -> list[ApiToken]:
 
 @router.post("/auth/api-tokens", response={201: ApiTokenOut})
 def create_api_token(request: HttpRequest, payload: ApiTokenIn) -> Status[ApiToken]:
-    return Status(201, ApiToken.objects.create(user=current_user(request), name=payload.name))
+    token = ApiToken.create(
+        operation=None, sources=[], user=current_user(request), name=payload.name
+    )
+    return Status(201, token)
 
 
 @router.delete("/auth/api-tokens/{token_id}", response={204: None})

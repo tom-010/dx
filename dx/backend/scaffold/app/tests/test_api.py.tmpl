@@ -6,6 +6,7 @@ from django.test import Client
 from ninja.errors import HttpError
 
 from apps.accounts.models import User
+from apps.core.examples import save_example
 from apps.core.testing import acting_as
 from apps.${name}.api import get_${model}_for
 from apps.${name}.models import ${Model}, ${Model}Id
@@ -29,7 +30,7 @@ def test_create_and_list(auth_client: Client) -> None:
 
 def test_get_put_patch_delete(auth_client: Client, user: User) -> None:
     with acting_as(user):  # writes need a tenant context; requests get it from the middleware
-        ${model} = ${Model}.objects.create(owner=user, name="Temp", description="d")
+        ${model} = save_example(${Model}.example())  # a filled-in row: models.py::example
     url = f"/api/${name}/{${model}.pk}"
 
     assert auth_client.get(url).status_code == 200
@@ -49,7 +50,7 @@ def test_other_users_get_404(
     user: User, other_user: User, client_for: Callable[[User], Client]
 ) -> None:
     with acting_as(user):
-        ${model} = ${Model}.objects.create(owner=user, name="mine")
+        ${model} = save_example(${Model}.example())
     other = client_for(other_user)
 
     assert other.get("/api/${name}").json() == {"items": [], "count": 0}

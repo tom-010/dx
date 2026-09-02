@@ -87,9 +87,10 @@ import pghistory
 import pghistory.models
 import pgtrigger
 from django.conf import settings
-from django.db import models
+from django.db import connection, models
 from django.db.models import Func
 from django.db.models.fields.files import FieldFile
+from pghistory import runtime
 
 from config.env import BASE_DIR
 
@@ -527,16 +528,61 @@ def _check_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def _forget_injected_context() -> None:
+    """Stop attributing later writes to the step that just ended.
+
+    pghistory injects its context with `set_config(..., true)` — **transaction-local** — and only
+    re-injects before a write while a context is open. So the last label set inside a transaction
+    outlives its block: with `tenant_context` holding one transaction open around a whole request
+    or command, the next unlabelled write would be recorded under a step that had already
+    finished. Blanking the setting makes the trigger's cast to `uuid` fail into its own
+    `EXCEPTION WHEN OTHERS` and return NULL, which is precisely "this write had no context".
+
+    Only the outermost block needs this: a nested one restores the outer context, and the next
+    write injects that.
+    """
+    if not connection.in_atomic_block:
+        return  # the transaction is over; the setting went with it
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT set_config('pghistory.context_id', '', true), "
+            "set_config('pghistory.context_metadata', '', true)"
+        )
+
+
 @contextmanager
 def history_context(source: str, **metadata: str) -> Iterator[None]:
     """Group everything written inside the block under one context id.
 
     Background jobs and management commands must open one explicitly, or their version rows are
     attributed to nothing at all — and with most work happening off-request here, that is the
-    common path rather than the edge case. Wrap the entrypoint, not the individual writes.
+    common path rather than the edge case. Wrap the entrypoint; a finer step inside it gets its
+    own block, or names itself on the write (`save(context="…")`, `apps/core/models.py`).
+
+    **Nesting opens a new context, it does not merge.** pghistory's own `context()` folds a nested
+    call's metadata into the active context — so a step labelled inside a request would relabel
+    every write of that request. A step is its own run: inside an outer block this swaps in a
+    fresh context for the duration and puts the outer one back afterwards. The hook pghistory
+    installed for the outer block reads `_tracker.value` at execute time, so the swap is all it
+    takes; the context row itself is upserted by the first tracked write, as always.
     """
-    with pghistory.context(source=source, **_check_metadata(metadata)):
+    checked = _check_metadata(metadata)
+    outer = getattr(runtime._tracker, "value", None)
+    if outer is None:
+        try:
+            with pghistory.context(source=source, **checked):
+                yield
+        finally:
+            _forget_injected_context()
+        return
+
+    runtime._tracker.value = runtime.Context(
+        id=uuid.uuid4(), metadata={"source": source, **checked}
+    )
+    try:
         yield
+    finally:
+        runtime._tracker.value = outer
 
 
 class HistoryMiddleware:

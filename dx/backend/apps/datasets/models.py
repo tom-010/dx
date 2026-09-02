@@ -6,6 +6,7 @@ from django_pydantic_field import SchemaField
 from pydantic import BaseModel as PydanticModel
 from pydantic import ConfigDict, Field
 
+from apps.core.examples import unique
 from apps.core.history import tracked
 from apps.core.models import OwnedModel
 
@@ -47,6 +48,15 @@ class Dataset(OwnedModel):
     class Meta(OwnedModel.Meta):
         pass
 
+    @staticmethod
+    def example() -> Dataset:
+        return Dataset(
+            name="Quarterly revenue",
+            description="Rows imported from the finance export.",
+            row_count=3,
+            options=DatasetOptions(delimiter=";"),
+        )
+
     def tag_names(self) -> list[str]:
         """This dataset's tags, sorted. Reads `tag_links` — the owned related manager, which
         leaves out soft-deleted links — so never `self.tags`."""
@@ -71,6 +81,12 @@ class Tag(OwnedModel):
             )
         ]
 
+    @staticmethod
+    def example() -> Tag:
+        # The name is unique per owner, so it cannot be a constant: two examples are saved side
+        # by side often enough that the collision would be the first thing anyone hits.
+        return Tag(name=unique("finance"))
+
 
 @tracked
 class DatasetTag(OwnedModel):
@@ -94,6 +110,12 @@ class DatasetTag(OwnedModel):
             )
         ]
 
+    @staticmethod
+    def example() -> DatasetTag:
+        # A join needs both sides, so the example builds both — `save_example` writes the
+        # dataset and the tag first and this row last (apps/core/examples.py).
+        return DatasetTag(dataset=Dataset.example(), tag=Tag.example())
+
     def __str__(self) -> str:
         return f"{self.dataset} · {self.tag}"
 
@@ -102,10 +124,18 @@ class DatasetTag(OwnedModel):
 class ModelA(OwnedModel):
     name = models.CharField(max_length=256)
 
+    @staticmethod
+    def example() -> ModelA:
+        return ModelA(name="Source A")
+
 
 @tracked
 class ModelB(OwnedModel):
     name = models.CharField(max_length=256)
+
+    @staticmethod
+    def example() -> ModelB:
+        return ModelB(name="Derived B")
 
     def __str__(self) -> str:
         return self.name

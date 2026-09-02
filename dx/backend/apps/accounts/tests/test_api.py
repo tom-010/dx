@@ -120,7 +120,7 @@ def test_refresh_rejects_expired_or_inactive_sessions(client: Client, user: User
     tokens = _login(client)
     session = RefreshToken.objects.get(user=user)
     session.expires = datetime.now(UTC) - timedelta(seconds=1)
-    session.save()
+    session.save(operation=None, sources=[])
     assert _refresh(client, tokens["refresh_token"])[0] == 401
 
     tokens = _login(client)  # also purges the expired row

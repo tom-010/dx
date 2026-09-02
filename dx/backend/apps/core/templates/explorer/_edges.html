@@ -6,6 +6,7 @@ the same either way: the far end is always a *version*, and that is where it lin
   <caption>
     {{ group.source }} ·
     <time datetime="{{ group.at|date:'c' }}">{{ group.at|date:"Y-m-d H:i" }}</time>
+    {% if group.description %}<br><q>{{ group.description }}</q>{% endif %}
   </caption>
   <thead>
     <tr>

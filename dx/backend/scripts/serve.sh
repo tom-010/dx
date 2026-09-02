@@ -4,6 +4,7 @@
 # both; when one of them exits (e.g. "That port is already in use.") the other is stopped too.
 #   HOST=… PORT=… ./scripts/serve.sh   # bind address (default 127.0.0.1:8000)
 #   WORKER=0 ./scripts/serve.sh        # Django only (run scripts/celery.sh elsewhere)
+#   REMAP_SIGTERM= ./scripts/serve.sh  # warm worker shutdown instead of the cold one below
 # Output is prefixed with [django] / [worker]; unprefixed copies go to logs/backend.log and
 # logs/celery.log (repo root; each file starts fresh on every start).
 set -euo pipefail
@@ -32,7 +33,10 @@ pids=()
     | tee -a -i "$LOG" | prefix "[django]"; } &
 pids+=("$!")
 if [ "${WORKER:-1}" != "0" ]; then
-  { "$ROOT/scripts/celery.sh" 2>&1 | prefix "[worker]"; } &
+  # Cold worker shutdown: Ctrl+C (and every reload restart) drops the running task instead of
+  # waiting up to --stop-timeout for it; the task goes straight back onto the queue. Celery reads
+  # REMAP_SIGTERM (billiard) and handles the reloader's SIGTERM as SIGQUIT.
+  { REMAP_SIGTERM="${REMAP_SIGTERM-SIGQUIT}" "$ROOT/scripts/celery.sh" 2>&1 | prefix "[worker]"; } &
   pids+=("$!")
 fi
 

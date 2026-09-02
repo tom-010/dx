@@ -28,8 +28,12 @@
     <dl>
       <dt>written</dt>
       <dd><time datetime="{{ at|date:'c' }}">{{ at|date:"Y-m-d H:i:s" }}</time></dd>
-      <dt>by</dt>
-      <dd>{{ written_by }} <small>({{ event_label }})</small></dd>
+      <dt title="The operation that produced this version — the step's name, and its
+description of what it did in this run when the write gave one.">operation</dt>
+      <dd>
+        {{ written_by }} <small>({{ event_label }})</small>
+        {% if description %}<br><q>{{ description }}</q>{% endif %}
+      </dd>
       <dt title="Two different questions: whether the row was already deleted when this
 version was written, and whether this version is still the row's current state.">state</dt>
       <dd>

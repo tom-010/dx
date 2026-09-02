@@ -33,7 +33,7 @@ def test_merge_records_one_edge_per_source(user: User) -> None:
         first = create_note_for(user, title="Monday", body="ran 5k")
         second = create_note_for(user, title="Tuesday", body="rest day")
         second.body = "rest day (edited)"
-        second.save()
+        second.save(operation=None, sources=[])
 
         merged = merge(user, first, second, title="This week")
 
@@ -63,7 +63,7 @@ def test_the_merge_still_names_the_version_it_read_after_an_edit(user: User) -> 
 
         first.title = "Recipe v2"
         first.body = "two eggs"
-        first.save()
+        first.save(operation=None, sources=[])
 
         assert source_titles(merged) == ["Notes", "Recipe"]  # not "Recipe v2"
         was = next(v for v in merged.sources(Note) if v.object_id == first.pk)
@@ -178,7 +178,7 @@ def test_the_graph_marks_edges_whose_source_moved_on(user: User) -> None:
     with acting_as(user):
         notes = build_showcase(user)
         notes["tuesday"].body = "rest day, revised"
-        notes["tuesday"].save()
+        notes["tuesday"].save(operation=None, sources=[])
 
         graph = lineage.graph(notes["week"], depth=3)
         stale = {edge.source_id for edge in graph.edges if edge.is_stale}

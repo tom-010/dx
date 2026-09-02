@@ -29,7 +29,7 @@ from ninja.pagination import PageNumberPagination, paginate
 
 from apps.accounts.api import current_user
 from apps.accounts.models import User
-from apps.core import lineage
+from apps.core.models import VersionedModel
 from apps.core.schemas import StrictSchema
 from apps.notes.models import Note, NoteId
 
@@ -103,8 +103,30 @@ def get_note_for(user: User, note_id: NoteId) -> Note:
         raise HttpError(404, "Note not found") from None
 
 
-def create_note_for(user: User, *, title: str, body: str = "", tags: str = "") -> Note:
-    return Note.objects.create(owner=user, title=title, body=body, tags=normalize_tags(tags))
+def create_note_for(
+    user: User,
+    *,
+    title: str,
+    body: str = "",
+    tags: str = "",
+    operation: str | None = None,
+    sources: Sequence[VersionedModel] = (),
+    operation_description: str | None = None,
+) -> Note:
+    """Create a note — POST and `merge_notes` both land here.
+
+    The lineage keywords default to "a person typed this", which is what POST means; merging
+    passes the notes it consumed and names the step.
+    """
+    return Note.create(
+        operation=operation,
+        sources=sources,
+        operation_description=operation_description,
+        owner=user,
+        title=title,
+        body=body,
+        tags=normalize_tags(tags),
+    )
 
 
 def merge_notes_for(user: User, note_ids: Sequence[NoteId], *, title: str) -> Note:
@@ -122,9 +144,15 @@ def merge_notes_for(user: User, note_ids: Sequence[NoteId], *, title: str) -> No
 
     sources = [get_note_for(user, note_id) for note_id in unique]
     body = MERGE_SEPARATOR.join(f"## {note.title}\n\n{note.body}".strip() for note in sources)
-    merged = create_note_for(user, title=title, body=body, tags=merge_tags(sources))
-    lineage.record_derivation(merged, sources=list(sources))
-    return merged
+    return create_note_for(
+        user,
+        title=title,
+        body=body,
+        tags=merge_tags(sources),
+        operation="merge notes",
+        sources=list(sources),
+        operation_description=f"joined {len(sources)} notes, newest heading first",
+    )
 
 
 # --- Endpoints ----------------------------------------------------------------------------------
@@ -169,7 +197,7 @@ def update_note(request: HttpRequest, note_id: uuid.UUID, payload: NoteIn) -> No
     note = get_note_for(current_user(request), NoteId(note_id))
     note.set_payload(payload)
     note.tags = normalize_tags(note.tags)
-    note.save()
+    note.save(operation=None, sources=[])
     return note
 
 
@@ -179,7 +207,7 @@ def patch_note(request: HttpRequest, note_id: uuid.UUID, payload: NotePatch) -> 
     note = get_note_for(current_user(request), NoteId(note_id))
     note.set_payload_partial(payload)
     note.tags = normalize_tags(note.tags)
-    note.save()
+    note.save(operation=None, sources=[])
     return note
 
 

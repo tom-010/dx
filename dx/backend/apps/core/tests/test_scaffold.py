@@ -52,7 +52,10 @@ def test_render_app_writes_compilable_python(tmp_path: Path) -> None:
     api = (tmp_path / "apps" / "reports" / "api.py").read_text()
     assert 'Router(tags=["reports"])' in api
     assert '@router.get("/reports/{report_id}"' in api
-    assert "class Report(OwnedModel)" in (tmp_path / "apps" / "reports" / "models.py").read_text()
+    models = (tmp_path / "apps" / "reports" / "models.py").read_text()
+    assert "class Report(OwnedModel)" in models
+    # Every model hands out one saveable instance of itself (apps/core/examples.py).
+    assert "def example() -> Report:" in models
 
     with pytest.raises(scaffold.ScaffoldError, match="already exists"):
         scaffold.render_app(spec, tmp_path / "apps")
@@ -95,7 +98,7 @@ def test_generated_tests_write_inside_a_tenant_context(tmp_path: Path) -> None:
 
     assert "from apps.core.testing import acting_as" in generated
     lines = generated.splitlines()
-    calls = [i for i, line in enumerate(lines) if "Report.objects.create(" in line]
+    calls = [i for i, line in enumerate(lines) if "save_example(Report.example())" in line]
 
     assert len(calls) == 2
     for index in calls:

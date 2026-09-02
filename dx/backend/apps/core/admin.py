@@ -27,8 +27,25 @@ from django.apps import apps
 from django.conf import settings
 from django.contrib import admin
 from django.db.models import Model
+from django.http import HttpRequest
 
 from apps.core import models as core_models
+from apps.core.models import VersionedModel
+
+
+class LineageAdmin(admin.ModelAdmin[VersionedModel]):
+    """The default page, plus the two keywords every write in this project has to state.
+
+    Django's `save_model` calls `obj.save()` with no arguments, which `VersionedModel.save`
+    refuses (`apps/core/models.py`). Saving here is a person editing a row by hand, so the row
+    is derived from nothing and the step is named for the reviewer who will wonder what "api"
+    was doing in the history of a row nobody requested.
+    """
+
+    def save_model(
+        self, request: HttpRequest, obj: VersionedModel, form: object, change: bool
+    ) -> None:
+        obj.save(operation="django admin", sources=[])
 
 
 def register_all(models_module: ModuleType) -> None:
@@ -53,7 +70,10 @@ def register_all(models_module: ModuleType) -> None:
         meta = getattr(candidate, "_meta", None)
         if meta is None or meta.abstract or meta.app_label != label:
             continue
-        admin.site.register(candidate)
+        # `LineageAdmin` for anything that has to state its lineage on save; the plain page
+        # for the rest (an event table, `Lineage` itself).
+        page = LineageAdmin if issubclass(candidate, VersionedModel) else admin.ModelAdmin
+        admin.site.register(candidate, page)
 
 
 register_all(core_models)

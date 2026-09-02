@@ -11,7 +11,7 @@ class TokenPayload(Schema):
 
 @pytest.mark.django_db
 def test_base_model_payload_helpers(user: User) -> None:
-    token = ApiToken.objects.create(user=user, name="old", is_active=False)
+    token = ApiToken.create(operation=None, sources=[], user=user, name="old", is_active=False)
 
     # Full payload (PUT): fields the client omitted take the schema defaults.
     token.set_payload(TokenPayload(name="full"))
@@ -22,7 +22,7 @@ def test_base_model_payload_helpers(user: User) -> None:
     token.set_payload_partial(TokenPayload(name="partial"))
     assert (token.name, token.is_active) == ("partial", False)
 
-    token.save()
+    token.save(operation=None, sources=[])
     token.refresh_from_db()
     assert token.name == "partial"
     assert token.created <= token.modified

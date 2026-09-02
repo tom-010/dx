@@ -35,6 +35,7 @@ Re-running adds another, disjoint graph; `--clean` retires the previous rows fir
 delete — they stay visible in the explorer as deleted, because that is what soft delete means).
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import djclick as click
@@ -73,12 +74,13 @@ class Scenario:
     root: OwnedModel
 
 
-def a(name: str) -> ModelA:
-    return ModelA.objects.create(name=name)
+def a(name: str, *, sources: Sequence[OwnedModel] = (), operation: str | None = None) -> ModelA:
+    """A ModelA row. The shapes below pass what it was built from; the default is "nothing"."""
+    return ModelA.create(operation=operation, sources=sources, name=name)
 
 
-def b(name: str) -> ModelB:
-    return ModelB.objects.create(name=name)
+def b(name: str, *, sources: Sequence[OwnedModel] = (), operation: str | None = None) -> ModelB:
+    return ModelB.create(operation=operation, sources=sources, name=name)
 
 
 # --- the shapes ----------------------------------------------------------------------------------
@@ -94,17 +96,12 @@ def pipeline() -> Scenario:
     becomes stale once `parsed` is actually rebuilt. A work list is one level deep at a time.
     """
     raw = b("pipeline: raw upload")
-    parsed = a("pipeline: parsed rows")
-    lineage.record_derivation(parsed, sources=[raw])
-
-    normalised = a("pipeline: normalised rows")
-    lineage.record_derivation(normalised, sources=[parsed])
-
-    summary = a("pipeline: summary")
-    lineage.record_derivation(summary, sources=[normalised])
+    parsed = a("pipeline: parsed rows", sources=[raw])
+    normalised = a("pipeline: normalised rows", sources=[parsed])
+    a("pipeline: summary", sources=[normalised])
 
     raw.name = "pipeline: raw upload (re-uploaded)"
-    raw.save()
+    raw.save(operation=None, sources=[])
     return Scenario("pipeline", f"chain of 4; {lineage.stale_derivations(raw).count()} stale", raw)
 
 
@@ -117,13 +114,12 @@ def merge() -> Scenario:
     """
     with history_context("merge"):
         parts = [b(f"merge: part {index}") for index in range(1, PARTS + 1)]
-        merged = a("merge: merged report")
-        lineage.record_derivation(merged, sources=parts)
+        merged = a("merge: merged report", sources=parts)
 
     for part in parts[:2]:
         with history_context(f"merge: corrected {part.name.rsplit(' ', 1)[-1]}"):
             part.name = f"{part.name} (corrected)"
-            part.save()
+            part.save(operation=None, sources=[])
 
     stale = sum(1 for version in merged.sources() if not version.is_current())
     return Scenario("merge", f"{PARTS} sources into 1, {stale} stale", merged)
@@ -135,8 +131,7 @@ def split() -> Scenario:
     going up and back down again, which is why `lineage.graph()` walks edges in both directions."""
     whole = a("split: whole document")
     for index in range(1, PIECES + 1):
-        piece = b(f"split: section {index}")
-        lineage.record_derivation(piece, sources=[whole])
+        b(f"split: section {index}", sources=[whole])
     return Scenario("split", f"1 source into {PIECES} siblings", whole)
 
 
@@ -145,13 +140,10 @@ def diamond() -> Scenario:
     """One source, two projections, one result built from both: `joined` has two parents that
     share a grandparent. A `parent_id` column cannot say this; a graph of edges can."""
     source = a("diamond: source table")
-    left = b("diamond: left projection")
-    right = b("diamond: right projection")
-    lineage.record_derivation(left, sources=[source])
-    lineage.record_derivation(right, sources=[source])
+    left = b("diamond: left projection", sources=[source])
+    right = b("diamond: right projection", sources=[source])
 
-    joined = a("diamond: joined result")
-    lineage.record_derivation(joined, sources=[left, right])
+    joined = a("diamond: joined result", sources=[left, right])
     return Scenario("diamond", "two paths from one source", joined)
 
 
@@ -165,13 +157,11 @@ def feedback() -> Scenario:
     """
     with history_context("feedback: first fit"):
         model = a("feedback: model")
-        scores = b("feedback: scores")
-        lineage.record_derivation(scores, sources=[model])
+        scores = b("feedback: scores", sources=[model])
 
     with history_context("feedback: retrained on its own scores"):
         model.name = "feedback: model (retrained)"
-        model.save()
-        lineage.record_derivation(model, sources=[scores])
+        model.save(operation=None, sources=[scores])
 
     return Scenario("feedback", "a ↔ b, acyclic in versions", model)
 
@@ -186,15 +176,13 @@ def rebuild() -> Scenario:
     """
     with history_context("rebuild: first pass"):
         rates = a("rebuild: exchange rates")
-        totals = a("rebuild: converted totals")
-        lineage.record_derivation(totals, sources=[rates])
+        totals = a("rebuild: converted totals", sources=[rates])
 
     with history_context("rebuild: after the rate change"):
         rates.name = "rebuild: exchange rates (updated)"
-        rates.save()
+        rates.save(operation=None, sources=[])
         totals.name = "rebuild: converted totals (recomputed)"
-        totals.save()
-        lineage.record_derivation(totals, sources=[rates])
+        totals.save(operation=None, sources=[rates])
 
     return Scenario("rebuild", "one target, two runs, one stale", totals)
 
@@ -204,8 +192,7 @@ def erased_source() -> Scenario:
     """The source is soft-deleted after being consumed. The edge still resolves — a deleted row
     keeps its version rows, which is exactly why deletes are soft in the first place."""
     upload = b("erased: original upload")
-    extracted = a("erased: extracted table")
-    lineage.record_derivation(extracted, sources=[upload])
+    extracted = a("erased: extracted table", sources=[upload])
     upload.soft_delete()
     return Scenario("erased", "source deleted, edge intact", extracted)
 
@@ -215,8 +202,7 @@ def hub() -> Scenario:
     """One row consumed by many: the "used to build" side, at a size that has to page."""
     shared = b("hub: shared reference list")
     for index in range(1, CONSUMERS + 1):
-        consumer = a(f"hub: consumer {index:02d}")
-        lineage.record_derivation(consumer, sources=[shared])
+        a(f"hub: consumer {index:02d}", sources=[shared])
     return Scenario("hub", f"{CONSUMERS} rows from 1 source", shared)
 
 
@@ -232,7 +218,7 @@ def churn() -> Scenario:
     for step in range(1, EDITS + 1):
         with history_context(f"churn: edit {step}"):
             doc.name = f"churn: working draft (revision {step})"
-            doc.save()
+            doc.save(operation=None, sources=[])
     return Scenario("churn", f"{doc.version} versions of one row", doc)
 
 
@@ -248,7 +234,7 @@ def restore() -> Scenario:
         note = a("restore: note")
     with history_context("restore: edited"):
         note.name = "restore: note (edited)"
-        note.save()
+        note.save(operation=None, sources=[])
     with history_context("restore: retired"):
         note.soft_delete()
     with history_context("restore: brought back to how it started"):
@@ -258,7 +244,7 @@ def restore() -> Scenario:
         original = note.history()[0].to_object()
         note.name = original.name
         note.deleted_at = None
-        note.save()
+        note.save(operation=None, sources=[])
     return Scenario("restore", f"{note.version} versions incl. a delete", note)
 
 
@@ -272,16 +258,14 @@ def moving_target() -> Scenario:
     """
     with history_context("moving: first report"):
         rates = b("moving: fx table")
-        report = a("moving: monthly report")
-        lineage.record_derivation(report, sources=[rates])
+        report = a("moving: monthly report", sources=[rates])
 
     for revision in (1, 2):
         with history_context(f"moving: revision {revision}"):
             rates.name = f"moving: fx table (revision {revision})"
-            rates.save()
+            rates.save(operation=None, sources=[])
             report.name = f"moving: monthly report (rebuild {revision})"
-            report.save()
-            lineage.record_derivation(report, sources=[rates])
+            report.save(operation=None, sources=[rates])
 
     versions = {version.version for version in report.sources()}
     return Scenario("moving", f"one source at v{min(versions)}–v{max(versions)}", report)

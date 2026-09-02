@@ -70,7 +70,6 @@ from apps.core import lineage, revisions
 from apps.core.db import tenant_context
 from apps.core.history import Version, as_event_row, event_model_for, versions
 from apps.core.models import OwnedModel, VersionedModel
-from config.env import BASE_DIR
 
 #: Rows per page. An explorer is for orientation, not for reading a table: the newest few
 #: answer "did that write land", and the ones further back are reached by paging or by narrowing
@@ -209,6 +208,9 @@ class ObjectRow:
     pk: str
     label: str
     version: int | None
+    #: The operation that wrote the version this row is at — "which step produced this?", the
+    #: question a listing is otherwise silent about.
+    operation: str
     #: When this row was written: `pgh_created_at` for a version row, `created` otherwise.
     at: datetime | None
     #: When it last changed. `None` on the tables that have no `modified` — an event row and a
@@ -241,9 +243,11 @@ class RevisionRow:
 
 @dataclass(frozen=True)
 class HistoryGroup:
-    """Everything one request, task or command wrote, as one revision."""
+    """Everything one operation wrote, as one revision."""
 
     source: str
+    #: The write's `operation_description`, when it gave one — what the step did in this run.
+    description: str
     at: datetime
     revisions: list[RevisionRow]
 
@@ -270,9 +274,11 @@ class EdgeRow:
 
 @dataclass(frozen=True)
 class EdgeGroup:
-    """The edges one run recorded — the same grouping the revision page uses for versions."""
+    """The edges one operation recorded — the same grouping the revision page uses for versions."""
 
     source: str
+    #: The write's `operation_description`, when it gave one — what the step did in this run.
+    description: str
     at: datetime
     edges: list[EdgeRow]
 
@@ -653,17 +659,20 @@ def model_rows(
         # than a 404. Nobody types that by hand — it comes from a stale link.
         page = paginator.get_page(request.GET.get("page"))
 
+        page_rows = list(page.object_list)
+        operations = _operations_of(model, page_rows)
         rows = [
             ObjectRow(
                 pk=str(row.pk),
                 label=_render(row),
                 version=getattr(row, "version", None),
+                operation=operations.get(row.pk, ""),
                 at=getattr(row, "pgh_created_at", None) or getattr(row, "created", None),
                 modified=getattr(row, "modified", None),
                 deleted=getattr(row, "deleted_at", None) is not None,
                 url=_row_url(tenant.pk, model, tracked, row),
             )
-            for row in page.object_list
+            for row in page_rows
         ]
         return render(
             request,
@@ -695,6 +704,41 @@ def model_rows(
                 "rows": rows,
             },
         )
+
+
+def _operations_of(model: type[models.Model], rows: list[models.Model]) -> dict[uuid.UUID, str]:
+    """The operation each row's current version was written under, for one page of a listing.
+
+    Two queries for the whole page rather than two per row: the event rows of every listed
+    object at once, then the context labels behind them. An untracked table has no versions and
+    therefore no answer; an event row is a version already and names its own context.
+    """
+    if not rows:
+        return {}
+    event_model = event_model_for(model)
+    if event_model is None:
+        return {}
+
+    contexts: dict[uuid.UUID, uuid.UUID] = {}
+    versions_of = {row.pk: getattr(row, "version", None) for row in rows}
+    # Read through a plain `type[Model]` handle: `pgh_obj_id` and the mirrored columns exist on
+    # the *generated* subclass, and django-stubs resolves field names against the abstract
+    # `Event` base, which has neither (`apps/core/lineage.py` reads event tables the same way).
+    table: type[models.Model] = event_model
+    events = table._base_manager.filter(**{"pgh_obj_id__in": sorted(versions_of)}).values(
+        "pgh_obj_id", "version", "pgh_context_id"
+    )
+    for event in events:
+        object_id, version, context_id = (
+            event["pgh_obj_id"],
+            event["version"],
+            event["pgh_context_id"],
+        )
+        if context_id is not None and versions_of.get(object_id) == version:
+            contexts[object_id] = context_id
+
+    labels = revisions.context_sources(set(contexts.values()))
+    return {object_id: labels.get(cid, "") for object_id, cid in contexts.items()}
 
 
 def _row_url(
@@ -788,25 +832,20 @@ class Frame:
 def _frames(stack: list[lineage.StackFrame]) -> list[Frame]:
     """The stack outermost first, with this project's own files told apart from its dependencies.
 
-    Paths are shown relative to the repository where they are inside it. A stack is mostly
-    framework plumbing — click, Django's handler, the test client — and the two or three frames
-    that belong to the application are the ones anybody reading it is looking for.
+    A stack is mostly framework plumbing — click, Django's handler, the test client — and the
+    two or three frames that belong to the application are the ones anybody reading it is
+    looking for; `StackFrame.ours` is that distinction, `location` the repo-relative path.
     """
-    rows = []
-    for depth, frame in enumerate(stack, start=1):
-        path = Path(frame.file)
-        ours = path.is_relative_to(BASE_DIR) and ".venv" not in path.parts
-        location = str(path.relative_to(BASE_DIR)) if path.is_relative_to(BASE_DIR) else str(path)
-        rows.append(
-            Frame(
-                depth=depth,
-                location=f"{location}:{frame.line}",
-                func=frame.func,
-                code=frame.code,
-                ours=ours,
-            )
+    return [
+        Frame(
+            depth=depth,
+            location=frame.location,
+            func=frame.func,
+            code=frame.code,
+            ours=frame.ours,
         )
-    return rows
+        for depth, frame in enumerate(stack, start=1)
+    ]
 
 
 def edge_detail(request: HttpRequest, user_id: uuid.UUID, edge_id: uuid.UUID) -> HttpResponse:
@@ -939,6 +978,7 @@ def object_version(
         untracked = current.untracked_fields()
         context_id = current.event.pgh_context_id
         labels = revisions.context_sources({context_id} if context_id else set())
+        descriptions = revisions.context_descriptions({context_id} if context_id else set())
 
         source_edges = list(lineage.sources_of_version(current.event).order_by("created", "id"))
         target_edges = list(lineage.derived_from_version(current.event))
@@ -958,6 +998,7 @@ def object_version(
                 "gone_now": getattr(live, "deleted_at", None) is not None,
                 "at": current.at,
                 "written_by": labels.get(context_id, "unknown") if context_id else "unknown",
+                "description": descriptions.get(context_id, "") if context_id else "",
                 "event_label": current.event.pgh_label,
                 "schema_tag": current.event.pgh_schema,
                 "pgh_id": str(current.event.pgh_id),
@@ -1047,9 +1088,13 @@ def _history(user_id: uuid.UUID, obj: models.Model) -> list[HistoryGroup]:
     else:  # pragma: no cover - tracked implies versioned
         return []
 
+    descriptions = revisions.context_descriptions(
+        {group.context_id for group in groups if group.context_id}
+    )
     return [
         HistoryGroup(
             source=group.source,
+            description=descriptions.get(group.context_id, "") if group.context_id else "",
             at=group.at,
             revisions=[
                 RevisionRow(
@@ -1088,7 +1133,7 @@ def _edge_row(
     """One edge plus the version at its far end. The frame and the release come from the edge
     itself (`Lineage.stack`, `Lineage.release`): which code claimed this derivation, and which
     build it was."""
-    frame = edge.stack[-1] if edge.stack else None
+    frame = edge.caller
     model = far_end.model
     return EdgeRow(
         edge_url=reverse("explorer:edge", args=[user_id, edge.pk]),
@@ -1099,7 +1144,7 @@ def _edge_row(
         gone=gone,
         at=edge.created,
         release=edge.release or "unknown",
-        frame=f"{frame.file.rsplit('/', 1)[-1]}:{frame.line} in {frame.func}()" if frame else "",
+        frame=f"{Path(frame.file).name}:{frame.line} in {frame.func}()" if frame else "",
         code=frame.code if frame else "",
         # A version, not the object: the edge names the state that was consumed, and sending
         # someone to the live row would answer a question they did not ask.
@@ -1148,15 +1193,14 @@ def _group_edges(
         key = edge.pgh_context if edge.pgh_context is not None else ("orphan", index)
         groups.setdefault(key, []).append((edge, far_end))
 
-    labels = revisions.context_sources({edge.pgh_context for edge, _ in pairs if edge.pgh_context})
+    contexts = {edge.pgh_context for edge, _ in pairs if edge.pgh_context}
+    labels = revisions.context_sources(contexts)
+    descriptions = revisions.context_descriptions(contexts)
     gone = _deleted_now(pairs)
     return [
         EdgeGroup(
-            source=(
-                "unknown"
-                if members[0][0].pgh_context is None
-                else labels.get(members[0][0].pgh_context, "unknown")
-            ),
+            source="unknown" if context is None else labels.get(context, "unknown"),
+            description="" if context is None else descriptions.get(context, ""),
             at=members[0][0].created,
             edges=[
                 _edge_row(user_id, edge, far_end, far_end.object_id in gone)
@@ -1164,6 +1208,7 @@ def _group_edges(
             ],
         )
         for members in groups.values()
+        for context in (members[0][0].pgh_context,)
     ]
 
 

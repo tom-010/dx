@@ -22,3 +22,14 @@ class ${Model}(OwnedModel):
 
     class Meta(OwnedModel.Meta):
         pass
+
+    @staticmethod
+    def example() -> ${Model}:
+        """One filled-in ${model}, unsaved: `save_example(${Model}.example())` writes it.
+
+        Every model has one (apps/core/examples.py, system check example.E001). Fill in every
+        required field, build a required foreign key by calling *its* model's `example()`, and
+        leave `owner`, `id`, `created`, `modified` and `version` to the tenant context and the
+        database. A field under a unique constraint gets `unique("…")`.
+        """
+        return ${Model}(name="First ${model}", description="TODO: what a real ${model} says.")

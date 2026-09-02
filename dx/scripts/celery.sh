@@ -16,6 +16,9 @@
 # changes (watchfiles). Restarts are warm: running tasks finish first (up to --stop-timeout
 # seconds, then SIGKILL — a killed task comes back only after the broker's visibility timeout),
 # reserved tasks go back to the queue. One process (--concurrency=1) keeps restarts fast.
+# `REMAP_SIGTERM=SIGQUIT ./scripts/celery.sh` makes restarts and Ctrl+C cold instead: the worker
+# exits at once and puts the running task straight back on the queue (the next worker runs it
+# again from the start). serve.sh starts the worker this way.
 #
 # Like serve.sh, the long-running modes print to stdout AND to logs/celery.log (dev/worker) or
 # logs/celery-beat.log (beat) in the repo root; the file starts fresh on every start.

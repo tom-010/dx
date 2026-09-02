@@ -26,11 +26,38 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
 - **Everything is versioned and nothing is deleted**: every write to a feature model is mirrored
   into an append-only event table by a database trigger, and deletes are soft. See
   `.claude/rules/versioning.md` — those invariants are not negotiable either.
+- **Every write states its lineage.** `Model.create(...)` and `obj.save(...)` **require**
+  `operation=` and `sources=` — there are no defaults, and `Model.objects.create()` is refused
+  outright (it cannot carry them). The row, its edges and its step land in one transaction:
+
+  ```python
+  report = Report.create(operation="convert to EUR", sources=[rates, totals], text=...)
+  report.save(operation="rebuild report", sources=[rates])        # an edit, likewise
+  note.save(operation=None, sources=[])                           # a person typed it: no step,
+                                                                  # built from nothing
+  with history_context("summarise"), deriving(doc):               # a block, for several writes
+      Summary.create(operation=None, sources=None, text=...)      # None = "the block says it"
+  ```
+
+  `operation` is the **name of the step a data reviewer sees on the lineage node** — "summarise
+  notes", "import dataset from document" — stable across runs; never "api"/"update" (the request
+  context records that), never a code path (the edge stores the call stack), never anything about
+  the data (it lands in a table every tenant can read). `None` when a human made the write, which
+  is most of them. `operation_description=` is the optional longer form: what the step did *in
+  this run* ("14 chunks, opus, prompt v3"). `sources` are the rows this one was **computed
+  from** — the test is "if that row changed, would this have to be recomputed?" — not structural
+  foreign keys (`owner`, a tag's dataset). Full guidance in `VersionedModel.save.__doc__`;
+  the why in `docs/history_lineage_delete_tenants.md`.
 - **Soft delete in one line**: `obj.delete()` / `qs.delete()` are soft (a versioned UPDATE of
   `deleted_at`, no cascade), `obj.hard_delete()` / `qs.hard_delete()` really remove the row and
   its history (erasure, credential purging, test teardown only), `Model.objects` hides deleted
   rows, `Model.all_objects` includes them, and a raw `DELETE` is refused by the database
   trigger either way — `docs/soft-delete.md`.
+- **Every model hands out one example of itself**: a static `example()` returning one filled-in,
+  unsaved instance (a required FK is built from *that* model's `example()`), and
+  `save_example(Note.example())` writes the whole tree (`save_deep(obj, operation=…, sources=…)`
+  in `apps/core/save_deep.py` for any hand-built one) — `manage.py check_examples` proves every
+  model still has a saveable one. Writing them: `.claude/skills/model-examples`.
 
 ## Where the detail lives
 
@@ -98,7 +125,7 @@ Other little ideas:
 | Backend lint/format  | `cd backend && uv run ruff check . && uv run ruff format .` |
 | Backend type-check   | `cd backend && uv run mypy .` (strict + django-stubs)       |
 | API docs / spec      | http://127.0.0.1:8000/api/docs · `/api/openapi.json`        |
-| Dev home page        | http://127.0.0.1:8000/ (DEBUG only): links to the docs, explorer, admin and the Vite server (`config/home.py`) |
+| Dev home page        | http://127.0.0.1:8000/ (DEBUG only): links to the docs, explorer, admin and the Vite server, behind the admin login, with a logout button (`config/home.py`) |
 | Why any of this      | `docs/history_lineage_delete_tenants.md` (lineage → history → soft delete → tenancy, in that order) |
 | Soft delete API      | `docs/soft-delete.md` (delete, read, restore, cascade, the one escape hatch) |
 | Lineage demo data    | `cd backend && uv run python manage.py lineage_demo [--clean]` (builds 11 lineage shapes out of ModelA/ModelB — chain, merge, split, diamond, feedback, rebuild, erased, hub, churn, restore, moving — and prints an explorer link per shape) |
@@ -110,17 +137,18 @@ Other little ideas:
 | Sync schema + client | `./scripts/sync_schema.sh` = `frontend/sync_schema.sh` (`--check`, `--watch`) |
 | Dev superuser        | `cd backend && uv run python manage.py createadmin` (admin/admin) |
 | Token for curl       | `TOKEN=$(cd backend && uv run python manage.py token)` then `curl -H "Authorization: Bearer $TOKEN" …` (expires after `ACCESS_TOKEN_LIFETIME_MINUTES`; `-m 60` for longer) |
-| Backend tests (short)| `./scripts/test.sh [pytest args]` · `./scripts/coverage.sh [--open]` |
+| Backend tests (short)| `./scripts/test.sh [pytest args]` (parallel, 8 workers; `--reuse-db` for faster re-runs, `PYTEST_WORKERS=0` for serial/pdb) · `./scripts/coverage.sh [--open]` |
 | Format everything    | `./scripts/format.sh` (ruff + Biome, auto-fix)               |
 | Lint everything      | `./scripts/lint.sh` (ruff, mypy, Biome — no changes)         |
 | Type-check everything| `./scripts/check.py [backend\|frontend]` (mypy strict + django-stubs, `tsc -b`); see `.claude/rules/type-checking.md` |
 | CI in one command    | `./scripts/ci.py [backend\|frontend\|image]` = `check.py` + `./scripts/build.sh` (production image `dx-app:latest`) |
-| Full pre-commit check| `./scripts/check.sh` (lint + pytest + build + sync_schema --check) |
+| Full pre-commit check| `./scripts/check.sh` (lint + pytest + build + sync_schema --check; ~16s: parallel tests, reused test DBs, rebuilt automatically when a migration changes) |
 | DB backup / restore  | `./scripts/backup.sh [--list\|--prune]` (= `DB_ROLE=migrator manage.py backup` → `dx-backups` bucket or `backend/backups/`), `./scripts/restore.sh <name>\|--latest [-y]`, `./scripts/roundtrip.sh` (dev only, drops the DB); see `.claude/rules/backups.md` |
 | New feature app      | `cd backend && uv run python manage.py newapp <name> [--model Item]` (scaffold + register + makemigrations; see `.claude/rules/backend-layout.md`) |
 | Delete a feature app | `cd backend && DB_ROLE=migrator uv run python manage.py deleteapp <name>` (the opposite: drops its tables **and their history**, unregisters it, deletes `apps/<name>/`; `--keep-data` keeps the tables) |
 | Versioning/lineage demo | `/notes` in the SPA → edit a note, merge two, then "History" / "Lineage" (`apps/notes`, a showcase — see its section) |
 | Reference command    | `cd backend && uv run python manage.py hello_world [NAME] --shout` (django-click + rich; see `.claude/rules/management-commands.md`) |
+| Model examples       | `cd backend && uv run python manage.py check_examples` (every model's `example()` exists and saves; run by `check.sh`) |
 | Build production image | `./scripts/build.sh` → `dx-app:latest` (`--run` also starts it on :8080 via the dev compose `app` profile, plain http) |
 | Production stack     | `./scripts/prod.sh` (= `docker compose --env-file docker/.env.prod -f docker/docker-compose.prod.yml …`; no args = `up -d --wait`); see `.claude/rules/production.md` |
 | Deployment checklist | `cd backend && DEBUG=false SECRET_KEY=… ALLOWED_HOSTS='["…"]' EMAIL_URL=… uv run python manage.py check --deploy` (the entrypoint runs this) |
@@ -201,9 +229,13 @@ on any `backend/` file. The short form, because breaking these is not recoverabl
   the RLS policies — plain `manage.py migrate` fails.
 - **Everything is versioned, nothing is hard-deleted.** Concrete models are `@tracked`; a
   database trigger mirrors every write into an append-only event table. Never assign `id`,
-  `created`, `modified` or `version` in Python — all four are database/trigger set. Delete with
-  `obj.soft_delete()`; `.delete()` raises in the database. Every unique constraint is conditioned
-  on `deleted_at__isnull=True`, and cascade is application logic (Django's collector never runs).
+  `created`, `modified` or `version` in Python — all four are database/trigger set. `delete()` is
+  soft; `hard_delete()` is the exception (erasure, credential purging, test teardown) and a raw
+  `DELETE` is refused by the database either way. Every unique constraint is conditioned on
+  `deleted_at__isnull=True`, and cascade is application logic (Django's collector never runs).
+- **Every write says where the row came from.** `operation=` and `sources=` are required on
+  `Model.create()` and `save()` (see above); `Model.objects.create()` raises. A write that
+  records nothing says so — `sources=[]` — so it is a decision in the diff, not an omission.
 
 ## Naming
 
@@ -259,4 +291,6 @@ on any `backend/` file. The short form, because breaking these is not recoverabl
   (`NINJA_PAGINATION_PER_PAGE=50`, max 500) → `{"items": [...], "count": n}` (`PagedDatasetOut`,
   `useListDatasets({ page })`). Services return the `QuerySet`; the view paginates it.
 - Every app exposes the same surface: paginated `GET /x`, `POST /x` (201),
-  `GET/PUT/PATCH/DELETE /x/{id}`. `apps/datasets` is the reference; `newapp` reproduces it.
+  `GET/PUT/PATCH/DELETE /x/{id}`. `apps/datasets` is the reference; `newapp` reproduces it —
+  including the lineage keywords on every write (`operation=None, sources=[]` for the CRUD
+  views, since a row the user typed is no step and is derived from nothing).

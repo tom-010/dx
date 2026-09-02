@@ -70,7 +70,7 @@ def test_the_edge_keeps_pointing_at_the_version_it_read(user: User) -> None:
         dataset = import_dataset_for(user, DocumentId(document.pk))
 
         document.name = "renamed.csv"
-        document.save()
+        document.save(operation=None, sources=[])
         document.refresh_from_db()
 
         (edge,) = lineage.sources_of(dataset)

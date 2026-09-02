@@ -17,12 +17,13 @@ shared tables that predate any tenant.
 """
 
 import uuid
-from collections.abc import Container, Iterable
-from typing import TYPE_CHECKING, Any, Self, TypeVar, overload
+from collections.abc import Container, Iterable, Sequence
+from contextlib import nullcontext
+from typing import TYPE_CHECKING, Any, NoReturn, Self, TypeVar, overload
 
 import pgtrigger
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Func
 from django.db.models.base import ModelBase
 from django.db.models.functions import Now
@@ -32,7 +33,7 @@ from pydantic import BaseModel as PydanticModel
 
 from apps.core import lineage
 from apps.core.db import NoTenantContext, current_user_id
-from apps.core.history import Version, event_model_for, hard_delete, versions
+from apps.core.history import Version, event_model_for, hard_delete, history_context, versions
 
 # Django only imports `models.py` when it populates the app registry, so the lineage model
 # has to be pulled in from here. `apps.core.lineage` imports nothing from this module at
@@ -66,6 +67,23 @@ class ActiveQuerySet(models.QuerySet[_ModelT]):
 
     def deleted(self) -> Self:
         return self.filter(deleted_at__isnull=False)
+
+    def create(self, **fields: object) -> NoReturn:
+        """Refused: this spelling cannot say where the row came from.
+
+        Lineage is not optional here — every write states its `sources` and its `operation`, if
+        only to say `None` — and a manager's `create()` cannot carry those two keywords (mypy's
+        Django plugin checks every keyword against the model's fields). So it does not exist;
+        `Model.create(..., operation=..., sources=...)` is the one way to insert a row.
+        """
+        name = self.model.__name__
+        raise TypeError(
+            f"{name}.objects.create() cannot record lineage. Use {name}.create(..., "
+            "operation=<short name of the step, for a reviewer> | None, "
+            "sources=<rows this was computed from> | [] | None). Both are required, so "
+            "that not recording where a row came from is a decision and not an accident; "
+            f"see {name}.save.__doc__ for what to write."
+        )
 
     def delete(self) -> tuple[int, dict[str, int]]:
         """Soft delete every matched row. One UPDATE, and still fully versioned.
@@ -121,6 +139,12 @@ class ActiveManager(models.Manager[_ModelT]):
         """The soft-deleted rows. Only ever non-empty on `all_objects`, which is the point:
         `objects.deleted()` asks for rows `objects` has already filtered out."""
         return self.get_queryset().deleted()
+
+
+def _described(description: str | None) -> dict[str, str]:
+    """The `description` metadata for a history context, or nothing — a key that is absent reads
+    better in the context table than one that is None."""
+    return {"description": description} if description else {}
 
 
 class VersionedModel(models.Model):
@@ -189,26 +213,95 @@ class VersionedModel(models.Model):
             ),
         ]
 
-    def save(
+    def save(  # type: ignore[override]  # deliberately stricter: two keywords Django's lacks
         self,
         *,
+        operation: str | None,
+        sources: Sequence[VersionedModel] | None,
+        operation_description: str | None = None,
         force_insert: bool | tuple[ModelBase, ...] = False,
         force_update: bool = False,
         using: str | None = None,
         update_fields: Iterable[str] | None = None,
     ) -> None:
+        """Write the row, and say which operation did it and what it was built from.
+
+        `operation` and `sources` are required — `None` is an answer, an omitted keyword is a
+        `TypeError`. Both are recorded in the same transaction as the row, against the version
+        this save produces, so the lineage graph (`apps/core/lineage.py`) never has a node whose
+        origin was forgotten.
+
+        **`operation`** — the *name of the step* that produced this write. It is the label a data
+        reviewer sees on the node in the lineage graph, so write it for them: a short verb phrase
+        saying what was done, stable across runs so the same step reads the same every time.
+
+            operation="summarise notes"            ✓ what the step does
+            operation="convert to EUR"             ✓
+            operation="extract entities (opus)"    ✓ the tool, when it is part of the method
+            operation="merge monthly parts v3"     ✓ a version, when the method changed
+
+            operation="api" / "update" / "save"    ✗ how the write arrived, not what it did — the
+                                                      request or task context records that already
+            operation="apps/notes/api.py:312"      ✗ where in the code — the edge records the
+                                                      whole call stack (`Lineage.stack`) itself
+            operation="Alice's Q3 report"          ✗ about the data, not the step; and this label
+                                                      lands in a table every tenant can read
+
+            operation=None            no step of its own: a person edited this through the API,
+                                      or the enclosing `history_context("…")` block names it
+
+        The rule of thumb: **code that derives data names its operation; a human typing into a
+        form is `None`.** Around 80% of writes are the latter, and for them the request context
+        ("api", the method) is the whole story.
+
+        **`sources`** — the rows whose *content* this write used. The test: if that row changed,
+        would this one have to be recomputed? Then it is a source. Structural links are not
+        (`owner`, the dataset a tag belongs to): those are foreign keys and mean "belongs to",
+        not "was computed from".
+
+            sources=[rates, totals]   these rows, at the versions they are at right now
+            sources=[]                built from nothing but this write — user input, a fixture
+            sources=None              whatever the enclosing `deriving(...)` block says; nothing
+                                      outside one
+
+        **`operation_description`** (optional) — the longer form, for the same reviewer: what the
+        step did *in this run*. Parameters, the model and prompt version, counts, anything that
+        went differently — "14 chunks, opus, prompt v3; 2 chunks over the limit were skipped".
+        Still about the operation, never about the data, for the same reason: it is stored in
+        the history context beside the name (`apps/core/history.py`, "Context"). It needs an
+        `operation` to describe — on its own it is a `ValueError`, not a note that quietly
+        attaches to somebody else's step.
+
+            report.save(operation="convert to EUR", sources=[rates, totals])
+            report.save(operation=None, sources=[])                 # a person edited it
+            with history_context("convert to EUR"), deriving(rates, totals):
+                report.save(operation=None, sources=None)           # the block says it all
+        """
+        if operation_description is not None and operation is None:
+            raise ValueError(
+                "operation_description describes a named operation: pass operation=… with it. "
+                "Inside a history_context() block, describe the block instead."
+            )
         inserting = self._state.adding
-        super().save(
-            force_insert=force_insert,
-            force_update=force_update,
-            using=using,
-            update_fields=update_fields,
+        step = (
+            history_context(operation, **_described(operation_description))
+            if operation
+            else nullcontext()
         )
-        if not inserting:
-            # The `bump_version` trigger has just moved `version` and `modified` on, so the row
-            # is ahead of this instance — and this instance is what the API serialises back.
-            # (An INSERT needs no such read: Django fetches database defaults with RETURNING.)
-            self.refresh_from_db(fields=["version", "modified"])
+        with transaction.atomic(using=using), step:
+            super().save(
+                force_insert=force_insert,
+                force_update=force_update,
+                using=using,
+                update_fields=update_fields,
+            )
+            if not inserting:
+                # The `bump_version` trigger has just moved `version` and `modified` on, so the
+                # row is ahead of this instance — and this instance is what the API serialises
+                # back. (An INSERT needs no such read: Django fetches database defaults with
+                # RETURNING.)
+                self.refresh_from_db(fields=["version", "modified"])
+            lineage.record_sources(self, sources)
 
     def delete(
         self, using: str | None = None, keep_parents: bool = False
@@ -227,12 +320,53 @@ class VersionedModel(models.Model):
         self.soft_delete()
         return 1, {self._meta.label: 1}
 
+    @classmethod
+    def create(
+        cls,
+        *,
+        operation: str | None,
+        sources: Sequence[VersionedModel] | None,
+        operation_description: str | None = None,
+        **fields: object,
+    ) -> Self:
+        """Insert a row, saying what it was built from and which operation did it — one statement.
+
+            Summary.create(text=..., operation="summarise notes", sources=[dataset],
+                           operation_description="14 chunks, opus, prompt v3")
+            Summary.create(text=..., operation=None, sources=[])      # a person typed it
+            Summary.create(text=..., operation=None, sources=None)    # the enclosing blocks'
+
+        What to put in `sources`, `operation` and `operation_description` — including what *not*
+        to — is spelled out on `save()`, which this calls. In short: `sources` are the rows this
+        one was computed from; `operation` is the short, stable name of the step, written for
+        the reviewer reading the lineage graph, and `None` when a human made the write.
+
+        This is the only way to insert a row: `Model.objects.create()` is refused
+        (`ActiveQuerySet.create`), because a manager's `create()` cannot carry these keywords —
+        mypy's Django plugin checks every keyword of it against the model's fields — and a write
+        that cannot state its lineage is not a write this project makes.
+
+        The price: field names here are checked by Django at runtime (`TypeError` on a typo),
+        not by mypy — the plugin does not look inside a classmethod.
+        """
+        obj = cls(**fields)
+        obj.save(
+            operation=operation,
+            sources=sources,
+            operation_description=operation_description,
+            force_insert=True,
+        )
+        return obj
+
     def soft_delete(self) -> None:
         """Mark the row deleted. This is an UPDATE, so it bumps `version` and writes a version
         row like any other change: "was deleted" is a state the object had, and lineage edges
         pointing at earlier versions stay resolvable forever."""
         self.deleted_at = timezone.now()
-        self.save(update_fields=["deleted_at"])
+        # `sources=[]`: a delete inside a `deriving()` block must not claim the row was built from
+        # the block's inputs. Retiring a row is not deriving it from anything. The step, if any,
+        # is the enclosing block's.
+        self.save(update_fields=["deleted_at"], operation=None, sources=[])
 
     def hard_delete(self) -> tuple[int, dict[str, int]]:
         """Really remove this row and the version rows that describe it.
@@ -330,6 +464,21 @@ class VersionedModel(models.Model):
         for name in payload.model_fields_set:
             if name not in exclude:
                 setattr(self, name, getattr(payload, name))
+
+    @staticmethod
+    def example() -> VersionedModel:
+        """One filled-in instance of this model, unsaved — built by the model itself.
+
+            with acting_as(user):
+                dataset = save_example(Dataset.example())      # apps/core/examples.py
+
+        Every concrete model overrides this; the base is here to say that they must, and the
+        system check `example.E001` is what notices when one does not. Fill in every required
+        field, build a required foreign key by calling *its* model's `example()`, and leave
+        `owner`, `id`, `created`, `modified` and `version` alone — the tenant context and the
+        database own those.
+        """
+        raise NotImplementedError("every model defines its own example(); apps/core/examples.py")
 
     def __str__(self) -> str:
         for attr in LABEL_FIELDS:
@@ -462,9 +611,12 @@ class OwnedModel(VersionedModel):
         # pattern would make every app with a longer name fail `makemigrations` (models.E034).
         indexes = [models.Index(fields=["owner", "-created", "-id"])]
 
-    def save(
+    def save(  # type: ignore[override]  # see VersionedModel.save
         self,
         *,
+        operation: str | None,
+        sources: Sequence[VersionedModel] | None,
+        operation_description: str | None = None,
         force_insert: bool | tuple[ModelBase, ...] = False,
         force_update: bool = False,
         using: str | None = None,
@@ -481,6 +633,9 @@ class OwnedModel(VersionedModel):
                 )
             self.owner_id = user_id
         super().save(
+            operation=operation,
+            sources=sources,
+            operation_description=operation_description,
             force_insert=force_insert,
             force_update=force_update,
             using=using,

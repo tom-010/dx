@@ -50,6 +50,6 @@ def test_payload_helpers_keep_typed_json_values(user: User) -> None:
         dataset.set_payload_partial(DatasetPatch(row_count=3), exclude={"tags"})
         assert (dataset.name, dataset.row_count) == ("tsv", 3)  # PATCH: only what was sent
 
-        dataset.save()
+        dataset.save(operation=None, sources=[])
         dataset.refresh_from_db()
         assert dataset.options == DatasetOptions(delimiter="\t")

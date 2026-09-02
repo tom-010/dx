@@ -4,6 +4,10 @@ Celery has had no reloader since 4.0 and `watchfiles`' CLI stops processes with 
 starting worker (first ~second, while importing) swallows for good. This module drives the
 worker itself: SIGTERM (honoured at every stage: warm shutdown once the worker runs — running
 tasks finish, reserved ones go back to the queue), SIGKILL only after `stop_timeout`.
+
+`REMAP_SIGTERM=SIGQUIT` in the environment (what `scripts/serve.sh` sets) turns that same SIGTERM
+into Celery's cold shutdown: the worker exits at once, the running task is re-queued instead of
+finished, and `stop_timeout` is never reached.
 """
 
 import signal

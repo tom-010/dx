@@ -1,5 +1,5 @@
-"""System checks that keep the multitenancy invariants (CLAUDE.md "Multitenancy") true as the
-code base grows. Registered in `apps.core.apps.CoreConfig.ready()`.
+"""System checks that keep the model invariants (CLAUDE.md "Multitenancy", "Examples") true as
+the code base grows. Registered in `apps.core.apps.CoreConfig.ready()`.
 
 - tenant.E001 — a concrete model in a tenant app does not inherit `OwnedModel` (and is not in
   `SHARED_MODELS`). The highest-leverage check here: it makes the invariant survive new
@@ -11,6 +11,10 @@ code base grows. Registered in `apps.core.apps.CoreConfig.ready()`.
   anything, and the post-migrate `rls_sync --check` is the gate for that case.
 - tenant.E004 — a generated event table (apps/core/history.py) does not mirror the owner
   column, so the tenant policy cannot key on it and one tenant could read another's history.
+- example.E001 — a model has no `example()` of its own, so nothing can hand out one filled-in
+  instance of it (apps/core/examples.py). Presence only: this runs on every management command,
+  and building every example would put model code on the startup path — `manage.py
+  check_examples` is where they are built and saved.
 """
 
 from collections.abc import Iterable, Sequence
@@ -23,6 +27,7 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.db.models import Model
 
+from apps.core.examples import models_without_example
 from apps.core.models import OWNER_COLUMN, OwnedModel
 
 
@@ -95,6 +100,24 @@ def check_tenant_models(
     app_configs: Sequence[AppConfig] | None, **kwargs: object
 ) -> list[CheckMessage]:
     return tenant_model_errors(apps.get_models())
+
+
+@register(Tags.models)
+def check_model_examples(
+    app_configs: Sequence[AppConfig] | None, **kwargs: object
+) -> list[CheckMessage]:
+    """Every model of this project can hand out one filled-in instance of itself."""
+    return [
+        Error(
+            f"{label} does not define example().",
+            hint=(
+                "Add `@staticmethod def example() -> <Model>` returning one unsaved, saveable "
+                "instance (apps/core/examples.py, .claude/skills/model-examples)."
+            ),
+            id="example.E001",
+        )
+        for label in models_without_example()
+    ]
 
 
 @register(Tags.database)

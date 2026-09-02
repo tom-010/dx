@@ -99,7 +99,9 @@ def store_media_items(user: User, files: Sequence[UploadedFile[bytes]]) -> list[
         kind = kind_of(content_type)
         assert kind is not None  # validate_upload() guarantees it
         items.append(
-            MediaItem.objects.create(
+            MediaItem.create(
+                operation=None,
+                sources=[],
                 owner=user,
                 file=file,
                 kind=kind,

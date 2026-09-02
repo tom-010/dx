@@ -47,6 +47,10 @@ class CommandRun(VersionedModel):
     class Meta(VersionedModel.Meta):
         indexes = [models.Index(fields=["name", "-created"])]
 
+    @staticmethod
+    def example() -> CommandRun:
+        return CommandRun(name="hello_world", arguments="--shout world")
+
     def __str__(self) -> str:
         return f"manage.py {self.name} {self.arguments}".rstrip()
 
@@ -62,7 +66,7 @@ def record_run(argv: Sequence[str]) -> None:
     if os.environ.get("RUN_MAIN"):
         return  # the autoreloader's child process; its parent already recorded the run
     try:
-        CommandRun.objects.create(name=argv[0], arguments=shlex.join(argv[1:]))
+        CommandRun.create(operation=None, sources=[], name=argv[0], arguments=shlex.join(argv[1:]))
     except Exception:
         # No database yet (the first `migrate`), none at all, a read-only replica: all fine.
         log.debug("command_run_not_recorded", command=argv[0], exc_info=True)

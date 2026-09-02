@@ -6,8 +6,16 @@ edited. When the source is renamed, the FK follows and the edge does not. That i
 point of pointing at an event row (`pgh_id`, `apps/core/history.py`) instead of at the live row.
 
     with acting_as(user):
-        summary = create_summary(user, source=dataset)
-        record_derivation(summary, sources=[dataset])
+        summary = Summary.create(text=..., operation="summarise", sources=[dataset])
+        report.save(operation="rebuild report", sources=[summary])       # a rebuild, likewise
+
+    # Several rows from the same inputs: name the inputs once, and every write inside records
+    # them. `operation=None` / `sources=None` mean "the enclosing blocks'".
+    with history_context("summarise"), deriving(dataset, lookup):
+        Summary.create(text=..., operation=None, sources=None)
+        Chart.create(spec=..., operation=None, sources=None)
+
+    record_derivation(summary, sources=[dataset])   # the primitive underneath both
 
     # What did this summary actually consume? `VersionedModel.sources()` is the front door:
     # it hands back `history.Version` objects, so a source wears the type of the model it is a
@@ -39,10 +47,13 @@ from __future__ import annotations
 import subprocess
 import traceback
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pgtrigger
@@ -89,6 +100,20 @@ class StackFrame(PydanticModel):
     def __str__(self) -> str:
         return f"{self.file}:{self.line} in {self.func}"
 
+    @property
+    def ours(self) -> bool:
+        """This project's own code, as opposed to Django, click, the test client and the rest of
+        the plumbing a stack is mostly made of."""
+        path = Path(self.file)
+        return path.is_relative_to(BASE_DIR) and ".venv" not in path.parts
+
+    @property
+    def location(self) -> str:
+        """`file:line`, relative to the repository where the file is inside it."""
+        path = Path(self.file)
+        shown = path.relative_to(BASE_DIR) if path.is_relative_to(BASE_DIR) else path
+        return f"{shown}:{self.line}"
+
 
 class Lineage(models.Model):
     """One edge: `target` (a version of a derived row) was built from `source` (a version of
@@ -114,7 +139,7 @@ class Lineage(models.Model):
     pgh_context = models.UUIDField(null=True, default=None)
     #: The call stack that recorded the edge, outermost frame first — which code claimed this
     #: derivation, down to the line. A typed JSON column like any other (NOTES.md §5); frames
-    #: inside `apps/core/lineage.py` are left out, so `stack[-1]` is the caller.
+    #: inside `apps/core/lineage.py` and `models.py` are left out, so `stack[-1]` is the caller.
     stack = SchemaField(list[StackFrame], default=list)
     #: The build the stack belongs to (`APP_VERSION`: the short commit the image was built from,
     #: "dev" outside one). A file and a line only identify code together with the revision it was
@@ -142,8 +167,39 @@ class Lineage(models.Model):
             pgtrigger.Protect(name="append_only", operation=pgtrigger.Update),
         ]
 
+    @staticmethod
+    def example() -> Lineage:
+        """An edge shaped like the real ones, pointing nowhere.
+
+        Every other example builds the rows it depends on, but an edge depends on two *event*
+        rows — versions of things that were actually written — and inventing those would mean
+        writing history by hand, which is exactly what nothing may do (`apps/core/history.py`).
+        So it names this table's own content type and two made-up version ids: structurally an
+        edge, semantically a placeholder. Real ones come from `record_derivation()`.
+        """
+        placeholder = ContentType.objects.get_for_model(Lineage)
+        return Lineage(
+            target_type=placeholder,
+            target_pgh_id=uuid.uuid7(),
+            source_type=placeholder,
+            source_pgh_id=uuid.uuid7(),
+            source_obj_id=uuid.uuid7(),
+            source_version=1,
+        )
+
     def __str__(self) -> str:
         return f"{self.target_type.model}[{self.target_pgh_id}] <- {self.source_type.model}"
+
+    @property
+    def caller(self) -> StackFrame | None:
+        """The innermost frame of *this project's* code in `stack` — the line that asked for the
+        derivation. What a listing shows; the whole stack is for the edge's own page.
+
+        Not simply `stack[-1]`: `Model.objects.create()` inside a `deriving()` block reaches
+        `save()` through Django's own `QuerySet.create`, and that frame says nothing about who
+        derived what. Frames of `lineage.py` and `models.py` are already left out at capture.
+        """
+        return next((frame for frame in reversed(self.stack) if frame.ours), None)
 
     def resolve_source(self) -> EventRow:
         """The source event row: the source's fields exactly as they stood when it was used."""
@@ -169,6 +225,68 @@ def _event_type(obj: VersionedModel) -> ContentType:
             "Decorate it with @tracked (apps/core/history.py)."
         )
     return ContentType.objects.get_for_model(event_model)
+
+
+# --- Ambient sources: lineage as the default ----------------------------------------------------
+#
+# `record_derivation` is correct and complete, and it is a second statement — which is exactly
+# why it gets forgotten. Forgetting it costs nothing and fails silently, so the path *without*
+# lineage is the cheap one. These two pieces invert that: `save(operation=..., sources=...)`
+# puts the edges and the step on the write itself — both keywords required — and `deriving(...)`
+# names the sources once for every write in a block, so not recording where the data came from
+# is something you have to write down (`sources=[]`).
+
+#: The sources every `VersionedModel.save()` in the current block records, or None outside one.
+#: A contextvar, like `current_user_id`: correct across threads and inside a task.
+_ambient_sources: ContextVar[tuple[VersionedModel, ...] | None] = ContextVar(
+    "ambient_sources", default=None
+)
+
+
+@contextmanager
+def deriving(*sources: VersionedModel) -> Iterator[None]:
+    """Every row saved inside the block records `sources` as what it was built from.
+
+        with deriving(upload, rates):
+            Row.create(..., operation=None, sources=None)     # edges to upload and rates
+            Total.create(..., operation=None, sources=None)   # the same edges, said once
+
+    `sources=None` on a `save()`/`create()` inside the block means these; an explicit list
+    overrides it for that write; `sources=[]` opts one write out. Blocks nest, and the inner one
+    replaces rather than extends the outer: a nested step has its own inputs, and merging them
+    would claim more than it knows.
+    """
+    token = _ambient_sources.set(tuple(sources))
+    try:
+        yield
+    finally:
+        _ambient_sources.reset(token)
+
+
+def ambient_sources() -> tuple[VersionedModel, ...] | None:
+    """What `deriving()` has named for the current block; None outside one."""
+    return _ambient_sources.get()
+
+
+def record_sources(
+    target: VersionedModel, sources: Sequence[VersionedModel] | None
+) -> list[Lineage]:
+    """The write-side entry point `VersionedModel.save()` calls after the row is written.
+
+    Resolves what to record: an explicit `sources` argument first, the ambient block second,
+    nothing otherwise. The target itself and repeats are dropped — a row is not built from
+    itself, and `uniq_lineage_edge` would refuse the second copy of an edge anyway.
+    """
+    chosen = ambient_sources() if sources is None else sources
+    if not chosen:
+        return []
+    seen: set[uuid.UUID] = {target.pk}
+    unique = []
+    for source in chosen:
+        if source.pk not in seen:
+            seen.add(source.pk)
+            unique.append(source)
+    return record_derivation(target, sources=unique) if unique else []
 
 
 def _release() -> str:
@@ -219,6 +337,10 @@ def _capture_stack() -> list[StackFrame]:
     a process touches the files on disk; afterwards it is cached. That cost buys the one thing a
     `producer` string cannot give: the exact line that asserted the derivation.
     """
+    # This module and the model bases are plumbing between the caller and the edge — with
+    # `save(sources=...)` the recording call is in `apps/core/models.py`, and the frame anybody
+    # wants is the one that called `save()`.
+    plumbing = {__file__, str(Path(__file__).with_name("models.py"))}
     return [
         StackFrame(
             file=frame.filename,
@@ -227,7 +349,7 @@ def _capture_stack() -> list[StackFrame]:
             code=(frame.line or "").strip(),
         )
         for frame in traceback.extract_stack()
-        if frame.filename != __file__
+        if frame.filename not in plumbing
     ]
 
 

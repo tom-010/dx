@@ -75,7 +75,9 @@ def store_documents(user: User, files: Sequence[UploadedFile[bytes]]) -> list[Do
     """Validate the whole batch first, then persist it (all or nothing from the user's view)."""
     validate_upload(files)
     return [
-        Document.objects.create(
+        Document.create(
+            operation=None,
+            sources=[],
             owner=user,
             file=file,
             name=file.name or "",

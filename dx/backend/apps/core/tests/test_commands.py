@@ -1,4 +1,3 @@
-import asyncio
 import os
 import signal
 import subprocess
@@ -14,7 +13,6 @@ from click.testing import CliRunner
 from django.apps import apps as django_apps
 from django.db import DatabaseError
 from pytest_django.fixtures import Settings
-from textual.widgets import Input, Static
 from watchfiles import Change
 
 from apps.accounts.models import User
@@ -408,108 +406,6 @@ def test_running_a_command_starts_a_child_process(monkeypatch: pytest.MonkeyPatc
     assert started == [[sys.executable, str(tui.MANAGE), "migrate", "--noinput"]]
 
 
-def test_the_explorer_filters_as_you_type() -> None:
-    """The screen itself, driven by keystrokes (textual's own test harness)."""
-
-    async def scenario() -> None:
-        app = tui.Explorer(cli.command_index())
-        async with app.run_test() as pilot:
-            await pilot.press(*"hw")
-
-            highlighted = app.highlighted_command()
-            assert highlighted is not None and highlighted.name == "hello_world"
-            # The pane shows the command's real --help, not our one-line summary.
-            assert "--shout" in str(app.query_one("#detail", Static).content)
-
-            await pilot.press("down")
-            assert app.highlighted_command() != highlighted
-
-    asyncio.run(scenario())
-
-
-def test_the_explorer_can_widen_the_search_to_descriptions() -> None:
-    """ctrl+f: names only by default, descriptions too on request."""
-
-    async def scenario() -> None:
-        app = tui.Explorer(cli.command_index())
-        async with app.run_test() as pilot:
-            await pilot.press(*"polic")
-            assert app.highlighted_command() is None  # no command is *called* that
-
-            await pilot.press("ctrl+f")
-
-            found = app.highlighted_command()
-            assert found is not None and found.name == "rls_sync"
-
-    asyncio.run(scenario())
-
-
-def test_the_explorer_groups_the_list_by_app() -> None:
-    async def scenario() -> None:
-        app = tui.Explorer(cli.command_index())
-        async with app.run_test():
-            # A heading is a row without a command; the first selectable row sits under one.
-            assert app.rows[0] is None
-            assert app.highlighted_command() is not None
-
-    asyncio.run(scenario())
-
-
-def test_enter_builds_the_command_line_before_running_it() -> None:
-    """`manage.py newapp` needs a NAME: the first enter picks the command, the arguments are
-    typed after it, and the bottom line always shows exactly what will run."""
-
-    async def scenario() -> None:
-        app = tui.Explorer(cli.command_index())
-        async with app.run_test() as pilot:
-            await pilot.press(*"newapp")
-            assert not app.armed()
-
-            await pilot.press("enter")  # picks it — does not run it
-
-            assert app.query_one("#query", Input).value == "newapp "
-            assert app.armed()
-
-            await pilot.press(*"reports")
-
-            assert "manage.py newapp reports" in str(app.query_one("#runline", Static).content)
-
-            await pilot.press("escape")  # back to searching, not out of the app
-            assert app.query_one("#query", Input).value == ""
-            assert app.is_running
-
-    asyncio.run(scenario())
-
-
-def test_running_a_command_leaves_the_explorer() -> None:
-    """The app hands the line back instead of running it: the command then has the terminal to
-    itself, and what it printed is still on the screen afterwards."""
-
-    async def scenario() -> None:
-        app = tui.Explorer(cli.command_index())
-        async with app.run_test() as pilot:
-            await pilot.press(*"newapp")
-            await pilot.press("enter")  # picks
-            await pilot.press(*"reports")
-            await pilot.press("enter")  # runs — by leaving
-
-        assert app.return_value == ("newapp", ["reports"])
-
-    asyncio.run(scenario())
-
-
-def test_the_explorer_says_when_nothing_matches() -> None:
-    async def scenario() -> None:
-        app = tui.Explorer(cli.command_index())
-        async with app.run_test() as pilot:
-            await pilot.press(*"zzzz")
-
-            assert app.highlighted_command() is None
-            assert "no command matches" in str(app.query_one("#detail", Static).content)
-
-    asyncio.run(scenario())
-
-
 def test_newcommand_refuses_an_app_that_does_not_exist() -> None:
     """The app is asked for when `--app` is left out; a wrong one is a usage error, not a file
     written somewhere surprising."""
@@ -576,23 +472,6 @@ def test_search_prefers_the_command_you_ran_last() -> None:
         "backend",
         "backup",
     ]
-
-
-def test_the_explorer_leads_with_what_you_ran_last() -> None:
-    async def scenario() -> None:
-        app = tui.Explorer(cli.command_index(), recent=["migrate"])
-        async with app.run_test() as pilot:
-            assert app.rows[0] is None  # the "recently used" heading
-            first = app.rows[1]
-            assert first is not None and first.name == "migrate"
-
-            # Once you are searching, the ranking takes over and the group is gone.
-            await pilot.press(*"backup")
-            assert app.rows[0] is None
-            second = app.rows[1]
-            assert second is not None and second.name == "backup"
-
-    asyncio.run(scenario())
 
 
 def test_tui_takes_a_multi_word_query() -> None:

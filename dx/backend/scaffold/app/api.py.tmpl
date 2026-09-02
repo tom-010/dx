@@ -66,8 +66,16 @@ def list_${plural}(request: HttpRequest) -> QuerySet[${Model}]:
 
 @router.post("/${name}", response={201: ${Model}Out})
 def create_${model}(request: HttpRequest, payload: ${Model}In) -> Status[${Model}]:
-    ${model} = ${Model}.objects.create(
-        owner=current_user(request), name=payload.name, description=payload.description
+    # Every write states its lineage (`apps/core/models.py::VersionedModel.save`). A row the
+    # user typed is built from nothing and is no step of its own — the request context already
+    # records that it came through the API. A view that *derives* a row names the operation and
+    # passes the rows it was computed from instead.
+    ${model} = ${Model}.create(
+        operation=None,
+        sources=[],
+        owner=current_user(request),
+        name=payload.name,
+        description=payload.description,
     )
     return Status(201, ${model})
 
@@ -81,7 +89,7 @@ def get_${model}(request: HttpRequest, ${model}_id: uuid.UUID) -> ${Model}:
 def update_${model}(request: HttpRequest, ${model}_id: uuid.UUID, payload: ${Model}In) -> ${Model}:
     ${model} = get_${model}_for(current_user(request), ${Model}Id(${model}_id))
     ${model}.set_payload(payload)
-    ${model}.save()
+    ${model}.save(operation=None, sources=[])
     return ${model}
 
 
@@ -91,7 +99,7 @@ def patch_${model}(
 ) -> ${Model}:
     ${model} = get_${model}_for(current_user(request), ${Model}Id(${model}_id))
     ${model}.set_payload_partial(payload)
-    ${model}.save()
+    ${model}.save(operation=None, sources=[])
     return ${model}
 
 

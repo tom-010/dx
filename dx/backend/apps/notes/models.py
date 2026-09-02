@@ -33,6 +33,15 @@ class Note(OwnedModel):
     class Meta(OwnedModel.Meta):
         pass
 
+    @staticmethod
+    def example() -> Note:
+        # `tags` already normalised (`api.normalize_tags`): trimmed, deduplicated, sorted.
+        return Note(
+            title="Kickoff meeting",
+            body="Agreed on the import format; revisit the delimiter next week.",
+            tags="import, meeting",
+        )
+
     def tag_list(self) -> list[str]:
         return [tag for tag in (part.strip() for part in self.tags.split(",")) if tag]
 

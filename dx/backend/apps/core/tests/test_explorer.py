@@ -178,7 +178,7 @@ def test_the_object_page_shows_the_version_history(staff_client: Client, user: U
     with acting_as(user), history_context("test"):
         dataset = create_dataset_for(user, name="first name")
         dataset.name = "second name"
-        dataset.save()
+        dataset.save(operation=None, sources=[])
 
     body = staff_client.get(object_url(user, dataset)).content.decode()
 
@@ -199,7 +199,7 @@ def test_the_object_page_shows_both_directions_of_the_lineage(
             derived = create_dataset_for(user, name="the derived")
             lineage.record_derivation(derived, sources=[source])
         source.name = "the source, renamed"
-        source.save()
+        source.save(operation=None, sources=[])
 
     downstream = staff_client.get(object_url(user, source)).content.decode()
     upstream = staff_client.get(object_url(user, derived)).content.decode()
@@ -385,7 +385,7 @@ def test_the_version_page_shows_the_state_as_it_was(staff_client: Client, user: 
     with acting_as(user):
         dataset = create_dataset_for(user, name="as first written")
         dataset.name = "as it is now"
-        dataset.save()
+        dataset.save(operation=None, sources=[])
 
     first = staff_client.get(version_url(user, dataset, 1)).content.decode()
     second = staff_client.get(version_url(user, dataset, 2)).content.decode()
@@ -435,9 +435,9 @@ def test_the_version_page_lineage_is_that_version_alone(staff_client: Client, us
         report = create_dataset_for(user, name="report")
         lineage.record_derivation(report, sources=[source])
         source.name = "rates (revised)"
-        source.save()
+        source.save(operation=None, sources=[])
         report.name = "report (rebuilt)"
-        report.save()
+        report.save(operation=None, sources=[])
         lineage.record_derivation(report, sources=[source])
 
     first = staff_client.get(version_url(user, report, 1)).content.decode()
@@ -782,3 +782,66 @@ def test_the_model_list_counts_the_retired_rows_separately(
 
     assert "<td>2</td>" in row  # both rows counted
     assert "<del>1</del>" in row  # one of them retired
+
+
+# --- the operation and its description ------------------------------------------------------------
+
+
+def test_the_listing_names_the_operation_that_wrote_each_row(
+    staff_client: Client, user: User
+) -> None:
+    """ "Which step produced this?" is the question a listing was otherwise silent about."""
+    with acting_as(user):
+        derived = create_dataset_for(user, name="derived", operation="summarise notes")
+        typed = create_dataset_for(user, name="typed by a person")
+
+    body = staff_client.get(model_url(user, Dataset)).content.decode()
+    table = body.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+
+    derived_row = next(chunk for chunk in table.split("<tr>") if str(derived.pk) in chunk)
+    typed_row = next(chunk for chunk in table.split("<tr>") if str(typed.pk) in chunk)
+
+    assert "summarise notes" in derived_row
+    # A row a person wrote has no operation of its own, and says so rather than inventing one.
+    assert '<span class="empty">—</span>' in typed_row
+
+
+def test_the_history_shows_what_the_step_did_in_this_run(staff_client: Client, user: User) -> None:
+    """`operation_description` is the longer form for the reviewer; it belongs beside the name
+    wherever the name appears, and the history block was dropping it."""
+    with acting_as(user):
+        source = create_dataset_for(user, name="the source")
+        derived = create_dataset_for(
+            user,
+            name="the derived",
+            operation="summarise notes",
+            sources=[source],
+            operation_description="14 chunks, opus, prompt v3",
+        )
+
+    body = staff_client.get(object_url(user, derived)).content.decode()
+    history = body.split(">History<", 1)[1].split(">Lineage<", 1)[0]
+
+    assert "summarise notes" in history
+    assert "14 chunks, opus, prompt v3" in history  # the description, in the history block
+    assert "14 chunks, opus, prompt v3" in body.split(">Lineage<", 1)[1]  # ...and on the edge
+
+
+def test_the_version_page_names_the_operation_and_its_description(
+    staff_client: Client, user: User
+) -> None:
+    with acting_as(user):
+        source = create_dataset_for(user, name="source")
+        derived = create_dataset_for(
+            user,
+            name="derived",
+            operation="convert to EUR",
+            sources=[source],
+            operation_description="rates of 2026-09-01",
+        )
+
+    body = staff_client.get(version_url(user, derived, 1)).content.decode()
+
+    assert "operation</dt>" in body
+    assert "convert to EUR" in body
+    assert "rates of 2026-09-01" in body
