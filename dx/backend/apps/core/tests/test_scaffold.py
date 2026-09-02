@@ -52,7 +52,7 @@ def test_render_app_writes_compilable_python(tmp_path: Path) -> None:
     api = (tmp_path / "apps" / "reports" / "api.py").read_text()
     assert 'Router(tags=["reports"])' in api
     assert '@router.get("/reports/{report_id}"' in api
-    assert "class Report(BaseModel)" in (tmp_path / "apps" / "reports" / "models.py").read_text()
+    assert "class Report(OwnedModel)" in (tmp_path / "apps" / "reports" / "models.py").read_text()
 
     with pytest.raises(scaffold.ScaffoldError, match="already exists"):
         scaffold.render_app(spec, tmp_path / "apps")

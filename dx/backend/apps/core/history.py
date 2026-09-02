@@ -8,7 +8,7 @@ audit log, it is an edge that silently misattributes data.
     from apps.core.history import tracked
 
     @tracked
-    class Dataset(BaseModel):
+    class Dataset(OwnedModel):
         ...
 
 `@tracked` generates `DatasetEvent` (reachable as `Dataset.pgh_event_model`, and as

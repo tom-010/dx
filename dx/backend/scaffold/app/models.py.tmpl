@@ -4,7 +4,7 @@ from typing import NewType
 from django.db import models
 
 from apps.core.history import tracked
-from apps.core.models import BaseModel
+from apps.core.models import OwnedModel
 
 ${Model}Id = NewType("${Model}Id", uuid.UUID)
 
@@ -14,11 +14,11 @@ ${Model}Id = NewType("${Model}Id", uuid.UUID)
 # otherwise. Never use a plain ManyToManyField here: declare an owned `through=` model, or the
 # join rows change with no version row behind them.
 @tracked
-class ${Model}(BaseModel):
+class ${Model}(OwnedModel):
     """TODO: describe what a ${model} is."""
 
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
 
-    class Meta(BaseModel.Meta):
+    class Meta(OwnedModel.Meta):
         pass

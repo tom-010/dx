@@ -4,7 +4,7 @@ from typing import NewType
 from django.db import models
 
 from apps.core.history import tracked
-from apps.core.models import BaseModel
+from apps.core.models import OwnedModel
 
 NoteId = NewType("NoteId", uuid.UUID)
 
@@ -14,7 +14,7 @@ NoteId = NewType("NoteId", uuid.UUID)
 # otherwise. Never use a plain ManyToManyField here: declare an owned `through=` model, or the
 # join rows change with no version row behind them.
 @tracked
-class Note(BaseModel):
+class Note(OwnedModel):
     """A piece of writing the user keeps.
 
     Notes are the project's showcase for versioning and lineage (see `apps/notes/api.py`):
@@ -30,7 +30,7 @@ class Note(BaseModel):
     # renamed or counted. Normalised on write (`api.normalize_tags`).
     tags = models.CharField(max_length=500, blank=True)
 
-    class Meta(BaseModel.Meta):
+    class Meta(OwnedModel.Meta):
         pass
 
     def tag_list(self) -> list[str]:

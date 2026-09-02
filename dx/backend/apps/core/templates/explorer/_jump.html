@@ -1,0 +1,21 @@
+{% comment %}
+Jump straight to a row by id. Ids are UUIDv7 and unique across every table, so the id alone is
+enough — `model` only narrows the search when the page already knows which table it is about.
+{% endcomment %}
+<form method="get" action="{{ jump_url }}">
+  <fieldset>
+    <legend>Jump to an id</legend>
+    <label>
+      Id
+      <input type="text" name="id" size="38" required
+             placeholder="01a05e72-6841-7634-bd7a-2ec4c318c04c"
+             pattern="[0-9a-fA-F-]{{ '{' }}32,36{{ '}' }}">
+    </label>
+    {% if model_key %}<input type="hidden" name="model" value="{{ model_key }}">{% endif %}
+    <input type="hidden" name="back" value="{{ request.get_full_path }}">
+    <button type="submit">Go</button>
+  </fieldset>
+</form>
+{% if request.GET.missing %}
+  <p class="error">Nothing found with id {{ request.GET.missing }}.</p>
+{% endif %}

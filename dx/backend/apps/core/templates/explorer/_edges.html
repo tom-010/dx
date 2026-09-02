@@ -1,0 +1,36 @@
+{% comment %}
+One run's worth of lineage edges. Shared by the object and version pages, because an edge reads
+the same either way: the far end is always a *version*, and that is where it links.
+{% endcomment %}
+<table>
+  <caption>
+    {{ group.source }} ·
+    <time datetime="{{ group.at|date:'c' }}">{{ group.at|date:"Y-m-d H:i" }}</time>
+  </caption>
+  <thead>
+    <tr>
+      <th scope="col">{{ far }}</th>
+      <th scope="col">Version</th>
+      <th scope="col">State</th>
+      <th scope="col">Recorded by</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for edge in group.edges %}
+      <tr>
+        <th scope="row">
+          {% if edge.url %}<a href="{{ edge.url }}">{{ edge.label }} v{{ edge.version }}</a>
+          {% else %}{{ edge.label }} v{{ edge.version }}{% endif %}
+          <span class="tag">{{ edge.model }}</span>
+        </th>
+        <td>v{{ edge.version }}</td>
+        <td>{% if edge.is_stale %}<mark>superseded</mark>{% else %}current{% endif %}</td>
+        <td class="frame">
+          <a href="{{ edge.edge_url }}" title="The whole call stack that recorded this edge">
+            <code>{{ edge.frame }}</code></a> @{{ edge.release }}<br>
+          <code>{{ edge.code }}</code>
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>

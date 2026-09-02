@@ -27,6 +27,11 @@ APP_VERSION = env.APP_VERSION
 # `/admin/` is only mounted when this is on (config/urls.py). The admin shows tenant data, so
 # production does not serve it: administer through `manage.py shell_as` / `shell_admin`.
 ADMIN_ENABLED = env.admin_enabled
+# The lineage explorer (apps/core/explorer.py), same deal: a read-only browser over every table,
+# mounted only in development. Derived here rather than read from `settings.DEBUG` inside
+# `config/urls.py`, because Django's test runner sets DEBUG to False *after* settings are
+# imported — a URLconf gated on it directly would silently vanish for the whole test suite.
+EXPLORER_ENABLED = DEBUG
 # Container health checks (Docker HEALTHCHECK, compose) reach the app via loopback; those names
 # are always allowed next to the public ones — they cannot be used for host-header poisoning.
 # While DEBUG with an empty list, Django allows them by itself.
@@ -153,12 +158,12 @@ DATABASES = {
 
 
 # Multitenancy (tenant == user; CLAUDE.md "Multitenancy"). Two enforcement layers ride on
-# `apps.core.models.BaseModel`: the ORM scope (`OwnedManager`, django-scopes state) and
+# `apps.core.models.OwnedModel`: the ORM scope (`OwnedManager`, django-scopes state) and
 # Postgres row-level security (apps/core/rls.py, `manage.py rls_sync`). The request context
 # comes from `apps.core.middleware.TenantMiddleware`, tasks use `apps.core.tasks.tenant_task`.
 
 # The infrastructure apps hold shared tables (users, tokens, sessions); every other app under
-# apps/ is a tenant app: all of its concrete models must inherit BaseModel (apps/core/checks.py,
+# apps/ is a tenant app: all of its concrete models must inherit OwnedModel (apps/core/checks.py,
 # tenant.E001). A new app is a tenant app by default — nothing to register.
 SHARED_APPS = ["apps.core", "apps.accounts"]
 TENANT_APPS = [app for app in INSTALLED_APPS if app.startswith("apps.") and app not in SHARED_APPS]

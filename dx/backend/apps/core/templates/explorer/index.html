@@ -1,0 +1,43 @@
+{% extends "explorer/base.html" %}
+
+{% block title %}{{ tenant }}{% endblock %}
+{% block breadcrumbs %}<li>{{ tenant }}</li>{% endblock %}
+
+{% block content %}
+  <h1>{{ tenant }}</h1>
+  <p title="Every model this project defines, by app, with the rows counted for this user —
+soft-deleted ones included.">
+    <span class="tag" title="Belongs to one user; isolated by the ORM scope and by row-level
+security.">owned</span>
+    <span class="tag" title="An append-only event table mirroring another model's writes.">history</span>
+    <span class="tag" title="Belongs to nobody: no owner column, no tenant policy.">shared</span>
+  </p>
+
+  {% include "explorer/_jump.html" %}
+
+  {% for app in apps %}
+    <section>
+      <h2>{{ app.label }}</h2>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Model</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Versioned</th>
+            <th scope="col">Rows</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for model in app.models %}
+            <tr>
+              <th scope="row"><a href="{{ model.url }}">{{ model.name }}</a></th>
+              <td><span class="tag">{{ model.kind }}</span></td>
+              <td>{% if model.tracked %}yes{% else %}<span class="empty">no</span>{% endif %}</td>
+              <td>{{ model.count }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endfor %}
+{% endblock %}

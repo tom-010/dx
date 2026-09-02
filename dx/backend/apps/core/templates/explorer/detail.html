@@ -1,0 +1,109 @@
+{% extends "explorer/base.html" %}
+
+{% block title %}{{ label }}{% endblock %}
+{% block breadcrumbs %}
+  <li><a href="{{ index_url }}">{{ tenant }}</a></li>
+  <li><a href="{{ model_url }}">{{ model }}</a></li>
+  <li>{{ label }}</li>
+{% endblock %}
+
+{% block content %}
+  <h1>{{ label }} <span class="tag">object</span></h1>
+  <p>
+    {{ model }} <span class="tag">{{ kind }}</span>
+    {% if version %}· now at v{{ version }}{% endif %} · <code>{{ object_id }}</code>
+  </p>
+
+  <section>
+    <h2>Fields</h2>
+    <dl>
+      {% for field in fields %}
+        <dt>{{ field.name }}</dt>
+        <dd>{{ field.value }}</dd>
+      {% endfor %}
+    </dl>
+  </section>
+
+  <section>
+    <h2 title="One block per save: everything a single request, task or command wrote shares a
+context and belongs to the same revision, even when it touched several tables.">History</h2>
+    {% if not tracked %}
+      <p class="empty">
+        Not versioned — this table is exempt from history (<code>HISTORY_EXEMPT</code>), either
+        because it is append-only already or because its rows are credentials.
+      </p>
+    {% elif history %}
+      {% for group in history %}
+        <h3>
+          <time datetime="{{ group.at|date:'c' }}">{{ group.at|date:"Y-m-d H:i" }}</time>
+          · via {{ group.source }}
+        </h3>
+        <table>
+          <thead>
+            <tr><th scope="col">Version</th><th scope="col">What changed</th></tr>
+          </thead>
+          <tbody>
+            {% for revision in group.revisions %}
+              <tr>
+                <th scope="row">
+                  {% if revision.url %}<a href="{{ revision.url }}">v{{ revision.version }}</a>
+                  {% else %}v{{ revision.version }}{% endif %}
+                  {% if revision.is_related %}<span class="tag">{{ revision.model }}</span>{% endif %}
+                  {% if revision.deleted %}<del>deleted</del>{% endif %}
+                </th>
+                <td>
+                  {% if revision.is_related %}
+                    {{ revision.description }}
+                  {% elif revision.changes %}
+                    {% for change in revision.changes %}
+                      <article>
+                        <strong>{{ change.field }}</strong>:
+                        {{ change.old|default:"—" }} &rarr; {{ change.new|default:"—" }}
+                      </article>
+                    {% endfor %}
+                  {% else %}
+                    <span class="empty">created</span>
+                  {% endif %}
+                  {% for field in revision.unknown_fields %}
+                    <article class="frame">{{ field }}: not tracked at this version</article>
+                  {% endfor %}
+                  {% for name, value in revision.archived.items %}
+                    <article class="frame">{{ name }} (dropped field): {{ value }}</article>
+                  {% endfor %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endfor %}
+    {% else %}
+      <p class="empty">No versions.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2 title="An edge names the version of a source that was used, not the row — so renaming a
+source later never rewrites what was consumed, and an edge whose source has moved on reads
+superseded.">Lineage</h2>
+    <p>
+      {% if stale_count %}
+        <mark>{{ stale_count }} derivation{{ stale_count|pluralize }} of this row
+        {{ stale_count|pluralize:"is,are" }} stale — they would come out differently if rebuilt.</mark>
+      {% endif %}
+    </p>
+
+    <h3>Derived from</h3>
+    {% for group in sources %}
+      {% include "explorer/_edges.html" with group=group far="Source" %}
+    {% empty %}
+      <p class="empty">Nothing — this row was not built from anything.</p>
+    {% endfor %}
+
+    <h3>Used to build</h3>
+    {% for group in derived %}
+      {% include "explorer/_edges.html" with group=group far="Derived version" %}
+    {% empty %}
+      <p class="empty">Nothing has been built from this row.</p>
+    {% endfor %}
+  </section>
+{% endblock %}

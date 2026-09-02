@@ -1,0 +1,71 @@
+{% extends "explorer/base.html" %}
+
+{% block title %}Recorded by {{ producer }}{% endblock %}
+{% block breadcrumbs %}
+  <li><a href="{{ index_url }}">{{ tenant }}</a></li>
+  <li>edge</li>
+{% endblock %}
+
+{% block content %}
+  <h1>{{ producer }} <span class="tag">edge</span></h1>
+  <p title="One lineage edge: the claim that this target version was built from this source
+version, plus the call stack that made the claim and the build it ran on.">
+    {% if source.url %}<a href="{{ source.url }}">{{ source.label }} v{{ source.version }}</a>
+    {% else %}{{ source.label }} v{{ source.version }}{% endif %}
+    <span class="tag">{{ source.model }}</span>
+    &rarr;
+    {% if target.url %}<a href="{{ target.url }}">{{ target.label }} v{{ target.version }}</a>
+    {% else %}{{ target.label }} v{{ target.version }}{% endif %}
+    <span class="tag">{{ target.model }}</span>
+  </p>
+
+  <section>
+    <h2>Recorded</h2>
+    <dl>
+      <dt>when</dt>
+      <dd><time datetime="{{ at|date:'c' }}">{{ at|date:"Y-m-d H:i:s" }}</time></dd>
+      <dt>by</dt>
+      <dd>{{ producer }}</dd>
+      <dt title="APP_VERSION: the short commit the image was built from, or the working tree's
+commit when it was recorded outside one.">build</dt>
+      <dd><code>{{ release }}</code></dd>
+      <dt>source state</dt>
+      <dd>{% if source.is_stale %}<mark>superseded</mark>{% else %}current{% endif %}</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2 title="The whole call stack as it stood when record_derivation ran, outermost frame
+first. Frames of this project are marked; the rest is framework plumbing.">Call stack</h2>
+    {% if frames %}
+      <table>
+        <caption>{{ frames|length }} frame{{ frames|length|pluralize }}, outermost first</caption>
+        <thead>
+          <tr>
+            <th scope="col">#</th>
+            <th scope="col">Where</th>
+            <th scope="col">Function</th>
+            <th scope="col">Line</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for frame in frames %}
+            <tr>
+              <th scope="row">{{ frame.depth }}</th>
+              <td>
+                <code>{{ frame.location }}</code>
+                {% if frame.ours %}<span class="tag">app</span>{% endif %}
+              </td>
+              <td><code>{{ frame.func }}()</code></td>
+              <td><code>{{ frame.code|default:"—" }}</code></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">
+        No stack recorded — this edge predates <code>Lineage.stack</code>.
+      </p>
+    {% endif %}
+  </section>
+{% endblock %}

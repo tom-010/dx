@@ -1,0 +1,40 @@
+{% extends "explorer/base.html" %}
+
+{% block title %}Users{% endblock %}
+
+{% block content %}
+  <h1>Users</h1>
+  <p title="Tenant == user, so every row belongs to exactly one of these. Picking one runs the
+rest of the explorer inside their tenant context.">
+    Pick whose data to look at.
+  </p>
+
+  {% include "explorer/_jump.html" %}
+
+  <table>
+    <caption>{{ users|length }} user{{ users|length|pluralize }}</caption>
+    <thead>
+      <tr>
+        <th scope="col">User</th>
+        <th scope="col">Email</th>
+        <th scope="col">Staff</th>
+        <th scope="col">Joined</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+        <tr>
+          <th scope="row">
+            <a href="{{ user.url }}">{{ user.username }}</a>
+            {% if user.is_you %}<small>you</small>{% endif %}
+          </th>
+          <td>{{ user.email|default:"—" }}</td>
+          <td>{% if user.staff %}yes{% else %}<span class="empty">no</span>{% endif %}</td>
+          <td><time datetime="{{ user.joined|date:'c' }}">{{ user.joined|date:"Y-m-d H:i" }}</time></td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="4" class="empty">No users — <code>manage.py createadmin</code>.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

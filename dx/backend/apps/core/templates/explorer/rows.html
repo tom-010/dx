@@ -1,0 +1,94 @@
+{% extends "explorer/base.html" %}
+
+{% block title %}{{ model }}{% endblock %}
+{% block breadcrumbs %}
+  <li><a href="{{ index_url }}">{{ tenant }}</a></li>
+  <li>{{ model }}</li>
+{% endblock %}
+
+{% block content %}
+  <h1>{{ model }} <span class="tag">{{ kind }}</span></h1>
+  <p>
+    {% if versions_of %}
+      <strong title="An event row is one past state of another row. It opens as a version page,
+not as an object of its own.">Versions</strong> of {{ versions_of }}, newest first.
+    {% else %}
+      <strong title="Each row as it is now. Its past states live on their own version
+pages.">Objects</strong>, newest first — soft-deleted rows included.
+    {% endif %}
+  </p>
+
+  {% if filter.fields %}
+    <form method="get" action="">
+      <fieldset>
+        <legend>Filter by date</legend>
+        <label>
+          Timestamp
+          <select name="on">
+            {% for name in filter.fields %}
+              <option value="{{ name }}" {% if name == filter.field %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>From <input type="date" name="from" value="{{ filter.start }}"></label>
+        <label>To <input type="date" name="to" value="{{ filter.end }}"></label>
+        <button type="submit" name="range" value="">Apply</button>
+        {% for range in filter.ranges %}
+          <button type="submit" name="range" value="{{ range.key }}"
+                  aria-pressed="{{ range.active|yesno:'true,false' }}">{{ range.label }}</button>
+        {% endfor %}
+        {% if filter.active %}<a href="{{ request.path }}">clear</a>{% endif %}
+      </fieldset>
+    </form>
+    {% if filter.error %}<p class="error">{{ filter.error }}</p>{% endif %}
+  {% endif %}
+
+  {% include "explorer/_jump.html" %}
+
+  <table>
+    <caption>
+      {{ page.total }} row{{ page.total|pluralize }}{% if filter.summary %}
+      {{ filter.summary }}{% endif %} · page {{ page.number }} of {{ page.count }}
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Row</th>
+        <th scope="col">Version</th>
+        <th scope="col">Written</th>
+        <th scope="col">Changed</th>
+        <th scope="col">State</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <th scope="row"><a href="{{ row.url }}">{{ row.label }}</a></th>
+          <td>{% if row.version %}v{{ row.version }}{% else %}<span class="empty">—</span>{% endif %}</td>
+          <td>
+            {% if row.at %}<time datetime="{{ row.at|date:'c' }}">{{ row.at|date:"Y-m-d H:i" }}</time>
+            {% else %}<span class="empty">—</span>{% endif %}
+          </td>
+          <td>
+            {% if row.modified %}<time datetime="{{ row.modified|date:'c' }}">{{ row.modified|date:"Y-m-d H:i" }}</time>
+            {% else %}<span class="empty">—</span>{% endif %}
+          </td>
+          <td>{% if row.deleted %}<del>deleted</del>{% else %}live{% endif %}</td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="5" class="empty">
+            {% if filter.active %}No rows in that date range.{% else %}No rows.{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if page.count > 1 %}
+    <nav aria-label="Pagination">
+      {% if page.previous_url %}<a href="{{ page.previous_url }}" rel="prev">← newer</a>{% endif %}
+      <span>page {{ page.number }} of {{ page.count }}</span>
+      {% if page.next_url %}<a href="{{ page.next_url }}" rel="next">older →</a>{% endif %}
+    </nav>
+  {% endif %}
+{% endblock %}

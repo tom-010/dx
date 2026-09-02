@@ -9,7 +9,7 @@ from apps.accounts.models import User
 from apps.core import lineage
 from apps.core.db import tenant_context
 from apps.core.history import history_context
-from apps.core.models import BaseModel
+from apps.core.models import OwnedModel
 from apps.core.revisions import context_sources
 from apps.datasets import models
 
@@ -29,7 +29,7 @@ def idea2() -> tuple[models.ModelA, list[models.ModelA | models.ModelB]]:
     return derived, [a1, a2, b1, b2]
 
 
-def print_lineage(obj: BaseModel, stack: bool = False) -> None:
+def print_lineage(obj: OwnedModel, stack: bool = False) -> None:
     """What `obj` was built from, grouped by the run that recorded it.
 
     An edge takes its `pgh_context` from the *target's version*, not from the run that called
@@ -74,7 +74,7 @@ def print_lineage(obj: BaseModel, stack: bool = False) -> None:
             )
 
 
-def print_history(obj: BaseModel) -> None:
+def print_history(obj: OwnedModel) -> None:
     """Every state the row has been in, oldest first — the version chain the edges point into."""
     print(f"{obj} history:")
     for version in obj.history():

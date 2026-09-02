@@ -7,7 +7,7 @@
 - Typesafe API and Type Gen
 - Ensure speed
 - Great CI Pipeline
-- BaseModel etc from Boring Template
+- OwnedModel etc from Boring Template
 - Settings Production Ready
 
 

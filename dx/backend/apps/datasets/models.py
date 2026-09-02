@@ -7,7 +7,7 @@ from pydantic import BaseModel as PydanticModel
 from pydantic import ConfigDict, Field
 
 from apps.core.history import tracked
-from apps.core.models import BaseModel
+from apps.core.models import OwnedModel
 
 DatasetId = NewType("DatasetId", uuid.UUID)
 
@@ -28,7 +28,7 @@ class DatasetOptions(PydanticModel):
 
 
 @tracked
-class Dataset(BaseModel):
+class Dataset(OwnedModel):
     """Demo entity: a named collection of rows managed by the app."""
 
     name = models.CharField(max_length=200)
@@ -44,7 +44,7 @@ class Dataset(BaseModel):
         "Tag", through="DatasetTag", related_name="datasets"
     )
 
-    class Meta(BaseModel.Meta):
+    class Meta(OwnedModel.Meta):
         pass
 
     def tag_names(self) -> list[str]:
@@ -54,13 +54,13 @@ class Dataset(BaseModel):
 
 
 @tracked
-class Tag(BaseModel):
+class Tag(OwnedModel):
     """A label the user puts on datasets. Exists only while something is tagged with it
     (`api.prune_unused_tags`), so the list stays the list of tags actually in use."""
 
     name = models.CharField(max_length=100)
 
-    class Meta(BaseModel.Meta):
+    class Meta(OwnedModel.Meta):
         constraints = [
             # Conditional: a soft-deleted tag must not reserve its name forever, or "sales"
             # could never be used again once it fell out of use.
@@ -73,7 +73,7 @@ class Tag(BaseModel):
 
 
 @tracked
-class DatasetTag(BaseModel):
+class DatasetTag(OwnedModel):
     """The join between a dataset and a tag — an owned, versioned model of its own.
 
     `on_delete=CASCADE`, not `PROTECT`: nothing hard-deletes these except tenant erasure
@@ -85,7 +85,7 @@ class DatasetTag(BaseModel):
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="tag_links")
     tag = models.ForeignKey(Tag, on_delete=models.CASCADE, related_name="dataset_links")
 
-    class Meta(BaseModel.Meta):
+    class Meta(OwnedModel.Meta):
         constraints = [
             models.UniqueConstraint(
                 fields=["dataset", "tag"],
@@ -99,12 +99,12 @@ class DatasetTag(BaseModel):
 
 
 @tracked
-class ModelA(BaseModel):
+class ModelA(OwnedModel):
     name = models.CharField(max_length=256)
 
 
 @tracked
-class ModelB(BaseModel):
+class ModelB(OwnedModel):
     name = models.CharField(max_length=256)
 
     def __str__(self) -> str:

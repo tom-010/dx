@@ -106,7 +106,7 @@ def test_tracked_models_are_never_reported_through_inheritance() -> None:
 def test_no_implicit_m2m_on_versioned_models() -> None:
     """An auto-created through table is not a model, so it can be neither tracked nor owned:
     a tag change would leave no version row behind it, which is the one thing lineage cannot
-    tolerate. Declare an explicit `through=` model inheriting `BaseModel`.
+    tolerate. Declare an explicit `through=` model inheriting `OwnedModel`.
 
     Scoped to `VersionedModel` subclasses — the tables that hold our data. `accounts.User` inherits
     `groups`/`user_permissions` from Django's `AbstractUser`; those are permission bookkeeping
@@ -122,7 +122,7 @@ def test_no_implicit_m2m_on_versioned_models() -> None:
 
 
 def test_triggers_survived_meta_inheritance() -> None:
-    """A concrete model that writes `class Meta:` instead of `class Meta(BaseModel.Meta)`
+    """A concrete model that writes `class Meta:` instead of `class Meta(OwnedModel.Meta)`
     silently loses both triggers — no error, no migration, just no protection."""
     registered: dict[str, set[str]] = {}
     for owner, trigger in pgtrigger.registry.registered():

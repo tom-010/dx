@@ -4,7 +4,7 @@ Two carriers, always set together:
 
 - the Postgres session variable `app.user_id` (`settings.TENANT_GUC`) that the row-level
   security policies compare `owner_id` against (`apps/core/rls.py`), and
-- `current_user_id`, a contextvar mirroring it in Python, so `BaseModel.save()` can fill in
+- `current_user_id`, a contextvar mirroring it in Python, so `OwnedModel.save()` can fill in
   `owner` and `BearerAuth` can tell that the middleware already verified the request's token.
 
 `tenant_context()` (or the narrower `tenant_db_context()`) sets both for one transaction with

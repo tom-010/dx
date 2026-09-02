@@ -1,0 +1,28 @@
+{% load static %}<!doctype html>
+{% comment %}
+The explorer's one layout. Semantic HTML and a single stylesheet on purpose: this is a
+development tool, and a build step between a dev and the row they are looking at is a build step
+that will one day be broken exactly when it is needed.
+
+Note the comment tag: `{# … #}` is single-line only, so a multi-line one is not a comment at all
+— the text renders, and here it rendered *before* the doctype.
+{% endcomment %}
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Explorer{% endblock %} · dx</title>
+    <link rel="stylesheet" href="{% static 'explorer/explorer.css' %}">
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Breadcrumb">
+        <ol>
+          <li><a href="{% url 'explorer:users' %}">explorer</a></li>
+          {% block breadcrumbs %}{% endblock %}
+        </ol>
+      </nav>
+    </header>
+    <main>{% block content %}{% endblock %}</main>
+  </body>
+</html>

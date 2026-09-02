@@ -38,7 +38,7 @@ from apps.core import checks, db, health, middleware, rls, scrub, tasks, tenants
 from apps.core.db import NoTenantContext
 from apps.core.history import hard_delete
 from apps.core.management.commands import load_tenant, pull_tenant
-from apps.core.models import BaseModel
+from apps.core.models import OwnedModel
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
@@ -60,7 +60,7 @@ def media_root(settings: Settings, tmp_path: Path) -> Path:
 # --- generic fixtures ----------------------------------------------------------------------------
 
 
-def minimal_kwargs(model: type[BaseModel], owner: User) -> dict[str, object]:
+def minimal_kwargs(model: type[OwnedModel], owner: User) -> dict[str, object]:
     """Values for every required field of `model`, by field type — extend when a new field
     type shows up, so that the parametrised tests below keep covering every owned model."""
     values: dict[str, object] = {}
@@ -73,7 +73,7 @@ def minimal_kwargs(model: type[BaseModel], owner: User) -> dict[str, object]:
             # A join model (an explicit m2m through) needs its ends; build them for the same
             # owner, or the WITH CHECK clause would reject the row for the wrong reason.
             target = field.related_model
-            assert issubclass(target, BaseModel), f"{model.__name__}.{field.name} -> {target}"
+            assert issubclass(target, OwnedModel), f"{model.__name__}.{field.name} -> {target}"
             values[field.name] = create_owned(target, owner)
         elif isinstance(field, models.FileField):
             values[field.name] = ContentFile(b"x", name="x.bin")
@@ -94,7 +94,7 @@ def minimal_kwargs(model: type[BaseModel], owner: User) -> dict[str, object]:
     return values
 
 
-def create_owned(model: type[BaseModel], owner: User) -> BaseModel:
+def create_owned(model: type[OwnedModel], owner: User) -> OwnedModel:
     kwargs = minimal_kwargs(model, owner)  # may create the rows this one points at
     with acting_as(owner):
         return model.objects.create(owner=owner, **kwargs)
@@ -129,7 +129,7 @@ def test_every_feature_app_has_owned_models_only() -> None:
 
 @pytest.mark.parametrize("model", OWNED_MODELS, ids=label)
 def test_owned_model_is_isolated_by_orm_scope_and_rls(
-    model: type[BaseModel], user: User, other_user: User
+    model: type[OwnedModel], user: User, other_user: User
 ) -> None:
     mine = create_owned(model, user)
     theirs = create_owned(model, other_user)
@@ -149,7 +149,7 @@ def test_owned_model_is_isolated_by_orm_scope_and_rls(
 
 
 @pytest.mark.parametrize("model", OWNED_MODELS, ids=label)
-def test_no_context_sees_nothing(model: type[BaseModel], user: User) -> None:
+def test_no_context_sees_nothing(model: type[OwnedModel], user: User) -> None:
     """Fails closed: without a tenant context the ORM refuses and the table is empty."""
     create_owned(model, user)
     assert guc() == ""
@@ -163,7 +163,7 @@ def test_no_context_sees_nothing(model: type[BaseModel], user: User) -> None:
 
 @pytest.mark.parametrize("model", OWNED_MODELS, ids=label)
 def test_with_check_rejects_foreign_owner(
-    model: type[BaseModel], user: User, other_user: User
+    model: type[OwnedModel], user: User, other_user: User
 ) -> None:
     """The WITH CHECK half of the policy: writes for another owner fail, whatever the ORM says."""
     mine = create_owned(model, user)
@@ -392,18 +392,18 @@ def test_new_pii_fields_refuse_to_export_unscrubbed() -> None:
 
 @isolate_apps("apps.datasets")
 def test_check_flags_unowned_models_and_auto_m2m_in_tenant_apps() -> None:
-    class Rogue(models.Model):  # a feature model that forgot BaseModel
+    class Rogue(models.Model):  # a feature model that forgot OwnedModel
         class Meta:
             app_label = "datasets"
 
-    class Tag(BaseModel):
-        class Meta(BaseModel.Meta):
+    class Tag(OwnedModel):
+        class Meta(OwnedModel.Meta):
             app_label = "datasets"
 
-    class Tagged(BaseModel):
+    class Tagged(OwnedModel):
         tags = models.ManyToManyField(Tag)  # auto-created through table: no owner column
 
-        class Meta(BaseModel.Meta):
+        class Meta(OwnedModel.Meta):
             app_label = "datasets"
 
     class Shared(models.Model):
@@ -636,7 +636,7 @@ def test_owned_upload_path_needs_an_owned_instance_with_an_owner(user: User) -> 
     from apps.core.models import owned_upload_path
     from apps.documents.models import Document
 
-    with pytest.raises(TypeError, match="BaseModel"):
+    with pytest.raises(TypeError, match="OwnedModel"):
         owned_upload_path(User(), "x.bin")
     with pytest.raises(NoTenantContext):
         owned_upload_path(Document(), "x.bin")
@@ -995,8 +995,8 @@ def test_long_app_names_still_get_a_valid_owner_index() -> None:
     `manage.py newapp subscriptions --model Subscription` would die in its own
     `makemigrations` with models.E034 and leave the repo half-scaffolded."""
 
-    class SubscriptionRenewalReminder(BaseModel):
-        class Meta(BaseModel.Meta):
+    class SubscriptionRenewalReminder(OwnedModel):
+        class Meta(OwnedModel.Meta):
             app_label = "datasets"
 
     (index,) = SubscriptionRenewalReminder._meta.indexes

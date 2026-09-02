@@ -20,7 +20,7 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
   (`openschema.json`) is the contract with the frontend; the frontend talks to the API ONLY through
   the code orval generates from it (`frontend/src/api/`). See "End-to-end types".
 - Decisions listed in `NOTES.md` §2 (stack table) are settled — do not swap libraries without asking.
-- **Multitenancy, tenant == user**: every feature model is a `BaseModel`; isolation is enforced
+- **Multitenancy, tenant == user**: every feature model is an `OwnedModel`; isolation is enforced
   by the ORM scope *and* by Postgres row-level security, never by hand-written filters alone.
   See `.claude/rules/multitenancy.md` — its invariants are not negotiable.
 - **Everything is versioned and nothing is deleted**: every write to a feature model is mirrored
@@ -93,6 +93,8 @@ Other little ideas:
 | Backend lint/format  | `cd backend && uv run ruff check . && uv run ruff format .` |
 | Backend type-check   | `cd backend && uv run mypy .` (strict + django-stubs)       |
 | API docs / spec      | http://127.0.0.1:8000/api/docs · `/api/openapi.json`        |
+| Lineage demo data    | `cd backend && uv run python manage.py lineage_demo [--clean]` (builds 11 lineage shapes out of ModelA/ModelB — chain, merge, split, diamond, feedback, rebuild, erased, hub, churn, restore, moving — and prints an explorer link per shape) |
+| Lineage explorer     | http://127.0.0.1:8000/explorer/ (dev only, staff session): pick a user → models → rows → one row's versions and lineage (`apps/core/explorer.py`) |
 | Health / readiness   | `curl http://127.0.0.1:8000/api/health` (liveness) · `/api/ready` (503 + failing checks; see `.claude/rules/health-checks.md`) |
 | Frontend lint/format | `cd frontend && pnpm lint` / `pnpm format`                  |
 | Frontend build       | `cd frontend && pnpm build` (runs `tsc -b` first)           |
@@ -183,7 +185,7 @@ Pipeline: ninja/Pydantic schemas → `openschema.json` (repo root, committed) �
 Full reasoning in `.claude/rules/multitenancy.md` and `.claude/rules/versioning.md`; both load
 on any `backend/` file. The short form, because breaking these is not recoverable by review:
 
-- **Tenant == user.** Feature models extend `BaseModel` (`owner` FK); read them through
+- **Tenant == user.** Feature models extend `OwnedModel` (`owner` FK); read them through
   `Model.objects.for_user(user)`. Isolation is the ORM scope *plus* Postgres RLS — never a
   hand-written `.filter(owner=…)` as the only guard. Writes need a tenant context: requests get
   it from `TenantMiddleware`, tests from `with acting_as(user):`, tasks from `@tenant_task`
@@ -225,7 +227,7 @@ on any `backend/` file. The short form, because breaking these is not recoverabl
   `accounts.User` carries the same UUIDv7 id. The first four columns are set by the database
   (`db_default` / the `bump_version` trigger) and must never be assigned in Python; see
   `.claude/rules/versioning.md`.
-- **User data extends `BaseModel`** (`owner` FK to `AUTH_USER_MODEL`, reverse accessor
+- **User data extends `OwnedModel`** (`owner` FK to `AUTH_USER_MODEL`, reverse accessor
   `user.<models>`) and is only read through `Model.objects.for_user(user)` (`OwnedQuerySet`,
   which also hides soft-deleted rows; `Model.all_objects` keeps the tenant scope and includes
   them) —

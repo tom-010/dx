@@ -9,7 +9,7 @@ Every row also carries a `version` counter and a `deleted_at` timestamp, and eve
 mirrored into an append-only event table by a trigger (`apps/core/history.py`). Nothing is ever
 hard-deleted: `soft_delete()` is an UPDATE, and the database refuses a real DELETE.
 
-`BaseModel` is the tenant base and what a feature model extends (tenant == user, CLAUDE.md
+`OwnedModel` is the tenant base and what a feature model extends (tenant == user, CLAUDE.md
 "Multitenancy"): the `owner` column is what both isolation layers key on — the ORM scope applied
 by `OwnedManager` and the row-level security policy `apps/core/rls.py` generates for every owned
 table. `VersionedModel` underneath it is everything except that column, for the handful of
@@ -84,8 +84,8 @@ class ActiveManager(models.Manager[_ModelT]):
 class VersionedModel(models.Model):
     """Abstract base under every model: UUIDv7 pk, timestamps, versioning, soft delete.
 
-    **Do not extend this — extend `BaseModel` below.** Almost every model holds one user's data,
-    and `BaseModel` is this class plus the `owner` column both isolation layers key on; inheriting
+    **Do not extend this — extend `OwnedModel` below.** Almost every model holds one user's data,
+    and `OwnedModel` is this class plus the `owner` column both isolation layers key on; inheriting
     here instead silently opts a table out of tenant isolation, which is why the system check
     `tenant.E001` rejects it in a feature app unless the label is listed in `SHARED_MODELS`.
 
@@ -118,9 +118,9 @@ class VersionedModel(models.Model):
     deleted_at = models.DateTimeField(null=True, default=None, db_index=True, editable=False)
 
     # No manager here on purpose: django-stubs resolves a manager's model type per concrete
-    # class, and declaring the pair on both this base *and* `BaseModel` collapses it to Any.
+    # class, and declaring the pair on both this base *and* `OwnedModel` collapses it to Any.
     # Every concrete subclass gets `objects` (soft-deleted rows hidden) plus `all_objects`
-    # (everything) from `BaseModel` below or declares them itself — `test_history.py` checks
+    # (everything) from `OwnedModel` below or declares them itself — `test_history.py` checks
     # that none is missing.
 
     class Meta:
@@ -264,11 +264,11 @@ class VersionedModel(models.Model):
         return f"{type(self).__name__}({self.pk})"
 
 
-_OwnedT = TypeVar("_OwnedT", bound="BaseModel")
+_OwnedT = TypeVar("_OwnedT", bound="OwnedModel")
 
 
 class OwnedQuerySet(ActiveQuerySet[_OwnedT]):
-    """Queryset of a `BaseModel`. `for_user(user)` is the explicit half of the isolation:
+    """Queryset of an `OwnedModel`. `for_user(user)` is the explicit half of the isolation:
     callers name the user they act for; the manager below adds the ambient scope on top."""
 
     def for_user(self, user: User) -> Self:
@@ -334,15 +334,15 @@ def owned_upload_path(instance: models.Model, filename: str) -> str:
     Per-user prefixes keep one tenant's objects extractable (or erasable) with a prefix listing
     and make a key say whose it is. Not an access control: `/media/…` links are signed.
     """
-    if not isinstance(instance, BaseModel):
-        raise TypeError("owned_upload_path is for BaseModel files only")
+    if not isinstance(instance, OwnedModel):
+        raise TypeError("owned_upload_path is for OwnedModel files only")
     owner_id = instance.__dict__.get("owner_id") or current_user_id.get()
     if owner_id is None:
         raise NoTenantContext(f"{type(instance).__name__} has no owner to build a file path from")
     return f"{instance._meta.app_label}/{owner_id}/{timezone.now():%Y/%m}/{filename}"
 
 
-class BaseModel(VersionedModel):
+class OwnedModel(VersionedModel):
     """Abstract base for feature models: a `VersionedModel` that belongs to a user.
 
     Two enforcement layers ride on this class:

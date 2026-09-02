@@ -21,8 +21,9 @@ point of pointing at an event row (`pgh_id`, `apps/core/history.py`) instead of 
     derived_from(dataset)       # everything ever derived from any version of it
     stale_derivations(dataset)  # ...and what would come out differently if rebuilt now
 
-`Lineage` is deliberately **not** a `BaseModel`: it has no version chain of its own, it is
-append-only (a graph whose nodes can be edited is not a graph), and it is never soft-deleted.
+`Lineage` is deliberately **not** a `VersionedModel`, and so not an `OwnedModel` either: it has
+no version chain of its own, it is append-only (a graph whose nodes can be edited is not a
+graph), and it is never soft-deleted.
 It does carry `owner`, so `apps/core/rls.py` gives it the same tenant policy as everything else
 — generic pointers offer no structural protection against a cross-tenant reference, so the
 database has to say no.

@@ -4,7 +4,7 @@ from typing import NewType
 from django.db import models
 
 from apps.core.history import tracked
-from apps.core.models import BaseModel, owned_upload_path
+from apps.core.models import OwnedModel, owned_upload_path
 
 MediaItemId = NewType("MediaItemId", uuid.UUID)
 
@@ -15,7 +15,7 @@ class MediaKind(models.TextChoices):
 
 
 @tracked
-class MediaItem(BaseModel):
+class MediaItem(OwnedModel):
     """An uploaded image or video, shown inline in the gallery."""
 
     # Default storage = the object store; `file.url` is the signed Django-served link. Keys:
@@ -26,5 +26,5 @@ class MediaItem(BaseModel):
     content_type = models.CharField(max_length=100)
     size = models.PositiveBigIntegerField()
 
-    class Meta(BaseModel.Meta):
+    class Meta(OwnedModel.Meta):
         pass

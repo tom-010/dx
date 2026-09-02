@@ -1,0 +1,100 @@
+{% extends "explorer/base.html" %}
+
+{% block title %}{{ label }} v{{ version }}{% endblock %}
+{% block breadcrumbs %}
+  <li><a href="{{ index_url }}">{{ tenant }}</a></li>
+  <li><a href="{{ model_url }}">{{ model }}</a></li>
+  <li><a href="{{ object_page }}">{{ label }}</a></li>
+  <li>v{{ version }}</li>
+{% endblock %}
+
+{% block content %}
+  <h1>{{ label }} <span class="tag">version {{ version }} of {{ of }}</span></h1>
+  <p>
+    A <strong>version</strong> of <a href="{{ object_page }}">this {{ model }}</a>, as it stood
+    when it was written.
+    {% if is_current %}Still the row's current state.
+    {% else %}<mark>Superseded</mark> — the row has moved on since.{% endif %}
+  </p>
+
+  <nav aria-label="Versions">
+    {% if previous_url %}<a href="{{ previous_url }}" rel="prev">← v{{ version|add:"-1" }}</a>{% endif %}
+    <a href="{{ object_page }}">the object</a>
+    {% if next_url %}<a href="{{ next_url }}" rel="next">v{{ version|add:"1" }} →</a>{% endif %}
+  </nav>
+
+  <section>
+    <h2>This version</h2>
+    <dl>
+      <dt>written</dt>
+      <dd><time datetime="{{ at|date:'c' }}">{{ at|date:"Y-m-d H:i:s" }}</time></dd>
+      <dt>by</dt>
+      <dd>{{ written_by }} <small>({{ event_label }})</small></dd>
+      <dt>state</dt>
+      <dd>
+        {% if deleted %}<del>deleted at this version</del>{% else %}live{% endif %} ·
+        {% if is_current %}current{% else %}<mark>superseded</mark>{% endif %}
+      </dd>
+      <dt>object</dt>
+      <dd><a href="{{ object_page }}"><code>{{ object_id }}</code></a></dd>
+      <dt>version row</dt>
+      <dd><code>{{ pgh_id }}</code> · schema {{ schema_tag }}</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>What changed here</h2>
+    {% if changes %}
+      <table>
+        <thead>
+          <tr><th scope="col">Field</th><th scope="col">Before</th><th scope="col">After</th></tr>
+        </thead>
+        <tbody>
+          {% for change in changes %}
+            <tr>
+              <th scope="row">{{ change.field }}</th>
+              <td>{{ change.old|default:"—" }}</td>
+              <td>{{ change.new|default:"—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">Nothing recorded — this is how the row was created.</p>
+    {% endif %}
+    {% for field in unknown_fields %}
+      <p class="frame">{{ field }}: not tracked at this version</p>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2 title="Historical values, rebuilt from the version row — not what the object holds now.">
+      Fields as of this version
+    </h2>
+    <dl>
+      {% for field in fields %}
+        <dt>{{ field.name }}</dt>
+        <dd>{{ field.value }}</dd>
+      {% endfor %}
+    </dl>
+  </section>
+
+  <section>
+    <h2 title="Edges recorded against this state alone. The object page asks the wider question:
+everything the row was ever built from, across all its versions.">Lineage of this version</h2>
+
+    <h3>Derived from</h3>
+    {% for group in sources %}
+      {% include "explorer/_edges.html" with group=group far="Source" %}
+    {% empty %}
+      <p class="empty">Nothing — this version was not built from anything.</p>
+    {% endfor %}
+
+    <h3>Used to build</h3>
+    {% for group in derived %}
+      {% include "explorer/_edges.html" with group=group far="Derived version" %}
+    {% empty %}
+      <p class="empty">Nothing was built from this version.</p>
+    {% endfor %}
+  </section>
+{% endblock %}
