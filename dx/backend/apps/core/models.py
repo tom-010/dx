@@ -539,9 +539,12 @@ class OwnedManager(ActiveManager[_OwnedT]):
 
     #: Include soft-deleted rows. Set on the `all_objects` manager, never on `objects`.
     include_deleted = False
+    #: The queryset class a subclass hands out — an app's own `OwnedQuerySet` subclass with
+    #: extra filters keeps the scope logic below (`apps.documents.models.DatedManager`).
+    queryset_class: type[OwnedQuerySet[Any]] = OwnedQuerySet
 
     def get_queryset(self) -> OwnedQuerySet[_OwnedT]:
-        queryset: OwnedQuerySet[_OwnedT] = OwnedQuerySet(model=self.model, using=self._db)
+        queryset: OwnedQuerySet[_OwnedT] = self.queryset_class(model=self.model, using=self._db)
         if not self.include_deleted:
             queryset = queryset.alive()
         user_id = active_scope_user()

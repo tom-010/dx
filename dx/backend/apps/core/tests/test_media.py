@@ -10,8 +10,8 @@ from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.documents.api import store_documents
-from apps.documents.models import Document
+from apps.gallery.api import store_media_items
+from apps.gallery.models import MediaItem
 from config.media import media_url, sign_media
 
 pytestmark = pytest.mark.django_db
@@ -23,19 +23,21 @@ def media_root(settings: Settings, tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _upload(user: User, name: str = "pic.png", content: bytes = b"\x89PNG demo") -> Document:
+def _upload(user: User, name: str = "pic.png", content: bytes = b"\x89PNG demo") -> MediaItem:
+    """A gallery item: the `/media/` link is for inline display, and its key keeps the file
+    name (a document's blob is content-addressed and served by its own download endpoint)."""
     with acting_as(user):
-        (document,) = store_documents(
+        (item,) = store_media_items(
             user, [SimpleUploadedFile(name, content, content_type="image/png")]
         )
-    return document
+    return item
 
 
 def test_file_url_is_signed_and_served_by_django(client: Client, user: User) -> None:
-    document = _upload(user)
+    item = _upload(user)
 
-    url = document.file.url
-    assert url.startswith(f"/media/{document.file.name}?sig=")
+    url = item.file.url
+    assert url.startswith(f"/media/{item.file.name}?sig=")
     response = client.get(url)  # anonymous: an <img src> sends no bearer header
 
     assert response.status_code == 200
@@ -47,12 +49,12 @@ def test_file_url_is_signed_and_served_by_django(client: Client, user: User) -> 
 
 
 def test_media_rejects_unsigned_and_foreign_links(client: Client, user: User) -> None:
-    document = _upload(user)
-    key = str(document.file.name)
+    item = _upload(user)
+    key = str(item.file.name)
 
     assert client.get(f"/media/{key}").status_code == 403
     assert client.get(f"/media/{key}?sig=nope").status_code == 403
-    foreign = client.get(f"/media/{key}?sig={sign_media('documents/other.png')}")
+    foreign = client.get(f"/media/{key}?sig={sign_media('gallery/other.png')}")
     assert foreign.status_code == 403
     assert foreign.json() == {"detail": "Invalid or expired media link"}
 
@@ -65,7 +67,7 @@ def test_media_links_expire(client: Client, settings: Settings, user: User) -> N
 
 
 def test_media_returns_404_for_missing_object(client: Client) -> None:
-    response = client.get(media_url(f"documents/{uuid.uuid7()}/2026/08/gone.png"))
+    response = client.get(media_url(f"gallery/{uuid.uuid7()}/2026/08/gone.png"))
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}

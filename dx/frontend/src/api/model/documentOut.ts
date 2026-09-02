@@ -4,13 +4,21 @@
  * dx API
  * OpenAPI spec version: 0.1.0
  */
+import type { DateOut } from "./dateOut";
+import type { DocumentOutMeta } from "./documentOutMeta";
+import type { ExtractionStatus } from "./extractionStatus";
 
 export interface DocumentOut {
-  content_type: string;
   created: string;
+  date: DateOut | null;
   download_url: string;
   id: string;
-  /** @maxLength 255 */
-  name: string;
+  meta: DocumentOutMeta;
+  mime_type: string;
+  modified: string;
+  page_count: number;
   size: number;
+  status: ExtractionStatus | null;
+  title: string;
+  version: number;
 }

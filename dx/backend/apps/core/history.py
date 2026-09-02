@@ -103,7 +103,7 @@ if TYPE_CHECKING:
     from apps.core.models import VersionedModel
 
 # The tracked field set this code writes. Bump on every change to a tracked model's fields.
-SCHEMA_TAG = "2026-09"
+SCHEMA_TAG = "2026-09-02"
 # Checked-in snapshot of that field set (manage.py history_schema --write).
 SCHEMA_FILE = BASE_DIR / "history_schema.json"
 

@@ -80,13 +80,13 @@ def test_upload_download_delete_through_object_store(s3: S3Storage, user: User) 
         )
 
     # Links point at Django, never at the store.
-    assert one.file.url.startswith(f"/media/{one.file.name}?sig=")
-    # Same upload name twice: the store must not overwrite, django-storages disambiguates.
-    keys = [str(one.file.name), str(two.file.name)]
+    assert one.source_blob.file.url.startswith(f"/media/{one.source_blob.file.name}?sig=")
+    # Same upload name, different bytes: two content-addressed keys under the owner's prefix.
+    keys = [str(one.source_blob.file.name), str(two.source_blob.file.name)]
     assert keys[0] != keys[1]
-    assert keys[0].startswith("documents/")
+    assert keys[0].startswith(f"documents/{user.pk}/blobs/")
     assert _keys(s3) == sorted(keys)
-    with two.file.open("rb") as stream:
+    with two.source_blob.file.open("rb") as stream:
         assert stream.read() == b"hello again"
 
     # Deleting a document is soft, so the objects stay: an earlier version of the row still

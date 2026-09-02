@@ -56,3 +56,18 @@ def test_a_row_that_cannot_be_written_takes_its_children_with_it(user: User) -> 
             )
 
         assert Dataset.objects.for_user(user).count() == 0
+
+
+def test_one_unsaved_child_behind_two_keys_is_written_once_and_linked_from_both(
+    user: User,
+) -> None:
+    """A snapshot's `blob` is its document's `source_blob`: the same unsaved object behind two
+    foreign keys. The first key assigned holds the sentinel pk until the walk copies the real
+    one over — from whichever branch saved it."""
+    from apps.documents.models import DocumentContent
+
+    with acting_as(user):
+        content = save_example(DocumentContent.example())
+
+    assert content.blob_id == content.document.source_blob_id
+    assert content.blob.pk == content.document.source_blob.pk

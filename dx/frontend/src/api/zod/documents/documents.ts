@@ -7,48 +7,200 @@
 import * as zod from "zod";
 
 /**
+ * The caller's documents; `period` (EDTF) keeps those whose current content has
+ * information from that period — the corpus query, served by the partial date index.
  * @summary List Documents
  */
 export const listDocumentsQueryPageDefault = 1;
 
 export const ListDocumentsQueryParams = zod.object({
+  period: zod.union([zod.string(), zod.null()]).optional(),
   page: zod.int().min(1).default(listDocumentsQueryPageDefault),
   page_size: zod.union([zod.int().min(1), zod.null()]).optional(),
 });
-
-export const listDocumentsResponseItemsItemNameMax = 255;
 
 export const ListDocumentsResponse = zod.object({
   count: zod.int(),
   items: zod.array(
     zod.object({
-      content_type: zod.string(),
       created: zod.iso.datetime({ offset: true }),
+      date: zod.union([
+        zod
+          .object({
+            conf: zod.union([zod.number(), zod.null()]),
+            display: zod.string(),
+            edtf: zod.string(),
+            max: zod.union([zod.iso.date(), zod.null()]),
+            min: zod.union([zod.iso.date(), zod.null()]),
+            source: zod
+              .enum([
+                "explicit",
+                "metadata",
+                "inferred",
+                "interpolated",
+                "inherited",
+                "aggregated",
+                "curated",
+              ])
+              .describe(
+                "How a row's date is known — a column, because review queues filter on it.",
+              ),
+          })
+          .describe(
+            'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+          ),
+        zod.null(),
+      ]),
       download_url: zod.string(),
       id: zod.uuid(),
-      name: zod.string().max(listDocumentsResponseItemsItemNameMax),
+      meta: zod.record(zod.string(), zod.unknown()),
+      mime_type: zod.string(),
+      modified: zod.iso.datetime({ offset: true }),
+      page_count: zod.int(),
       size: zod.int(),
+      status: zod.union([
+        zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+        zod.null(),
+      ]),
+      title: zod.string(),
+      version: zod.int(),
     }),
   ),
 });
 
 /**
- * Upload one or more files as multipart/form-data (field name `files`).
+ * Full-text search across the caller's documents (their current snapshots).
+ * @summary Search Documents
+ */
+export const SearchDocumentsQueryParams = zod.object({
+  q: zod.string(),
+});
+
+export const searchDocumentsResponseNodeOneConfidenceOneHistMin = 10;
+export const searchDocumentsResponseNodeOneConfidenceOneHistMax = 10;
+
+export const SearchDocumentsResponseItem = zod.object({
+  document_id: zod.uuid(),
+  node: zod.union([
+    zod
+      .object({
+        confidence: zod.union([
+          zod
+            .object({
+              hist: zod
+                .array(zod.int())
+                .min(searchDocumentsResponseNodeOneConfidenceOneHistMin)
+                .max(searchDocumentsResponseNodeOneConfidenceOneHistMax),
+              max: zod.number(),
+              min: zod.number(),
+              n: zod.int().min(1),
+              sum: zod.number(),
+            })
+            .describe(
+              'Additive summary of per-word confidences: `{n, sum, min, max, hist[10]}`.\n\nTen uniform buckets over [0, 1], the last one right-inclusive. Merging two summaries is\nelementwise addition (plus min\/max), which is what lets every level of the snapshot carry\none — region, node subtree, page, content — computed once, bottom-up, at write time. The\nreader picks the measure: `mean`, the histogram, or the exact words of one region.\n\n`None` in a `conf_stats` column means \"no OCR happened here\" (born-digital input). Never a\nfake 1.0.',
+            ),
+          zod.null(),
+        ]),
+        date: zod.union([
+          zod
+            .object({
+              conf: zod.union([zod.number(), zod.null()]),
+              display: zod.string(),
+              edtf: zod.string(),
+              max: zod.union([zod.iso.date(), zod.null()]),
+              min: zod.union([zod.iso.date(), zod.null()]),
+              source: zod
+                .enum([
+                  "explicit",
+                  "metadata",
+                  "inferred",
+                  "interpolated",
+                  "inherited",
+                  "aggregated",
+                  "curated",
+                ])
+                .describe(
+                  "How a row's date is known — a column, because review queues filter on it.",
+                ),
+            })
+            .describe(
+              'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+            ),
+          zod.null(),
+        ]),
+        html: zod.string(),
+        level: zod.union([zod.int(), zod.null()]),
+        nid: zod.int(),
+        pages: zod.array(zod.int()),
+        path: zod.string(),
+        tag: zod.string(),
+        text: zod.string(),
+        text_end: zod.int(),
+        text_start: zod.int(),
+        title: zod.union([zod.string(), zod.null()]),
+      })
+      .describe(
+        "A node of the current snapshot, as the facade hands it out (`node_out`).",
+      ),
+    zod.null(),
+  ]),
+  offset: zod.int(),
+  snippet: zod.string(),
+  title: zod.string(),
+});
+export const SearchDocumentsResponse = zod.array(SearchDocumentsResponseItem);
+
+/**
+ * Upload one or more files as multipart/form-data (field name `files`). Each gets an
+ * extraction queued when an extractor handles its type.
  * @summary Upload Documents
  */
 export const UploadDocumentsBody = zod.object({
   files: zod.array(zod.instanceof(File)),
 });
 
-export const uploadDocumentsResponseNameMax = 255;
-
 export const UploadDocumentsResponseItem = zod.object({
-  content_type: zod.string(),
   created: zod.iso.datetime({ offset: true }),
+  date: zod.union([
+    zod
+      .object({
+        conf: zod.union([zod.number(), zod.null()]),
+        display: zod.string(),
+        edtf: zod.string(),
+        max: zod.union([zod.iso.date(), zod.null()]),
+        min: zod.union([zod.iso.date(), zod.null()]),
+        source: zod
+          .enum([
+            "explicit",
+            "metadata",
+            "inferred",
+            "interpolated",
+            "inherited",
+            "aggregated",
+            "curated",
+          ])
+          .describe(
+            "How a row's date is known — a column, because review queues filter on it.",
+          ),
+      })
+      .describe(
+        'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+      ),
+    zod.null(),
+  ]),
   download_url: zod.string(),
   id: zod.uuid(),
-  name: zod.string().max(uploadDocumentsResponseNameMax),
+  meta: zod.record(zod.string(), zod.unknown()),
+  mime_type: zod.string(),
+  modified: zod.iso.datetime({ offset: true }),
+  page_count: zod.int(),
   size: zod.int(),
+  status: zod.union([
+    zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+    zod.null(),
+  ]),
+  title: zod.string(),
+  version: zod.int(),
 });
 export const UploadDocumentsResponse = zod.array(UploadDocumentsResponseItem);
 
@@ -56,8 +208,9 @@ export const UploadDocumentsResponse = zod.array(UploadDocumentsResponseItem);
  * Soft delete, and the stored object stays.
  *
  * Deleting the bytes would leave every earlier version of this document pointing at a file
- * that no longer exists. The row drops out of listings and downloads immediately; the object
- * is reclaimed when the tenant is erased (`apps/core/tenants.py`).
+ * that no longer exists. The row drops out of listings and downloads immediately; its
+ * snapshots go with it (they are only reachable through it) and the object is reclaimed when
+ * the tenant is erased (`apps/core/tenants.py`).
  * @summary Delete Document
  */
 export const DeleteDocumentParams = zod.object({
@@ -73,16 +226,216 @@ export const GetDocumentParams = zod.object({
   document_id: zod.uuid(),
 });
 
-export const getDocumentResponseNameMax = 255;
-
 export const GetDocumentResponse = zod.object({
-  content_type: zod.string(),
   created: zod.iso.datetime({ offset: true }),
+  date: zod.union([
+    zod
+      .object({
+        conf: zod.union([zod.number(), zod.null()]),
+        display: zod.string(),
+        edtf: zod.string(),
+        max: zod.union([zod.iso.date(), zod.null()]),
+        min: zod.union([zod.iso.date(), zod.null()]),
+        source: zod
+          .enum([
+            "explicit",
+            "metadata",
+            "inferred",
+            "interpolated",
+            "inherited",
+            "aggregated",
+            "curated",
+          ])
+          .describe(
+            "How a row's date is known — a column, because review queues filter on it.",
+          ),
+      })
+      .describe(
+        'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+      ),
+    zod.null(),
+  ]),
   download_url: zod.string(),
   id: zod.uuid(),
-  name: zod.string().max(getDocumentResponseNameMax),
+  meta: zod.record(zod.string(), zod.unknown()),
+  mime_type: zod.string(),
+  modified: zod.iso.datetime({ offset: true }),
+  page_count: zod.int(),
   size: zod.int(),
+  status: zod.union([
+    zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+    zod.null(),
+  ]),
+  title: zod.string(),
+  version: zod.int(),
 });
+
+/**
+ * @summary Update Document
+ */
+export const UpdateDocumentParams = zod.object({
+  document_id: zod.uuid(),
+});
+
+export const UpdateDocumentBody = zod.object({
+  meta: zod
+    .union([zod.record(zod.string(), zod.unknown()), zod.null()])
+    .optional(),
+  title: zod.union([zod.string(), zod.null()]).optional(),
+});
+
+export const UpdateDocumentResponse = zod.object({
+  created: zod.iso.datetime({ offset: true }),
+  date: zod.union([
+    zod
+      .object({
+        conf: zod.union([zod.number(), zod.null()]),
+        display: zod.string(),
+        edtf: zod.string(),
+        max: zod.union([zod.iso.date(), zod.null()]),
+        min: zod.union([zod.iso.date(), zod.null()]),
+        source: zod
+          .enum([
+            "explicit",
+            "metadata",
+            "inferred",
+            "interpolated",
+            "inherited",
+            "aggregated",
+            "curated",
+          ])
+          .describe(
+            "How a row's date is known — a column, because review queues filter on it.",
+          ),
+      })
+      .describe(
+        'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+      ),
+    zod.null(),
+  ]),
+  download_url: zod.string(),
+  id: zod.uuid(),
+  meta: zod.record(zod.string(), zod.unknown()),
+  mime_type: zod.string(),
+  modified: zod.iso.datetime({ offset: true }),
+  page_count: zod.int(),
+  size: zod.int(),
+  status: zod.union([
+    zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+    zod.null(),
+  ]),
+  title: zod.string(),
+  version: zod.int(),
+});
+
+/**
+ * The current snapshot through the facade: html, text, outline, confidence — and the
+ * latest run's state, so a client can tell "nothing extracted yet" from "still running".
+ * @summary Get Document Content
+ */
+export const GetDocumentContentParams = zod.object({
+  document_id: zod.uuid(),
+});
+
+export const getDocumentContentResponseConfidenceOneHistMin = 10;
+export const getDocumentContentResponseConfidenceOneHistMax = 10;
+
+export const GetDocumentContentResponse = zod
+  .object({
+    confidence: zod.union([
+      zod
+        .object({
+          hist: zod
+            .array(zod.int())
+            .min(getDocumentContentResponseConfidenceOneHistMin)
+            .max(getDocumentContentResponseConfidenceOneHistMax),
+          max: zod.number(),
+          min: zod.number(),
+          n: zod.int().min(1),
+          sum: zod.number(),
+        })
+        .describe(
+          'Additive summary of per-word confidences: `{n, sum, min, max, hist[10]}`.\n\nTen uniform buckets over [0, 1], the last one right-inclusive. Merging two summaries is\nelementwise addition (plus min\/max), which is what lets every level of the snapshot carry\none — region, node subtree, page, content — computed once, bottom-up, at write time. The\nreader picks the measure: `mean`, the histogram, or the exact words of one region.\n\n`None` in a `conf_stats` column means \"no OCR happened here\" (born-digital input). Never a\nfake 1.0.',
+        ),
+      zod.null(),
+    ]),
+    date: zod.union([
+      zod
+        .object({
+          conf: zod.union([zod.number(), zod.null()]),
+          display: zod.string(),
+          edtf: zod.string(),
+          max: zod.union([zod.iso.date(), zod.null()]),
+          min: zod.union([zod.iso.date(), zod.null()]),
+          source: zod
+            .enum([
+              "explicit",
+              "metadata",
+              "inferred",
+              "interpolated",
+              "inherited",
+              "aggregated",
+              "curated",
+            ])
+            .describe(
+              "How a row's date is known — a column, because review queues filter on it.",
+            ),
+        })
+        .describe(
+          'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+        ),
+      zod.null(),
+    ]),
+    extraction: zod.union([
+      zod
+        .object({
+          created: zod.iso.datetime({ offset: true }),
+          error: zod.string(),
+          extractor: zod.string(),
+          finished_at: zod.union([
+            zod.iso.datetime({ offset: true }),
+            zod.null(),
+          ]),
+          id: zod.uuid(),
+          is_current: zod.boolean(),
+          started_at: zod.union([
+            zod.iso.datetime({ offset: true }),
+            zod.null(),
+          ]),
+          stats: zod.record(zod.string(), zod.unknown()),
+          status: zod.enum([
+            "pending",
+            "running",
+            "succeeded",
+            "partial",
+            "failed",
+          ]),
+        })
+        .describe(
+          "One extraction run — process state, never the snapshot's rows (`extraction_out`).",
+        ),
+      zod.null(),
+    ]),
+    html: zod.string(),
+    meta: zod.record(zod.string(), zod.unknown()),
+    outline: zod.array(
+      zod.object({
+        level: zod.union([zod.int(), zod.null()]),
+        nid: zod.int(),
+        tag: zod.string(),
+        title: zod.string(),
+      }),
+    ),
+    page_count: zod.int(),
+    status: zod.union([
+      zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+      zod.null(),
+    ]),
+    text: zod.string(),
+  })
+  .describe(
+    "The facade in one response: what the current snapshot says, plus the latest run.",
+  );
 
 /**
  * Streams the stored file as an attachment (binary response, not part of the JSON contract).
@@ -100,3 +453,289 @@ export const DownloadDocumentQueryParams = zod.object({
 });
 
 export const DownloadDocumentResponse = zod.unknown();
+
+/**
+ * Every extraction run of this document, newest first.
+ * @summary List Extractions
+ */
+export const ListExtractionsParams = zod.object({
+  document_id: zod.uuid(),
+});
+
+export const ListExtractionsResponseItem = zod
+  .object({
+    created: zod.iso.datetime({ offset: true }),
+    error: zod.string(),
+    extractor: zod.string(),
+    finished_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
+    id: zod.uuid(),
+    is_current: zod.boolean(),
+    started_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
+    stats: zod.record(zod.string(), zod.unknown()),
+    status: zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+  })
+  .describe(
+    "One extraction run — process state, never the snapshot's rows (`extraction_out`).",
+  );
+export const ListExtractionsResponse = zod.array(ListExtractionsResponseItem);
+
+/**
+ * The node drawn under a point of a page (normalized coordinates, origin top-left);
+ * null over page furniture or empty space.
+ * @summary Hit Document
+ */
+export const HitDocumentParams = zod.object({
+  document_id: zod.uuid(),
+});
+
+export const HitDocumentQueryParams = zod.object({
+  page: zod.int(),
+  x: zod.number(),
+  y: zod.number(),
+});
+
+export const hitDocumentResponseOneConfidenceOneHistMin = 10;
+export const hitDocumentResponseOneConfidenceOneHistMax = 10;
+
+export const HitDocumentResponse = zod.union([
+  zod
+    .object({
+      confidence: zod.union([
+        zod
+          .object({
+            hist: zod
+              .array(zod.int())
+              .min(hitDocumentResponseOneConfidenceOneHistMin)
+              .max(hitDocumentResponseOneConfidenceOneHistMax),
+            max: zod.number(),
+            min: zod.number(),
+            n: zod.int().min(1),
+            sum: zod.number(),
+          })
+          .describe(
+            'Additive summary of per-word confidences: `{n, sum, min, max, hist[10]}`.\n\nTen uniform buckets over [0, 1], the last one right-inclusive. Merging two summaries is\nelementwise addition (plus min\/max), which is what lets every level of the snapshot carry\none — region, node subtree, page, content — computed once, bottom-up, at write time. The\nreader picks the measure: `mean`, the histogram, or the exact words of one region.\n\n`None` in a `conf_stats` column means \"no OCR happened here\" (born-digital input). Never a\nfake 1.0.',
+          ),
+        zod.null(),
+      ]),
+      date: zod.union([
+        zod
+          .object({
+            conf: zod.union([zod.number(), zod.null()]),
+            display: zod.string(),
+            edtf: zod.string(),
+            max: zod.union([zod.iso.date(), zod.null()]),
+            min: zod.union([zod.iso.date(), zod.null()]),
+            source: zod
+              .enum([
+                "explicit",
+                "metadata",
+                "inferred",
+                "interpolated",
+                "inherited",
+                "aggregated",
+                "curated",
+              ])
+              .describe(
+                "How a row's date is known — a column, because review queues filter on it.",
+              ),
+          })
+          .describe(
+            'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+          ),
+        zod.null(),
+      ]),
+      html: zod.string(),
+      level: zod.union([zod.int(), zod.null()]),
+      nid: zod.int(),
+      pages: zod.array(zod.int()),
+      path: zod.string(),
+      tag: zod.string(),
+      text: zod.string(),
+      text_end: zod.int(),
+      text_start: zod.int(),
+      title: zod.union([zod.string(), zod.null()]),
+    })
+    .describe(
+      "A node of the current snapshot, as the facade hands it out (`node_out`).",
+    ),
+  zod.null(),
+]);
+
+/**
+ * One page of the current snapshot: its reduced html, text and the regions on it.
+ * @summary Get Document Page
+ */
+export const GetDocumentPageParams = zod.object({
+  document_id: zod.uuid(),
+  number: zod.int(),
+});
+
+export const getDocumentPageResponseConfidenceOneHistMin = 10;
+export const getDocumentPageResponseConfidenceOneHistMax = 10;
+
+export const GetDocumentPageResponse = zod.object({
+  confidence: zod.union([
+    zod
+      .object({
+        hist: zod
+          .array(zod.int())
+          .min(getDocumentPageResponseConfidenceOneHistMin)
+          .max(getDocumentPageResponseConfidenceOneHistMax),
+        max: zod.number(),
+        min: zod.number(),
+        n: zod.int().min(1),
+        sum: zod.number(),
+      })
+      .describe(
+        'Additive summary of per-word confidences: `{n, sum, min, max, hist[10]}`.\n\nTen uniform buckets over [0, 1], the last one right-inclusive. Merging two summaries is\nelementwise addition (plus min\/max), which is what lets every level of the snapshot carry\none — region, node subtree, page, content — computed once, bottom-up, at write time. The\nreader picks the measure: `mean`, the histogram, or the exact words of one region.\n\n`None` in a `conf_stats` column means \"no OCR happened here\" (born-digital input). Never a\nfake 1.0.',
+      ),
+    zod.null(),
+  ]),
+  date: zod.union([
+    zod
+      .object({
+        conf: zod.union([zod.number(), zod.null()]),
+        display: zod.string(),
+        edtf: zod.string(),
+        max: zod.union([zod.iso.date(), zod.null()]),
+        min: zod.union([zod.iso.date(), zod.null()]),
+        source: zod
+          .enum([
+            "explicit",
+            "metadata",
+            "inferred",
+            "interpolated",
+            "inherited",
+            "aggregated",
+            "curated",
+          ])
+          .describe(
+            "How a row's date is known — a column, because review queues filter on it.",
+          ),
+      })
+      .describe(
+        'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+      ),
+    zod.null(),
+  ]),
+  height: zod.union([zod.number(), zod.null()]),
+  html: zod.string(),
+  label: zod.union([zod.string(), zod.null()]),
+  number: zod.int(),
+  regions: zod.array(
+    zod.object({
+      nid: zod.int(),
+      order: zod.int(),
+      polygon: zod.union([zod.array(zod.array(zod.number())), zod.null()]),
+      tag: zod.string(),
+      text: zod.string(),
+      x0: zod.number(),
+      x1: zod.number(),
+      y0: zod.number(),
+      y1: zod.number(),
+    }),
+  ),
+  text: zod.string(),
+  width: zod.union([zod.number(), zod.null()]),
+});
+
+/**
+ * Queue a fresh extraction with the extractor registered for this file type. With
+ * `from_raw` the run rebuilds from the latest snapshot's extractor output instead of
+ * extracting again (a re-dating: no OCR cost, a normal flip).
+ * @summary Reextract Document
+ */
+export const ReextractDocumentParams = zod.object({
+  document_id: zod.uuid(),
+});
+
+export const reextractDocumentQueryFromRawDefault = false;
+
+export const ReextractDocumentQueryParams = zod.object({
+  from_raw: zod.boolean().default(reextractDocumentQueryFromRawDefault),
+});
+
+export const ReextractDocumentResponse = zod
+  .object({
+    created: zod.iso.datetime({ offset: true }),
+    error: zod.string(),
+    extractor: zod.string(),
+    finished_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
+    id: zod.uuid(),
+    is_current: zod.boolean(),
+    started_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
+    stats: zod.record(zod.string(), zod.unknown()),
+    status: zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
+  })
+  .describe(
+    "One extraction run — process state, never the snapshot's rows (`extraction_out`).",
+  );
+
+/**
+ * The current snapshot's dated nodes, earliest first. `source` and `max_conf` make it a
+ * review queue: `?source=interpolated`, `?max_conf=0.5`.
+ * @summary Get Document Timeline
+ */
+export const GetDocumentTimelineParams = zod.object({
+  document_id: zod.uuid(),
+});
+
+export const GetDocumentTimelineQueryParams = zod.object({
+  source: zod
+    .union([
+      zod
+        .enum([
+          "explicit",
+          "metadata",
+          "inferred",
+          "interpolated",
+          "inherited",
+          "aggregated",
+          "curated",
+        ])
+        .describe(
+          "How a row's date is known — a column, because review queues filter on it.",
+        ),
+      zod.null(),
+    ])
+    .optional(),
+  max_conf: zod.union([zod.number(), zod.null()]).optional(),
+});
+
+export const GetDocumentTimelineResponseItem = zod
+  .object({
+    date: zod
+      .object({
+        conf: zod.union([zod.number(), zod.null()]),
+        display: zod.string(),
+        edtf: zod.string(),
+        max: zod.union([zod.iso.date(), zod.null()]),
+        min: zod.union([zod.iso.date(), zod.null()]),
+        source: zod
+          .enum([
+            "explicit",
+            "metadata",
+            "inferred",
+            "interpolated",
+            "inherited",
+            "aggregated",
+            "curated",
+          ])
+          .describe(
+            "How a row's date is known — a column, because review queues filter on it.",
+          ),
+      })
+      .describe(
+        'From when the content originates (`apps\/documents\/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".',
+      ),
+    excerpt: zod.string(),
+    nid: zod.int(),
+    pages: zod.array(zod.int()),
+    tag: zod.string(),
+  })
+  .describe(
+    "A dated node of the current snapshot — `Document.timeline()`, one row each.",
+  );
+export const GetDocumentTimelineResponse = zod.array(
+  GetDocumentTimelineResponseItem,
+);

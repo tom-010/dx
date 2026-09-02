@@ -85,6 +85,8 @@ def minimal_kwargs(model: type[OwnedModel], owner: User) -> dict[str, object]:
             values[field.name] = f"x{uuid.uuid4().hex[:8]}"[: field.max_length or 9]
         elif isinstance(field, models.IntegerField):
             values[field.name] = 1
+        elif isinstance(field, models.FloatField):
+            values[field.name] = 0.0
         elif isinstance(field, models.BooleanField):
             values[field.name] = False
         elif isinstance(field, models.DateTimeField):
@@ -121,6 +123,12 @@ def count_rows(table: str, where: str = "", params: list[uuid.UUID] | None = Non
 
 def label(model: type[models.Model]) -> str:
     return model._meta.label
+
+
+def _stored(media_root: Path) -> list[Path]:
+    """Every uploaded object in the store (document blobs carry no extension, and a test's
+    tmp dir doubles as the media root, so only the app prefix counts)."""
+    return sorted(path for path in (media_root / "documents").rglob("*") if path.is_file())
 
 
 # --- both isolation layers, every owned model --------------------------------------------------
@@ -367,7 +375,10 @@ def test_files_are_stored_under_the_owners_prefix(user: User) -> None:
         (document,) = store_documents(
             user, [SimpleUploadedFile("r.pdf", b"%PDF", content_type="application/pdf")]
         )
-    assert re.fullmatch(rf"documents/{user.pk}/\d{{4}}/\d{{2}}/r\S*\.pdf", str(document.file.name))
+    key = str(document.source_blob.file.name)
+    assert re.fullmatch(
+        rf"documents/{user.pk}/blobs/[0-9a-f]{{2}}/[0-9a-f]{{2}}/[0-9a-f]{{64}}", key
+    )
 
 
 def test_scrubbers_cover_every_pii_field(user: User) -> None:
@@ -641,19 +652,20 @@ def test_scope_with_none_is_not_a_backdoor(user: User) -> None:
 
 def test_owned_upload_path_needs_an_owned_instance_with_an_owner(user: User) -> None:
     from apps.core.models import owned_upload_path
-    from apps.documents.models import Document
+    from apps.gallery.models import MediaItem
 
     with pytest.raises(TypeError, match="OwnedModel"):
         owned_upload_path(User(), "x.bin")
     with pytest.raises(NoTenantContext):
-        owned_upload_path(Document(), "x.bin")
+        owned_upload_path(MediaItem(), "x.bin")
     with acting_as(user):
-        assert owned_upload_path(Document(), "x.bin").startswith(f"documents/{user.pk}/")
+        assert owned_upload_path(MediaItem(), "x.bin").startswith(f"gallery/{user.pk}/")
         # The context also fills in the owner when a model instance is saved directly.
-        document = Document(name="x.bin", size=1, file=ContentFile(b"x", name="x.bin"))
-        document.save(operation=None, sources=[])
-        assert document.owner == user
-        assert str(document.file.name).startswith(f"documents/{user.pk}/")
+        item = MediaItem.example()
+        item.file = ContentFile(b"x", name="x.png")
+        item.save(operation=None, sources=[])
+        assert item.owner == user
+        assert str(item.file.name).startswith(f"gallery/{user.pk}/")
 
 
 def test_scrub_leaves_models_without_pii_alone(user: User) -> None:
@@ -883,7 +895,7 @@ def test_delete_tenant_removes_every_row_and_file_of_one_user(
             store_documents(
                 owner, [SimpleUploadedFile("f.pdf", b"%PDF", content_type="application/pdf")]
             )
-    assert len(list(media_root.rglob("*.pdf"))) == 2
+    assert len(_stored(media_root)) == 2
 
     summary = tenants.tenant_summary(user)
     erasure = tenants.delete_tenant(user)
@@ -897,6 +909,8 @@ def test_delete_tenant_removes_every_row_and_file_of_one_user(
     assert {label: count for label, count in summary.items() if count} == {
         "datasets.Dataset": 1,
         "datasets.DatasetEvent": 1,
+        "documents.Blob": 1,
+        "documents.BlobEvent": 1,
         "documents.Document": 1,
         "documents.DocumentEvent": 1,
     }
@@ -904,9 +918,8 @@ def test_delete_tenant_removes_every_row_and_file_of_one_user(
     with scopes_disabled():
         assert not User.objects.filter(pk=user.pk).exists()
         assert Dataset.objects.count() == 1  # the other tenant is untouched
-    assert [path.parent.parent.parent.name for path in media_root.rglob("*.pdf")] == [
-        str(other_user.pk)
-    ]
+    # documents/<owner>/blobs/ab/cd/<sha256>: the owner is four levels up from the object
+    assert [path.parents[3].name for path in _stored(media_root)] == [str(other_user.pk)]
 
 
 def test_all_tenants_lifts_the_scope_for_commands(user: User) -> None:
@@ -938,7 +951,7 @@ def test_a_tenant_archive_round_trips_the_rows_and_their_files(
         (document,) = store_documents(
             user, [SimpleUploadedFile("f.pdf", b"%PDF-1.7", content_type="application/pdf")]
         )
-        key = document.file.name
+        key = document.source_blob.file.name
 
     archive = tmp_path / "alice.zip"
     export = runner.invoke(
@@ -948,15 +961,15 @@ def test_a_tenant_archive_round_trips_the_rows_and_their_files(
     assert "1 file(s)" in export.output
 
     tenants.delete_tenant(user)
-    assert list(media_root.rglob("*.pdf")) == []
+    assert _stored(media_root) == []
 
     restore = runner.invoke(load_tenant.command, [str(archive)])
     assert restore.exit_code == 0, restore.output
 
     with scopes_disabled():
         back = Document.all_objects.get(pk=document.pk)
-        assert back.file.name == key  # the exact key the rows name, not a renamed copy
-        with back.file.open("rb") as restored_file:
+        assert back.source_blob.file.name == key  # the exact key the rows name, not a renamed copy
+        with back.source_blob.file.open("rb") as restored_file:
             assert restored_file.read() == b"%PDF-1.7"
         assert Dataset.all_objects.filter(owner_id=user_id).count() == 1
 
@@ -993,7 +1006,7 @@ def test_delete_tenant_keeps_the_files_when_the_rows_survive(
     with pytest.raises(RuntimeError, match="database went away"):
         tenants.delete_tenant(user)
 
-    assert len(list(media_root.rglob("*.pdf"))) == 1
+    assert len(_stored(media_root)) == 1
 
 
 @isolate_apps("apps.datasets", "apps.accounts")  # accounts: the owner FK must resolve

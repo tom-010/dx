@@ -30,7 +30,7 @@ class DocumentEventRow(EventRow, Protocol):
     """A `DocumentEvent` row — the generated event models are invisible to a type checker, so
     the fields we read are spelled out (`apps/core/history.py::EventRow`)."""
 
-    name: str
+    title: str
 
 
 def _upload(user: User, name: str = "orders.csv", body: bytes = CSV) -> Document:
@@ -69,7 +69,7 @@ def test_the_edge_keeps_pointing_at_the_version_it_read(user: User) -> None:
         document = _upload(user)
         dataset = import_dataset_for(user, DocumentId(document.pk))
 
-        document.name = "renamed.csv"
+        document.title = "renamed.csv"
         document.save(operation=None, sources=[])
         document.refresh_from_db()
 
@@ -77,7 +77,7 @@ def test_the_edge_keeps_pointing_at_the_version_it_read(user: User) -> None:
         assert document.version == 2
         assert edge.source_version == 1
         was = cast(DocumentEventRow, edge.resolve_source())
-        assert was.name == "orders.csv"  # not "renamed.csv"
+        assert was.title == "orders.csv"  # not "renamed.csv"
         # The question the whole design exists to answer: what needs rebuilding now?
         assert [e.pk for e in lineage.stale_derivations(document)] == [edge.pk]
 

@@ -68,14 +68,46 @@ paths:
     not mounted in production (`ADMIN_ENABLED`).
     Endpoints: paginated `GET /api/datasets`, `POST /api/datasets`,
     `GET/PUT/PATCH/DELETE /api/datasets/{id}`.
-  - `apps/documents/` — file uploads: `Document(OwnedModel)` (`FileField` on Django's default
-    storage = the S3-compatible object store, see `.claude/rules/media-storage.md`; keys
-    `documents/<owner id>/%Y/%m/<name>`, `owned_upload_path`),
-    multipart `POST /api/documents/upload` (`files: File[list[UploadedFile]]`, validated as a
-    batch by `validate_upload`), paginated list/get/delete, and `GET /api/documents/{id}/download`
-    (streams a `FileResponse`; exposed to clients as `DocumentOut.download_url`, so storage can
-    change without touching the frontend; the signed link — which names the owner — replaces
-    the user check: the view reads the row inside that owner's `tenant_context`).
+  - `apps/documents/` — uploaded files and the **extraction snapshots** built from them
+    (the design: `backend/documents_agent_brief.md` + `documents_model_v7.puml`; the
+    module docstring of `models.py` lists what was adapted to this project's invariants).
+    `models.py`: `Blob` (content-addressed bytes, per-tenant dedup by sha256, keys
+    `documents/<owner id>/blobs/ab/cd/<sha256>`), `Extractor` (a strategy at a version),
+    `Document` (title, meta, `source_blob`, `current_content` — the **facade**: `text`, `html`,
+    `pages`, `outline()`, `hit()`, `confidence()`, all empty-safe), and the immutable snapshot
+    `DocumentContent` (status, `is_current` with a partial unique index, the sanitized `html`,
+    the plain `text` with a GIN full-text index) → `Page` → `Node` (one row per `data-nid` tag:
+    materialized `path`, html/text offsets) → `PageRegion` (normalized polygon/envelope, word
+    boxes with confidence; `conf_stats` rolled up bottom-up as `ConfStats`). `DocumentContent`,
+    `Page` and `Node` also carry the **`Dated` mixin** — from when the content *originates*, not
+    what it talks about (`dating.py` has the rule): `date_edtf` (EDTF, the truth), the strict
+    `date_min`/`date_max` bounds (NULL = unknown on that side), `date_source` (explicit,
+    metadata, inferred, interpolated, inherited, aggregated, curated) and `date_conf` (a
+    per-estimate belief, never part of `conf_stats`). `UncertainDate` is the one EDTF ⇄ bounds
+    implementation; `DatedQuerySet.overlapping(period)` the one period query, backed by the
+    partial `(owner, date_min, date_max) WHERE is_current` index on contents (owner-leading:
+    under RLS every query is tenant-scoped) and `(content, date_min)` on pages and nodes. The dating stage (`dating.date_snapshot`) runs inside the builder:
+    datelines in blocks and headings → page envelopes → interpolation over page order (only
+    while the anchors are chronological; a scrapbook is left with gaps) → aggregation up the
+    tree → the content envelope (else the `Document.meta["date_hint"]` / file-metadata prior)
+    → inheritance down; dated tags carry `data-date`. Re-dating is a rebuild from `raw_output`
+    (`reextract(from_raw=True)`, `TreeStrategy.reproject`), a normal flip, no second lifecycle.
+    `strategies.py`: the abstract `ExtractionStrategy` (`extract(document) -> DocumentContent`,
+    with `self.snapshot(document, tree)` doing the rows) and the built-ins `plain-text`, `html`,
+    `pypdf`; `extraction.py`: the neutral tree a strategy hands the builder + the parsers;
+    `snapshot.py`: the write path — `store_blob`, `start_extraction` (a PENDING row + the
+    `extract_content` task on commit), `run_extraction`, `write_snapshot` (plan → render →
+    nh3 → measure offsets → rollups → one transaction), `switch_current` (the only writer of
+    `is_current`/`current_content`, sends `content_switched`), `verify_snapshot`; `ops.py` +
+    the commands `prune_contents` / `gc_blobs` (soft deletes; files stay). `api.py`: multipart
+    `POST /api/documents/upload` (blob + document + a queued extraction per file), paginated
+    list/get/PATCH/delete, `GET …/download` (signed link names the owner; the view opens
+    their `tenant_context`), and the facade: `GET …/content`, `…/pages/{n}`, `…/hit`,
+    `…/timeline` (dated nodes; `?source=`/`?max_conf=` make it a review queue),
+    `…/extractions`, `POST …/reextract[?from_raw=true]`, `GET /api/documents/search?q=`,
+    `GET /api/documents?period=<EDTF>` (the corpus query). Every response carries the
+    information-origin date as `{edtf, min, max, source, conf, display}`. The admin shows
+    `Blob` and the snapshot tables read-only (`admin.py`).
   - `apps/gallery/` — images and videos shown inline: `MediaItem` (owned; `kind` image|video,
     `file` under `gallery/<owner id>/%Y/%m/`), `api.py` decides the MIME type (`media_type_of`:
     the browser's, else guessed from the name), rejects everything that is not

@@ -1,0 +1,277 @@
+@startuml documents_model_v7
+title Documents — Django domain model v7\nSemantic HTML artifact · tag-typed Node index · PageRegion geometry · word-level confidence, aggregated everywhere
+
+hide empty members
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam wrapWidth 270
+
+legend right
+  **UML → Django mapping**
+  filled diamond .... FK on_delete=CASCADE
+  solid arrow ....... FK on_delete=PROTECT
+  dashed arrow ...... FK on_delete=SET_NULL, null=True
+  package ........... aggregate: swaps as one unit
+  --
+  FK columns are drawn as edges, not fields.
+  All offsets are GLOBAL slices of immutable
+  strings (content.html / content.text).
+  All coordinates normalized [0,1], origin
+  top-left; polygons are closed point rings.
+  conf_stats = {n, sum, min, max, hist[10]} —
+  additive, materialized bottom-up at write.
+endlegend
+
+enum ExtractionStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+}
+
+enum StructureSource {
+  EMBEDDED
+  DETECTED
+  CURATED
+}
+
+class Blob <<Model>> {
+  id : UUIDField <<PK>>
+  sha256 : CharField(64)
+  size : BigIntegerField
+  mime_type : CharField(100)
+  file : FileField
+  created_at : DateTimeField
+  .. constraints ..
+  unique: sha256
+  .. semantics ..
+  immutable, content-addressed;
+  originals AND derived artifacts
+  (thumbnails, raw extractor output)
+}
+
+class Document <<Model>> {
+  id : UUIDField <<PK>>
+  title : CharField(500)
+  meta : JSONField
+  created_at : DateTimeField
+  .. facade — the public interface ..
+  text : str
+  html : str
+  pages : QuerySet[Page]
+  outline() : list[Node]
+  hit(page_no, x, y) : Node
+  confidence(measure) : float | Histogram
+  reextract(extractor) : DocumentContent
+  .. invariants ..
+  clean(): current_content.is_current
+  and current_content.document == self
+}
+
+class Extractor <<Model>> {
+  id : BigAutoField <<PK>>
+  name : CharField(100)
+  version : CharField(50)
+  config : JSONField
+  .. constraints ..
+  unique: (name, version)
+}
+
+package "Immutable content snapshot" #FBF9F4 {
+
+  class DocumentContent <<Model>> {
+    id : UUIDField <<PK>>
+    status : ExtractionStatus = PENDING
+    is_current : BooleanField = False
+    html : TextField
+    text : TextField
+    conf_stats : JSONField (null)
+    stats : JSONField
+    error : TextField
+    started_at : DateTimeField (null)
+    finished_at : DateTimeField (null)
+    created_at : DateTimeField
+    .. constraints ..
+    partial unique: (document) where is_current
+    FTS index on text
+    .. api ..
+    outline() : list[Node]
+    node(nid) : Node
+    diff(other : DocumentContent) : ContentDiff
+    .. managers ..
+    successful(): filter(status=SUCCEEDED)
+  }
+
+  class Page <<Model>> {
+    number : PositiveIntegerField
+    label : CharField(20) (null)
+    width : FloatField (null)
+    height : FloatField (null)
+    conf_stats : JSONField (null)
+    meta : JSONField
+    .. constraints ..
+    unique: (content, number)
+    .. api ..
+    reduced_html() : str
+    text() : str
+    hit(x, y) : Node
+  }
+
+  class Node <<Model>> {
+    nid : PositiveIntegerField
+    path : CharField(255)
+    order : PositiveIntegerField
+    tag : CharField(20)
+    level : PositiveSmallIntegerField (null)
+    title : CharField(1000) (null)
+    source : StructureSource
+    conf_stats : JSONField (null)
+    html_start : IntegerField
+    html_end : IntegerField
+    text_start : IntegerField
+    text_end : IntegerField
+    .. constraints ..
+    unique: (content, nid)
+    index: (content, path)
+    index: (content, text_start)
+    index: (content, tag)
+    .. api ..
+    html() : str
+    text() : str
+    subtree() : QuerySet[Node]
+    regions() : list[(Page, polygon | envelope)]
+    conf(measure) : float | Histogram
+  }
+
+  class PageRegion <<Model>> {
+    x0, y0, x1, y1 : FloatField
+    polygon : JSONField (null)
+    words : JSONField (null)
+    conf_stats : JSONField (null)
+    detect_conf : FloatField (null)
+    order : PositiveIntegerField
+    text_start : IntegerField (null)
+    text_end : IntegerField (null)
+    .. constraints ..
+    index: (page)
+    index: (node)
+    .. semantics ..
+    x0..y1 = axis-aligned envelope,
+    derived from polygon at write time
+  }
+}
+
+' ---------- relations (each solid/diamond edge is a ForeignKey column) ----------
+
+' layout only: park shared infrastructure outside the aggregate
+Blob -[hidden]down- Extractor
+
+Document "0..*" --> "1" Blob : source_blob\n<<PROTECT>>
+Document "0..*" ..> "0..1" Blob : thumbnail\n<<SET_NULL>>
+Document "1" *-- "0..*" DocumentContent : contents (full history)\n<<CASCADE>>
+Document "0..1" ..> "0..1" DocumentContent : current_content\n<<SET_NULL>>
+DocumentContent "0..*" --> "1" Blob : blob (pinned input bytes)\n<<PROTECT>>
+DocumentContent "0..*" ..> "0..1" Blob : raw_output (extractor-native JSON)\n<<SET_NULL>>
+DocumentContent "0..*" --> "1" Extractor : extractor\n<<PROTECT>>
+DocumentContent "1" *-- "0..*" Page : pages\n<<CASCADE>>
+DocumentContent "1" *-- "0..*" Node : nodes\n<<CASCADE>>
+Node "0..1" *-- "0..*" Node : parent ▸ children\n<<CASCADE>>
+Node "1" *-- "0..*" PageRegion : regions\n<<CASCADE>>
+Page "1" *-- "0..*" PageRegion : regions\n<<CASCADE>>
+Page "0..*" ..> "0..1" Blob : thumbnail\n<<SET_NULL>>
+
+' ---------- notes ----------
+
+note bottom of Document
+  **Aggregate-root facade**: text / html /
+  pages / outline() / hit() / confidence()
+  delegate to current_content — content rows
+  never leak into the public interface.
+end note
+
+note right of DocumentContent
+  **html is THE artifact**: one sanitized,
+  semantically correct HTML document. Every
+  structural tag carries data-nid AND
+  data-pages="12,13" — derived values burned
+  into an immutable artifact cannot drift,
+  and the exported HTML stays self-contained
+  (page badges, citations, jump-to-page).
+  text is the plain projection + FTS index.
+  --
+  Lifecycle as established: new extractor ⇒
+  new snapshot ⇒ fresh rows, immutable after
+  commit; is_current + partial unique index
+  is the DB-enforced "current"; both it and
+  the pointer flip in one transaction.
+  --
+  **Ops, not schema**: prune old non-current
+  snapshots, GC blobs no FK references.
+end note
+
+note right of Node
+  **SQL index into the one true HTML** —
+  one row per data-nid tag.
+  **The type IS the html tag**
+  (p, h2, table, figure,
+  section, li, …): the sanitizer's tag
+  allowlist is the vocabulary, so there is
+  no enum to migrate. level = semantic level
+  (h1..h6, section depth) — tree depth stays
+  derivable from path. subtree = path LIKE
+  'prefix%'; html_start/html_end slice the
+  node's outerHTML out of content.html —
+  subtree extraction is a string slice.
+end note
+
+note bottom of PageRegion
+  **Two-tier geometry** (Textract / PAGE-XML
+  pattern): polygon is the truth — normalized
+  closed ring, handles rotation and skew;
+  the envelope is derived for plain indexed
+  SQL. hit() = envelope filter in the DB,
+  point-in-polygon refine in Python,
+  smallest area wins. polygon NULL ⇒ region
+  IS the envelope. words: [[x0,y0,x1,y1,
+  text_start,text_end,conf], …] — offsets
+  global into content.text, within the
+  owning node's range.
+  (PostGIS = escape hatch if geometry ever
+  gets heavy.)
+end note
+
+note as CONF #EDF3EC
+  **Confidence: stored once, aggregated everywhere.**
+  Ground truth = per-word conf
+  inside words. conf_stats {n, sum, min, max,
+  hist[10]} is materialized bottom-up at
+  write: region → node (whole subtree) →
+  page → content. Histograms are ADDITIVE,
+  so every rollup is a sum; mean = sum/n;
+  the READER picks the measure — exact
+  percentiles by scanning words. Click a
+  word = hit the region, scan its words.
+  detect_conf is a different quantity: the
+  layout model's belief in the region itself
+  — never mix it into text-quality rollups.
+  Born-digital input ⇒ NULL, never fake 1.0.
+end note
+
+CONF .. PageRegion
+CONF .. Node
+
+note as STD #EDF3EC
+  **Boring by construction** — same concepts,
+  SQL clothes: content.html ≈ hOCR; Node ≈
+  Tagged-PDF structure tree / docling items;
+  PageRegion ≈ PAGE-XML region / ALTO zone /
+  docling prov (page, bbox, charspan).
+  raw_output keeps the extractor's native
+  payload — schema changes re-project from it
+  without paying for OCR again.
+end note
+
+STD .. DocumentContent
+
+@enduml

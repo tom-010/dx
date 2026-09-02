@@ -17,10 +17,21 @@ import type {
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { customFetch } from "../../lib/custom-fetch";
 import type {
+  ContentOut,
+  DocumentNodeOut,
   DocumentOut,
+  DocumentPatch,
   DownloadDocumentParams,
+  ExtractionOut,
+  GetDocumentTimelineParams,
+  HitDocumentParams,
   ListDocumentsParams,
   PagedDocumentOut,
+  PageOut,
+  ReextractDocumentParams,
+  SearchDocumentsParams,
+  SearchHitOut,
+  TimelineEntryOut,
   UploadDocumentsBody,
 } from "../model";
 
@@ -65,6 +76,8 @@ export const getListDocumentsUrl = (params?: ListDocumentsParams) => {
 };
 
 /**
+ * The caller's documents; `period` (EDTF) keeps those whose current content has
+ * information from that period — the corpus query, served by the partial date index.
  * @summary List Documents
  */
 export const listDocuments = async (
@@ -142,12 +155,108 @@ export function useListDocuments<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
+export const getSearchDocumentsUrl = (params: SearchDocumentsParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/documents/search?${stringifiedParams}`
+    : `/api/documents/search`;
+};
+
+/**
+ * Full-text search across the caller's documents (their current snapshots).
+ * @summary Search Documents
+ */
+export const searchDocuments = async (
+  params: SearchDocumentsParams,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<SearchHitOut[]> => {
+  return customFetch<SearchHitOut[]>(getSearchDocumentsUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getSearchDocumentsQueryKey = (params?: SearchDocumentsParams) => {
+  return [`/api/documents/search`, ...(params ? [params] : [])] as const;
+};
+
+export const getSearchDocumentsQueryOptions = <
+  TData = Awaited<ReturnType<typeof searchDocuments>>,
+  TError = unknown,
+>(
+  params: SearchDocumentsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof searchDocuments>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getSearchDocumentsQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof searchDocuments>>> = ({
+    signal,
+  }) => searchDocuments(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof searchDocuments>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type SearchDocumentsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof searchDocuments>>
+>;
+export type SearchDocumentsQueryError = unknown;
+
+/**
+ * @summary Search Documents
+ */
+
+export function useSearchDocuments<
+  TData = Awaited<ReturnType<typeof searchDocuments>>,
+  TError = unknown,
+>(
+  params: SearchDocumentsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof searchDocuments>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getSearchDocumentsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
 export const getUploadDocumentsUrl = () => {
   return `/api/documents/upload`;
 };
 
 /**
- * Upload one or more files as multipart/form-data (field name `files`).
+ * Upload one or more files as multipart/form-data (field name `files`). Each gets an
+ * extraction queued when an extractor handles its type.
  * @summary Upload Documents
  */
 export const uploadDocuments = async (
@@ -239,8 +348,9 @@ export const getDeleteDocumentUrl = (documentId: string) => {
  * Soft delete, and the stored object stays.
  *
  * Deleting the bytes would leave every earlier version of this document pointing at a file
- * that no longer exists. The row drops out of listings and downloads immediately; the object
- * is reclaimed when the tenant is erased (`apps/core/tenants.py`).
+ * that no longer exists. The row drops out of listings and downloads immediately; its
+ * snapshots go with it (they are only reachable through it) and the object is reclaimed when
+ * the tenant is erased (`apps/core/tenants.py`).
  * @summary Delete Document
  */
 export const deleteDocument = async (
@@ -407,6 +517,198 @@ export function useGetDocument<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
+export const getUpdateDocumentUrl = (documentId: string) => {
+  return `/api/documents/${documentId}`;
+};
+
+/**
+ * @summary Update Document
+ */
+export const updateDocument = async (
+  documentId: string,
+  documentPatch: DocumentPatch,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<DocumentOut> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+  return customFetch<DocumentOut>(getUpdateDocumentUrl(documentId), {
+    ...options,
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(documentPatch),
+  });
+};
+
+export const getUpdateDocumentMutationOptions = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateDocument>>,
+    TError,
+    UpdateDocumentMutationVariables,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateDocument>>,
+  TError,
+  UpdateDocumentMutationVariables,
+  TContext
+> => {
+  const mutationKey = ["updateDocument"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateDocument>>,
+    UpdateDocumentMutationVariables
+  > = (props) => {
+    const { documentId, data } = props ?? {};
+
+    return updateDocument(documentId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateDocumentMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateDocument>>
+>;
+export type UpdateDocumentMutationBody = DocumentPatch;
+export type UpdateDocumentMutationError = unknown;
+export type UpdateDocumentMutationVariables = {
+  documentId: string;
+  data: DocumentPatch;
+};
+
+/**
+ * @summary Update Document
+ */
+export const useUpdateDocument = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateDocument>>,
+    TError,
+    UpdateDocumentMutationVariables,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateDocument>>,
+  TError,
+  UpdateDocumentMutationVariables,
+  TContext
+> => {
+  return useMutation(getUpdateDocumentMutationOptions(options));
+};
+export const getGetDocumentContentUrl = (documentId: string) => {
+  return `/api/documents/${documentId}/content`;
+};
+
+/**
+ * The current snapshot through the facade: html, text, outline, confidence — and the
+ * latest run's state, so a client can tell "nothing extracted yet" from "still running".
+ * @summary Get Document Content
+ */
+export const getDocumentContent = async (
+  documentId: string,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<ContentOut> => {
+  return customFetch<ContentOut>(getGetDocumentContentUrl(documentId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetDocumentContentQueryKey = (documentId: string) => {
+  return [`/api/documents/${documentId}/content`] as const;
+};
+
+export const getGetDocumentContentQueryOptions = <
+  TData = Awaited<ReturnType<typeof getDocumentContent>>,
+  TError = unknown,
+>(
+  documentId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getDocumentContent>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetDocumentContentQueryKey(documentId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getDocumentContent>>
+  > = ({ signal }) =>
+    getDocumentContent(documentId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: documentId !== null && documentId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getDocumentContent>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetDocumentContentQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getDocumentContent>>
+>;
+export type GetDocumentContentQueryError = unknown;
+
+/**
+ * @summary Get Document Content
+ */
+
+export function useGetDocumentContent<
+  TData = Awaited<ReturnType<typeof getDocumentContent>>,
+  TError = unknown,
+>(
+  documentId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getDocumentContent>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetDocumentContentQueryOptions(documentId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
 export const getDownloadDocumentUrl = (
   documentId: string,
   params: DownloadDocumentParams,
@@ -516,6 +818,547 @@ export function useDownloadDocument<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getDownloadDocumentQueryOptions(
+    documentId,
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export const getListExtractionsUrl = (documentId: string) => {
+  return `/api/documents/${documentId}/extractions`;
+};
+
+/**
+ * Every extraction run of this document, newest first.
+ * @summary List Extractions
+ */
+export const listExtractions = async (
+  documentId: string,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<ExtractionOut[]> => {
+  return customFetch<ExtractionOut[]>(getListExtractionsUrl(documentId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListExtractionsQueryKey = (documentId: string) => {
+  return [`/api/documents/${documentId}/extractions`] as const;
+};
+
+export const getListExtractionsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listExtractions>>,
+  TError = unknown,
+>(
+  documentId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listExtractions>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListExtractionsQueryKey(documentId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listExtractions>>> = ({
+    signal,
+  }) => listExtractions(documentId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: documentId !== null && documentId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listExtractions>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListExtractionsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listExtractions>>
+>;
+export type ListExtractionsQueryError = unknown;
+
+/**
+ * @summary List Extractions
+ */
+
+export function useListExtractions<
+  TData = Awaited<ReturnType<typeof listExtractions>>,
+  TError = unknown,
+>(
+  documentId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listExtractions>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListExtractionsQueryOptions(documentId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export const getHitDocumentUrl = (
+  documentId: string,
+  params: HitDocumentParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/documents/${documentId}/hit?${stringifiedParams}`
+    : `/api/documents/${documentId}/hit`;
+};
+
+/**
+ * The node drawn under a point of a page (normalized coordinates, origin top-left);
+ * null over page furniture or empty space.
+ * @summary Hit Document
+ */
+export const hitDocument = async (
+  documentId: string,
+  params: HitDocumentParams,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<DocumentNodeOut | null> => {
+  return customFetch<DocumentNodeOut | null>(
+    getHitDocumentUrl(documentId, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getHitDocumentQueryKey = (
+  documentId: string,
+  params?: HitDocumentParams,
+) => {
+  return [
+    `/api/documents/${documentId}/hit`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getHitDocumentQueryOptions = <
+  TData = Awaited<ReturnType<typeof hitDocument>>,
+  TError = unknown,
+>(
+  documentId: string,
+  params: HitDocumentParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof hitDocument>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getHitDocumentQueryKey(documentId, params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof hitDocument>>> = ({
+    signal,
+  }) => hitDocument(documentId, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: documentId !== null && documentId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof hitDocument>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type HitDocumentQueryResult = NonNullable<
+  Awaited<ReturnType<typeof hitDocument>>
+>;
+export type HitDocumentQueryError = unknown;
+
+/**
+ * @summary Hit Document
+ */
+
+export function useHitDocument<
+  TData = Awaited<ReturnType<typeof hitDocument>>,
+  TError = unknown,
+>(
+  documentId: string,
+  params: HitDocumentParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof hitDocument>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getHitDocumentQueryOptions(documentId, params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export const getGetDocumentPageUrl = (documentId: string, number: number) => {
+  return `/api/documents/${documentId}/pages/${number}`;
+};
+
+/**
+ * One page of the current snapshot: its reduced html, text and the regions on it.
+ * @summary Get Document Page
+ */
+export const getDocumentPage = async (
+  documentId: string,
+  number: number,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<PageOut> => {
+  return customFetch<PageOut>(getGetDocumentPageUrl(documentId, number), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetDocumentPageQueryKey = (
+  documentId: string,
+  number: number,
+) => {
+  return [`/api/documents/${documentId}/pages/${number}`] as const;
+};
+
+export const getGetDocumentPageQueryOptions = <
+  TData = Awaited<ReturnType<typeof getDocumentPage>>,
+  TError = unknown,
+>(
+  documentId: string,
+  number: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getDocumentPage>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetDocumentPageQueryKey(documentId, number);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getDocumentPage>>> = ({
+    signal,
+  }) => getDocumentPage(documentId, number, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      documentId !== null &&
+      documentId !== undefined &&
+      number !== null &&
+      number !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getDocumentPage>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetDocumentPageQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getDocumentPage>>
+>;
+export type GetDocumentPageQueryError = unknown;
+
+/**
+ * @summary Get Document Page
+ */
+
+export function useGetDocumentPage<
+  TData = Awaited<ReturnType<typeof getDocumentPage>>,
+  TError = unknown,
+>(
+  documentId: string,
+  number: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getDocumentPage>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetDocumentPageQueryOptions(
+    documentId,
+    number,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export const getReextractDocumentUrl = (
+  documentId: string,
+  params?: ReextractDocumentParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/documents/${documentId}/reextract?${stringifiedParams}`
+    : `/api/documents/${documentId}/reextract`;
+};
+
+/**
+ * Queue a fresh extraction with the extractor registered for this file type. With
+ * `from_raw` the run rebuilds from the latest snapshot's extractor output instead of
+ * extracting again (a re-dating: no OCR cost, a normal flip).
+ * @summary Reextract Document
+ */
+export const reextractDocument = async (
+  documentId: string,
+  params?: ReextractDocumentParams,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<ExtractionOut> => {
+  return customFetch<ExtractionOut>(
+    getReextractDocumentUrl(documentId, params),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getReextractDocumentMutationOptions = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reextractDocument>>,
+    TError,
+    ReextractDocumentMutationVariables,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof reextractDocument>>,
+  TError,
+  ReextractDocumentMutationVariables,
+  TContext
+> => {
+  const mutationKey = ["reextractDocument"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof reextractDocument>>,
+    ReextractDocumentMutationVariables
+  > = (props) => {
+    const { documentId, params } = props ?? {};
+
+    return reextractDocument(documentId, params, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ReextractDocumentMutationResult = NonNullable<
+  Awaited<ReturnType<typeof reextractDocument>>
+>;
+
+export type ReextractDocumentMutationError = unknown;
+export type ReextractDocumentMutationVariables = {
+  documentId: string;
+  params?: ReextractDocumentParams;
+};
+
+/**
+ * @summary Reextract Document
+ */
+export const useReextractDocument = <
+  TError = unknown,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reextractDocument>>,
+    TError,
+    ReextractDocumentMutationVariables,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof reextractDocument>>,
+  TError,
+  ReextractDocumentMutationVariables,
+  TContext
+> => {
+  return useMutation(getReextractDocumentMutationOptions(options));
+};
+export const getGetDocumentTimelineUrl = (
+  documentId: string,
+  params?: GetDocumentTimelineParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/documents/${documentId}/timeline?${stringifiedParams}`
+    : `/api/documents/${documentId}/timeline`;
+};
+
+/**
+ * The current snapshot's dated nodes, earliest first. `source` and `max_conf` make it a
+ * review queue: `?source=interpolated`, `?max_conf=0.5`.
+ * @summary Get Document Timeline
+ */
+export const getDocumentTimeline = async (
+  documentId: string,
+  params?: GetDocumentTimelineParams,
+  options?: Parameters<typeof customFetch>[1],
+): Promise<TimelineEntryOut[]> => {
+  return customFetch<TimelineEntryOut[]>(
+    getGetDocumentTimelineUrl(documentId, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetDocumentTimelineQueryKey = (
+  documentId: string,
+  params?: GetDocumentTimelineParams,
+) => {
+  return [
+    `/api/documents/${documentId}/timeline`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetDocumentTimelineQueryOptions = <
+  TData = Awaited<ReturnType<typeof getDocumentTimeline>>,
+  TError = unknown,
+>(
+  documentId: string,
+  params?: GetDocumentTimelineParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getDocumentTimeline>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getGetDocumentTimelineQueryKey(documentId, params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getDocumentTimeline>>
+  > = ({ signal }) =>
+    getDocumentTimeline(documentId, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: documentId !== null && documentId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getDocumentTimeline>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetDocumentTimelineQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getDocumentTimeline>>
+>;
+export type GetDocumentTimelineQueryError = unknown;
+
+/**
+ * @summary Get Document Timeline
+ */
+
+export function useGetDocumentTimeline<
+  TData = Awaited<ReturnType<typeof getDocumentTimeline>>,
+  TError = unknown,
+>(
+  documentId: string,
+  params?: GetDocumentTimelineParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getDocumentTimeline>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetDocumentTimelineQueryOptions(
     documentId,
     params,
     options,

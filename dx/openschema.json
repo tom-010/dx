@@ -140,6 +140,129 @@
         "title": "CheckOut",
         "type": "object"
       },
+      "ConfStats": {
+        "additionalProperties": false,
+        "description": "Additive summary of per-word confidences: `{n, sum, min, max, hist[10]}`.\n\nTen uniform buckets over [0, 1], the last one right-inclusive. Merging two summaries is\nelementwise addition (plus min/max), which is what lets every level of the snapshot carry\none — region, node subtree, page, content — computed once, bottom-up, at write time. The\nreader picks the measure: `mean`, the histogram, or the exact words of one region.\n\n`None` in a `conf_stats` column means \"no OCR happened here\" (born-digital input). Never a\nfake 1.0.",
+        "properties": {
+          "hist": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 10,
+            "minItems": 10,
+            "title": "Hist",
+            "type": "array"
+          },
+          "max": {
+            "title": "Max",
+            "type": "number"
+          },
+          "min": {
+            "title": "Min",
+            "type": "number"
+          },
+          "n": {
+            "minimum": 1,
+            "title": "N",
+            "type": "integer"
+          },
+          "sum": {
+            "title": "Sum",
+            "type": "number"
+          }
+        },
+        "required": [
+          "n",
+          "sum",
+          "min",
+          "max",
+          "hist"
+        ],
+        "title": "ConfStats",
+        "type": "object"
+      },
+      "ContentOut": {
+        "description": "The facade in one response: what the current snapshot says, plus the latest run.",
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "extraction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExtractionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "html": {
+            "title": "Html",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "outline": {
+            "items": {
+              "$ref": "#/components/schemas/OutlineEntryOut"
+            },
+            "title": "Outline",
+            "type": "array"
+          },
+          "page_count": {
+            "title": "Page Count",
+            "type": "integer"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExtractionStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "extraction",
+          "html",
+          "text",
+          "page_count",
+          "confidence",
+          "date",
+          "outline",
+          "meta"
+        ],
+        "title": "ContentOut",
+        "type": "object"
+      },
       "CountIn": {
         "properties": {
           "delay": {
@@ -357,16 +480,195 @@
         "title": "DatasetPatch",
         "type": "object"
       },
-      "DocumentOut": {
+      "DateOut": {
+        "description": "From when the content originates (`apps/documents/dating.py`): the EDTF truth, its\nstrict bounds (null = unknown on that side), how it is known, how sure — and `display`\nfor a person: \"May 12–20, 1943 (interpolated, 0.60)\".",
         "properties": {
-          "content_type": {
-            "title": "Content Type",
+          "conf": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conf"
+          },
+          "display": {
+            "title": "Display",
             "type": "string"
           },
+          "edtf": {
+            "title": "Edtf",
+            "type": "string"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "min": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DateSource"
+          }
+        },
+        "required": [
+          "edtf",
+          "min",
+          "max",
+          "source",
+          "conf",
+          "display"
+        ],
+        "title": "DateOut",
+        "type": "object"
+      },
+      "DateSource": {
+        "description": "How a row's date is known — a column, because review queues filter on it.",
+        "enum": [
+          "explicit",
+          "metadata",
+          "inferred",
+          "interpolated",
+          "inherited",
+          "aggregated",
+          "curated"
+        ],
+        "title": "DateSource",
+        "type": "string"
+      },
+      "DocumentNodeOut": {
+        "description": "A node of the current snapshot, as the facade hands it out (`node_out`).",
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "html": {
+            "title": "Html",
+            "type": "string"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          },
+          "nid": {
+            "title": "Nid",
+            "type": "integer"
+          },
+          "pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "text_end": {
+            "title": "Text End",
+            "type": "integer"
+          },
+          "text_start": {
+            "title": "Text Start",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "nid",
+          "tag",
+          "path",
+          "level",
+          "title",
+          "pages",
+          "html",
+          "text",
+          "text_start",
+          "text_end",
+          "confidence",
+          "date"
+        ],
+        "title": "DocumentNodeOut",
+        "type": "object"
+      },
+      "DocumentOut": {
+        "properties": {
           "created": {
             "format": "date-time",
             "title": "Created",
             "type": "string"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "download_url": {
             "title": "Download Url",
@@ -377,25 +679,92 @@
             "title": "Id",
             "type": "string"
           },
-          "name": {
-            "maxLength": 255,
-            "title": "Name",
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "mime_type": {
+            "title": "Mime Type",
             "type": "string"
+          },
+          "modified": {
+            "format": "date-time",
+            "title": "Modified",
+            "type": "string"
+          },
+          "page_count": {
+            "title": "Page Count",
+            "type": "integer"
           },
           "size": {
             "title": "Size",
+            "type": "integer"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExtractionStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
             "type": "integer"
           }
         },
         "required": [
           "id",
-          "content_type",
-          "download_url",
-          "name",
+          "title",
+          "meta",
+          "version",
+          "mime_type",
           "size",
-          "created"
+          "status",
+          "page_count",
+          "date",
+          "download_url",
+          "created",
+          "modified"
         ],
         "title": "DocumentOut",
+        "type": "object"
+      },
+      "DocumentPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "meta": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "DocumentPatch",
         "type": "object"
       },
       "EdgeOut": {
@@ -434,6 +803,89 @@
         ],
         "title": "EdgeOut",
         "type": "object"
+      },
+      "ExtractionOut": {
+        "description": "One extraction run — process state, never the snapshot's rows (`extraction_out`).",
+        "properties": {
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "extractor": {
+            "title": "Extractor",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_current": {
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "stats": {
+            "additionalProperties": true,
+            "title": "Stats",
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExtractionStatus"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "extractor",
+          "is_current",
+          "error",
+          "stats",
+          "created",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "ExtractionOut",
+        "type": "object"
+      },
+      "ExtractionStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "succeeded",
+          "partial",
+          "failed"
+        ],
+        "title": "ExtractionStatus",
+        "type": "string"
       },
       "GraphOut": {
         "properties": {
@@ -835,6 +1287,130 @@
         "title": "NotePatch",
         "type": "object"
       },
+      "OutlineEntryOut": {
+        "properties": {
+          "level": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          },
+          "nid": {
+            "title": "Nid",
+            "type": "integer"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "nid",
+          "tag",
+          "level",
+          "title"
+        ],
+        "title": "OutlineEntryOut",
+        "type": "object"
+      },
+      "PageOut": {
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "html": {
+            "title": "Html",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "regions": {
+            "items": {
+              "$ref": "#/components/schemas/RegionOut"
+            },
+            "title": "Regions",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "number",
+          "label",
+          "width",
+          "height",
+          "html",
+          "text",
+          "confidence",
+          "date",
+          "regions"
+        ],
+        "title": "PageOut",
+        "type": "object"
+      },
       "PagedDatasetOut": {
         "properties": {
           "count": {
@@ -956,6 +1532,72 @@
           "refresh_token"
         ],
         "title": "RefreshTokenIn",
+        "type": "object"
+      },
+      "RegionOut": {
+        "properties": {
+          "nid": {
+            "title": "Nid",
+            "type": "integer"
+          },
+          "order": {
+            "title": "Order",
+            "type": "integer"
+          },
+          "polygon": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Polygon"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "x0": {
+            "title": "X0",
+            "type": "number"
+          },
+          "x1": {
+            "title": "X1",
+            "type": "number"
+          },
+          "y0": {
+            "title": "Y0",
+            "type": "number"
+          },
+          "y1": {
+            "title": "Y1",
+            "type": "number"
+          }
+        },
+        "required": [
+          "nid",
+          "tag",
+          "order",
+          "x0",
+          "y0",
+          "x1",
+          "y1",
+          "polygon",
+          "text"
+        ],
+        "title": "RegionOut",
         "type": "object"
       },
       "RegisterIn": {
@@ -1152,6 +1794,46 @@
         "title": "RevisionOut",
         "type": "object"
       },
+      "SearchHitOut": {
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "node": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentNodeOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "snippet": {
+            "title": "Snippet",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "title",
+          "offset",
+          "snippet",
+          "node"
+        ],
+        "title": "SearchHitOut",
+        "type": "object"
+      },
       "SourceOut": {
         "description": "A lineage edge: the exact source *version* this revision was built from.",
         "properties": {
@@ -1283,6 +1965,42 @@
           "total"
         ],
         "title": "TaskProgress",
+        "type": "object"
+      },
+      "TimelineEntryOut": {
+        "description": "A dated node of the current snapshot — `Document.timeline()`, one row each.",
+        "properties": {
+          "date": {
+            "$ref": "#/components/schemas/DateOut"
+          },
+          "excerpt": {
+            "title": "Excerpt",
+            "type": "string"
+          },
+          "nid": {
+            "title": "Nid",
+            "type": "integer"
+          },
+          "pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "nid",
+          "tag",
+          "pages",
+          "excerpt",
+          "date"
+        ],
+        "title": "TimelineEntryOut",
         "type": "object"
       },
       "TokenOut": {
@@ -1900,8 +2618,25 @@
     },
     "/api/documents": {
       "get": {
+        "description": "The caller's documents; `period` (EDTF) keeps those whose current content has\ninformation from that period — the corpus query, served by the partial date index.",
         "operationId": "list_documents",
         "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Period"
+            }
+          },
           {
             "in": "query",
             "name": "page",
@@ -1954,9 +2689,51 @@
         ]
       }
     },
+    "/api/documents/search": {
+      "get": {
+        "description": "Full-text search across the caller's documents (their current snapshots).",
+        "operationId": "search_documents",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SearchHitOut"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Search Documents",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
     "/api/documents/upload": {
       "post": {
-        "description": "Upload one or more files as multipart/form-data (field name `files`).",
+        "description": "Upload one or more files as multipart/form-data (field name `files`). Each gets an\nextraction queued when an extractor handles its type.",
         "operationId": "upload_documents",
         "parameters": [],
         "requestBody": {
@@ -2012,7 +2789,7 @@
     },
     "/api/documents/{document_id}": {
       "delete": {
-        "description": "Soft delete, and the stored object stays.\n\nDeleting the bytes would leave every earlier version of this document pointing at a file\nthat no longer exists. The row drops out of listings and downloads immediately; the object\nis reclaimed when the tenant is erased (`apps/core/tenants.py`).",
+        "description": "Soft delete, and the stored object stays.\n\nDeleting the bytes would leave every earlier version of this document pointing at a file\nthat no longer exists. The row drops out of listings and downloads immediately; its\nsnapshots go with it (they are only reachable through it) and the object is reclaimed when\nthe tenant is erased (`apps/core/tenants.py`).",
         "operationId": "delete_document",
         "parameters": [
           {
@@ -2076,6 +2853,91 @@
         "tags": [
           "documents"
         ]
+      },
+      "patch": {
+        "operationId": "update_document",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update Document",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/documents/{document_id}/content": {
+      "get": {
+        "description": "The current snapshot through the facade: html, text, outline, confidence — and the\nlatest run's state, so a client can tell \"nothing extracted yet\" from \"still running\".",
+        "operationId": "get_document_content",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContentOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get Document Content",
+        "tags": [
+          "documents"
+        ]
       }
     },
     "/api/documents/{document_id}/download": {
@@ -2109,6 +2971,293 @@
           }
         },
         "summary": "Download Document",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/documents/{document_id}/extractions": {
+      "get": {
+        "description": "Every extraction run of this document, newest first.",
+        "operationId": "list_extractions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ExtractionOut"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Extractions",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/documents/{document_id}/hit": {
+      "get": {
+        "description": "The node drawn under a point of a page (normalized coordinates, origin top-left);\nnull over page furniture or empty space.",
+        "operationId": "hit_document",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "x",
+            "required": true,
+            "schema": {
+              "title": "X",
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "y",
+            "required": true,
+            "schema": {
+              "title": "Y",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DocumentNodeOut"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Hit Document",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/documents/{document_id}/pages/{number}": {
+      "get": {
+        "description": "One page of the current snapshot: its reduced html, text and the regions on it.",
+        "operationId": "get_document_page",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get Document Page",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/documents/{document_id}/reextract": {
+      "post": {
+        "description": "Queue a fresh extraction with the extractor registered for this file type. With\n`from_raw` the run rebuilds from the latest snapshot's extractor output instead of\nextracting again (a re-dating: no OCR cost, a normal flip).",
+        "operationId": "reextract_document",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_raw",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "From Raw",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractionOut"
+                }
+              }
+            },
+            "description": "Accepted"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Reextract Document",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/documents/{document_id}/timeline": {
+      "get": {
+        "description": "The current snapshot's dated nodes, earliest first. `source` and `max_conf` make it a\nreview queue: `?source=interpolated`, `?max_conf=0.5`.",
+        "operationId": "get_document_timeline",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DateSource"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_conf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Conf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TimelineEntryOut"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get Document Timeline",
         "tags": [
           "documents"
         ]

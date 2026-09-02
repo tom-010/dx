@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django.contrib.postgres",  # GinIndex + SearchVector: snapshot full-text search (documents)
     "ninja",  # management commands (export_openapi_schema)
     "corsheaders",
     "django_structlog",

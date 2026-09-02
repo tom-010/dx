@@ -69,11 +69,16 @@ def _save_tree(
         if not isinstance(field, models.ForeignKey):
             continue
         related = field.get_cached_value(obj, default=None)
+        if related is None:
+            continue
         # `_state.adding`, not `pk is None`: every primary key here has a `db_default`
         # (`uuidv7()`), so an unsaved row's pk is a `DatabaseDefault` sentinel, never None.
-        if related is not None and related._state.adding:
+        if related._state.adding:
             _save_tree(related, operation, sources, operation_description)
-            setattr(obj, field.name, related)  # the insert has given it a pk; copy it over
+        # The insert has given it a pk; copy it over. Also when this walk did not save it —
+        # the same unsaved object can sit behind two keys of one tree (a snapshot's `blob` is
+        # its document's `source_blob`), and the key assigned first still holds the sentinel.
+        setattr(obj, field.name, related)
     if isinstance(obj, VersionedModel):
         obj.save(operation=operation, sources=sources, operation_description=operation_description)
     else:

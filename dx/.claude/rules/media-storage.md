@@ -60,10 +60,12 @@ store stays private, and the bundled compose works without a browser-reachable `
 - Keys are `upload_to` + the upload name (`documents/<owner id>/%Y/%m/<name>`,
   `apps.core.models.owned_upload_path` — one prefix per tenant); `file_overwrite=False`
   makes django-storages append a random suffix on a clash, so files never share or overwrite a
-  key. Deduplication is
-  deliberately **not** done in the app (decision 2026-08-28): no S3-compatible server dedups by
-  content, so if it is ever wanted it belongs below the store (e.g. ZFS/btrfs dedup on the data
-  volume), not in Django.
+  key. **Documents are the exception**: their files are `Blob` rows, content-addressed
+  (`documents/<owner id>/blobs/ab/cd/<sha256>`, `apps.documents.models.blob_upload_path`) and
+  deduplicated per tenant by `(owner, sha256)` — the 2026-08-28 decision against app-level
+  dedup was reversed for them by the documents brief (2026-09-02), because a snapshot pins the
+  exact bytes it was extracted from and the extractor's raw output is stored the same way. No
+  other app dedups: a store-level mechanism is still where a general one would belong.
 - Versioning: deleting a document writes a delete marker, the previous version stays (recoverable
   in the console / `list_object_versions`); nothing in the app restores versions yet, and there
   is no lifecycle rule expiring old versions — add one before the store gets big.

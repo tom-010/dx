@@ -223,8 +223,8 @@ _READ_CHUNK = 64 * 1024
 
 
 def is_importable(document: Document) -> bool:
-    name = (document.name or "").lower()
-    return name.endswith(IMPORTABLE_SUFFIXES) or document.content_type in IMPORTABLE_TYPES
+    name = document.title.lower()
+    return name.endswith(IMPORTABLE_SUFFIXES) or document.source_blob.mime_type in IMPORTABLE_TYPES
 
 
 def count_rows(document: Document, options: DatasetOptions) -> int:
@@ -236,7 +236,7 @@ def count_rows(document: Document, options: DatasetOptions) -> int:
     """
     newlines = 0
     last = b""
-    with document.file.open("rb") as stream:
+    with document.source_blob.file.open("rb") as stream:
         while chunk := stream.read(_READ_CHUNK):
             newlines += chunk.count(b"\n")
             last = chunk[-1:]
@@ -280,20 +280,20 @@ def import_dataset_for(
     if not is_importable(document):
         raise HttpError(
             400,
-            f"{document.name} is not delimited text (expected one of "
+            f"{document.title} is not delimited text (expected one of "
             f"{', '.join(IMPORTABLE_SUFFIXES)})",
         )
     settings = options or DatasetOptions()
     return create_dataset_for(
         user,
-        name=name or document.name.rsplit(".", 1)[0][:200] or "Imported dataset",
-        description=f"Imported from {document.name}",
+        name=name or document.title.rsplit(".", 1)[0][:200] or "Imported dataset",
+        description=f"Imported from {document.title}",
         row_count=count_rows(document, settings),
         options=settings,
         tags=tags,
         operation="import dataset from document",
         sources=[document],
-        operation_description=f"counted the rows of {document.name} with {settings.delimiter!r}",
+        operation_description=f"counted the rows of {document.title} with {settings.delimiter!r}",
     )
 
 

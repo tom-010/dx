@@ -51,7 +51,13 @@ RESOURCES = [
         "/api/datasets/{id}",
         updates={"PUT": {"name": "hijacked"}, "PATCH": {"name": "hijacked"}},
     ),
-    OwnedResource("documents", _document, "/api/documents", "/api/documents/{id}"),
+    OwnedResource(
+        "documents",
+        _document,
+        "/api/documents",
+        "/api/documents/{id}",
+        updates={"PATCH": {"title": "hijacked"}},
+    ),
     OwnedResource("gallery", _media_item, "/api/gallery", "/api/gallery/{id}"),
     OwnedResource(
         "notes",

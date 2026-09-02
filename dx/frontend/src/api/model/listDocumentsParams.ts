@@ -6,6 +6,7 @@
  */
 
 export type ListDocumentsParams = {
+  period?: string | null;
   /**
    * @minimum 1
    */

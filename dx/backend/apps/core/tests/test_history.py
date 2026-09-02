@@ -32,7 +32,7 @@ from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset, DatasetOptions
 from apps.documents.api import store_documents
-from apps.documents.models import Document
+from apps.documents.models import Blob, Document
 
 pytestmark = pytest.mark.django_db
 
@@ -48,7 +48,7 @@ class DatasetEventRow(history.EventRow, Protocol):
 class DocumentEventRow(history.EventRow, Protocol):
     """A `DocumentEvent` row (see `DatasetEventRow`)."""
 
-    name: str
+    title: str
     size: int
 
 
@@ -388,14 +388,15 @@ def test_to_object_rebuilds_a_file_field_against_the_tracked_model(user: User) -
         (document,) = store_documents(
             user, [SimpleUploadedFile("source.pdf", b"%PDF", content_type="application/pdf")]
         )
-        stored_key = document.file.name
-        document.name = "renamed.pdf"
-        document.save(operation=None, sources=[])
+        blob = document.source_blob
+        stored_key = blob.file.name
+        blob.mime_type = "application/x-renamed"
+        blob.save(operation=None, sources=[])
 
-        original = document.history()[0].to_object()
+        original = blob.history()[0].to_object()
 
-    assert (original.name, original.file.name) == ("source.pdf", stored_key)
-    assert original.file.field is Document._meta.get_field("file")
+    assert (original.mime_type, original.file.name) == ("application/pdf", stored_key)
+    assert original.file.field is Blob._meta.get_field("file")
 
 
 def test_saving_a_past_version_restores_it_as_a_new_version(user: User) -> None:
@@ -586,12 +587,12 @@ def test_lineage_spans_models(user: User) -> None:
         dataset = create_dataset_for(user, name="imported")
         (edge,) = lineage.record_derivation(dataset, sources=[document])
 
-        document.name = "renamed.pdf"
+        document.title = "renamed.pdf"
         document.save(operation=None, sources=[])
 
         assert edge.source_type == event_type(Document)
         assert edge.target_type == event_type(Dataset)
-        assert cast(DocumentEventRow, edge.resolve_source()).name == "source.pdf"
+        assert cast(DocumentEventRow, edge.resolve_source()).title == "source.pdf"
         assert edge.resolve_target().id == dataset.pk
 
 
@@ -612,7 +613,7 @@ def test_sources_hands_back_the_source_as_its_own_model(user: User) -> None:
 
         (source,) = dataset.sources(Document)
 
-        assert (source.to_object().name, source.version) == ("source.pdf", 1)
+        assert (source.to_object().title, source.version) == ("source.pdf", 1)
         assert source.object_id == document.pk
         # And the other direction: what came out of the document.
         assert [v.to_object().name for v in document.derived(Dataset)] == ["imported"]
