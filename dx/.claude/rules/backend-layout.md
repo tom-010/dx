@@ -93,8 +93,19 @@ paths:
     → inheritance down; dated tags carry `data-date`. Re-dating is a rebuild from `raw_output`
     (`reextract(from_raw=True)`, `TreeStrategy.reproject`), a normal flip, no second lifecycle.
     `strategies.py`: the abstract `ExtractionStrategy` (`extract(document) -> DocumentContent`,
-    with `self.snapshot(document, tree)` doing the rows) and the built-ins `plain-text`, `html`,
-    `pypdf`; `extraction.py`: the neutral tree a strategy hands the builder + the parsers;
+    with `self.snapshot(document, tree)` doing the rows), the built-ins `plain-text`, `html`,
+    `pypdf`, and the opt-in `gemini-ocr` (**`ocr/`**: `page_schema.py` — the per-page block
+    contract, pydantic + `google.genai` schema, the y-first `box_2d` → envelope conversion;
+    `gemini_client.py` — the versioned prompt and `GeminiPageReader` with backoff and one
+    repair retry; `render.py` — pdfium rasterization, one page in memory; `assembly.py` — the
+    deterministic reduce: furniture off, cross-page merge, lists/figures grouped, the outline
+    stack, one region per fragment; `run.py` — the resumable page loop; `preview.py` — the
+    QA pages). `manage.py ocr extract|assemble|run` is the same core without a database, and
+    `assemble` replays a production `raw_output` bit for bit. `conf_stats` stays NULL there
+    ("no per-word confidence data available"); the model is never asked to rate itself.
+    `?strategy=gemini-ocr` on `POST …/reextract` opts a document in — page images go to
+    Google, so real records need a confirmed legal basis first. `extraction.py`: the neutral
+    tree a strategy hands the builder + the parsers;
     `snapshot.py`: the write path — `store_blob`, `start_extraction` (a PENDING row + the
     `extract_content` task on commit), `run_extraction`, `write_snapshot` (plan → render →
     nh3 → measure offsets → rollups → one transaction), `switch_current` (the only writer of

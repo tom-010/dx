@@ -7,4 +7,5 @@
 
 export type ReextractDocumentParams = {
   from_raw?: boolean;
+  strategy?: string | null;
 };

@@ -1,0 +1,674 @@
+[
+  {
+    "nid": 1,
+    "path": "0001",
+    "parent": null,
+    "order": 0,
+    "tag": "section",
+    "level": 1,
+    "title": "Arztbrief",
+    "source": "detected",
+    "text_start": 0,
+    "text_end": 538,
+    "html_start": 0,
+    "html_end": 1638,
+    "pages": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "date": null,
+    "regions": []
+  },
+  {
+    "nid": 2,
+    "path": "0001.0001",
+    "parent": 1,
+    "order": 0,
+    "tag": "h1",
+    "level": 1,
+    "title": "Arztbrief",
+    "source": "detected",
+    "text_start": 0,
+    "text_end": 9,
+    "html_start": 45,
+    "html_end": 91,
+    "pages": [
+      1
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 1,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.08,
+        "x1": 0.5,
+        "y1": 0.13,
+        "text_start": 0,
+        "text_end": 9
+      }
+    ]
+  },
+  {
+    "nid": 3,
+    "path": "0001.0002",
+    "parent": 1,
+    "order": 1,
+    "tag": "p",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 11,
+    "text_end": 110,
+    "html_start": 91,
+    "html_end": 225,
+    "pages": [
+      1
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 1,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.15,
+        "x1": 0.9,
+        "y1": 0.22,
+        "text_start": 11,
+        "text_end": 110
+      }
+    ]
+  },
+  {
+    "nid": 4,
+    "path": "0001.0003",
+    "parent": 1,
+    "order": 2,
+    "tag": "section",
+    "level": 2,
+    "title": "Anamnese",
+    "source": "detected",
+    "text_start": 112,
+    "text_end": 273,
+    "html_start": 225,
+    "html_end": 614,
+    "pages": [
+      1,
+      2
+    ],
+    "date": null,
+    "regions": []
+  },
+  {
+    "nid": 5,
+    "path": "0001.0003.0001",
+    "parent": 4,
+    "order": 0,
+    "tag": "h2",
+    "level": 2,
+    "title": "Anamnese",
+    "source": "detected",
+    "text_start": 112,
+    "text_end": 120,
+    "html_start": 264,
+    "html_end": 309,
+    "pages": [
+      1
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 1,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.24,
+        "x1": 0.4,
+        "y1": 0.27,
+        "text_start": 112,
+        "text_end": 120
+      }
+    ]
+  },
+  {
+    "nid": 6,
+    "path": "0001.0003.0002",
+    "parent": 4,
+    "order": 1,
+    "tag": "p",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 122,
+    "text_end": 221,
+    "html_start": 309,
+    "html_end": 445,
+    "pages": [
+      1,
+      2
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 1,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.29,
+        "x1": 0.9,
+        "y1": 0.34,
+        "text_start": 122,
+        "text_end": 169
+      },
+      {
+        "page": 2,
+        "order": 1,
+        "x0": 0.1,
+        "y0": 0.08,
+        "x1": 0.9,
+        "y1": 0.13,
+        "text_start": 169,
+        "text_end": 221
+      }
+    ]
+  },
+  {
+    "nid": 7,
+    "path": "0001.0003.0003",
+    "parent": 4,
+    "order": 2,
+    "tag": "ul",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 223,
+    "text_end": 273,
+    "html_start": 445,
+    "html_end": 604,
+    "pages": [
+      2
+    ],
+    "date": null,
+    "regions": []
+  },
+  {
+    "nid": 8,
+    "path": "0001.0003.0003.0001",
+    "parent": 7,
+    "order": 0,
+    "tag": "li",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 223,
+    "text_end": 252,
+    "html_start": 477,
+    "html_end": 543,
+    "pages": [
+      2
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 2,
+        "order": 0,
+        "x0": 0.12,
+        "y0": 0.15,
+        "x1": 0.9,
+        "y1": 0.18,
+        "text_start": 223,
+        "text_end": 252
+      }
+    ]
+  },
+  {
+    "nid": 9,
+    "path": "0001.0003.0003.0002",
+    "parent": 7,
+    "order": 1,
+    "tag": "li",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 254,
+    "text_end": 273,
+    "html_start": 543,
+    "html_end": 599,
+    "pages": [
+      2
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 2,
+        "order": 0,
+        "x0": 0.12,
+        "y0": 0.185,
+        "x1": 0.9,
+        "y1": 0.215,
+        "text_start": 254,
+        "text_end": 273
+      }
+    ]
+  },
+  {
+    "nid": 10,
+    "path": "0001.0004",
+    "parent": 1,
+    "order": 3,
+    "tag": "section",
+    "level": 2,
+    "title": "Befund",
+    "source": "detected",
+    "text_start": 275,
+    "text_end": 411,
+    "html_start": 614,
+    "html_end": 1229,
+    "pages": [
+      2,
+      3
+    ],
+    "date": null,
+    "regions": []
+  },
+  {
+    "nid": 11,
+    "path": "0001.0004.0001",
+    "parent": 10,
+    "order": 0,
+    "tag": "h2",
+    "level": 2,
+    "title": "Befund",
+    "source": "detected",
+    "text_start": 275,
+    "text_end": 281,
+    "html_start": 654,
+    "html_end": 698,
+    "pages": [
+      2
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 2,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.24,
+        "x1": 0.4,
+        "y1": 0.27,
+        "text_start": 275,
+        "text_end": 281
+      }
+    ]
+  },
+  {
+    "nid": 12,
+    "path": "0001.0004.0002",
+    "parent": 10,
+    "order": 1,
+    "tag": "table",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 283,
+    "text_end": 341,
+    "html_start": 698,
+    "html_end": 933,
+    "pages": [
+      2,
+      3
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 2,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.29,
+        "x1": 0.9,
+        "y1": 0.5,
+        "text_start": 283,
+        "text_end": 328
+      },
+      {
+        "page": 3,
+        "order": 1,
+        "x0": 0.1,
+        "y0": 0.08,
+        "x1": 0.9,
+        "y1": 0.2,
+        "text_start": 329,
+        "text_end": 341
+      }
+    ]
+  },
+  {
+    "nid": 13,
+    "path": "0001.0004.0003",
+    "parent": 10,
+    "order": 2,
+    "tag": "figure",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 343,
+    "text_end": 384,
+    "html_start": 933,
+    "html_end": 1074,
+    "pages": [
+      3
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 3,
+        "order": 0,
+        "x0": 0.15,
+        "y0": 0.23,
+        "x1": 0.85,
+        "y1": 0.6,
+        "text_start": 343,
+        "text_end": 343
+      }
+    ]
+  },
+  {
+    "nid": 14,
+    "path": "0001.0004.0003.0001",
+    "parent": 13,
+    "order": 0,
+    "tag": "figcaption",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 343,
+    "text_end": 384,
+    "html_start": 970,
+    "html_end": 1065,
+    "pages": [
+      3
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 3,
+        "order": 0,
+        "x0": 0.15,
+        "y0": 0.61,
+        "x1": 0.85,
+        "y1": 0.64,
+        "text_start": 343,
+        "text_end": 384
+      }
+    ]
+  },
+  {
+    "nid": 15,
+    "path": "0001.0004.0004",
+    "parent": 10,
+    "order": 3,
+    "tag": "section",
+    "level": 4,
+    "title": "Nebenbefund",
+    "source": "detected",
+    "text_start": 386,
+    "text_end": 411,
+    "html_start": 1074,
+    "html_end": 1219,
+    "pages": [
+      3
+    ],
+    "date": null,
+    "regions": []
+  },
+  {
+    "nid": 16,
+    "path": "0001.0004.0004.0001",
+    "parent": 15,
+    "order": 0,
+    "tag": "h4",
+    "level": 4,
+    "title": "Nebenbefund",
+    "source": "detected",
+    "text_start": 386,
+    "text_end": 397,
+    "html_start": 1112,
+    "html_end": 1161,
+    "pages": [
+      3
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 3,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.67,
+        "x1": 0.4,
+        "y1": 0.7,
+        "text_start": 386,
+        "text_end": 397
+      }
+    ]
+  },
+  {
+    "nid": 17,
+    "path": "0001.0004.0004.0002",
+    "parent": 15,
+    "order": 1,
+    "tag": "p",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 399,
+    "text_end": 411,
+    "html_start": 1161,
+    "html_end": 1209,
+    "pages": [
+      3
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 3,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.72,
+        "x1": 0.9,
+        "y1": 0.75,
+        "text_start": 399,
+        "text_end": 411
+      }
+    ]
+  },
+  {
+    "nid": 18,
+    "path": "0001.0005",
+    "parent": 1,
+    "order": 4,
+    "tag": "section",
+    "level": 2,
+    "title": "Verlauf",
+    "source": "detected",
+    "text_start": 413,
+    "text_end": 431,
+    "html_start": 1229,
+    "html_end": 1367,
+    "pages": [
+      4
+    ],
+    "date": null,
+    "regions": []
+  },
+  {
+    "nid": 19,
+    "path": "0001.0005.0001",
+    "parent": 18,
+    "order": 0,
+    "tag": "h2",
+    "level": 2,
+    "title": "Verlauf",
+    "source": "detected",
+    "text_start": 413,
+    "text_end": 420,
+    "html_start": 1267,
+    "html_end": 1312,
+    "pages": [
+      4
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 4,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.08,
+        "x1": 0.4,
+        "y1": 0.13,
+        "text_start": 413,
+        "text_end": 420
+      }
+    ]
+  },
+  {
+    "nid": 20,
+    "path": "0001.0005.0002",
+    "parent": 18,
+    "order": 1,
+    "tag": "p",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 422,
+    "text_end": 431,
+    "html_start": 1312,
+    "html_end": 1357,
+    "pages": [
+      4
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 4,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.15,
+        "x1": 0.9,
+        "y1": 0.2,
+        "text_start": 422,
+        "text_end": 431
+      }
+    ]
+  },
+  {
+    "nid": 21,
+    "path": "0001.0006",
+    "parent": 1,
+    "order": 5,
+    "tag": "section",
+    "level": 2,
+    "title": "Beurteilung",
+    "source": "detected",
+    "text_start": 433,
+    "text_end": 538,
+    "html_start": 1367,
+    "html_end": 1628,
+    "pages": [
+      4,
+      5
+    ],
+    "date": null,
+    "regions": []
+  },
+  {
+    "nid": 22,
+    "path": "0001.0006.0001",
+    "parent": 21,
+    "order": 0,
+    "tag": "h2",
+    "level": 2,
+    "title": "Beurteilung",
+    "source": "detected",
+    "text_start": 433,
+    "text_end": 444,
+    "html_start": 1407,
+    "html_end": 1456,
+    "pages": [
+      4
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 4,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.9,
+        "x1": 0.4,
+        "y1": 0.94,
+        "text_start": 433,
+        "text_end": 444
+      }
+    ]
+  },
+  {
+    "nid": 23,
+    "path": "0001.0006.0002",
+    "parent": 21,
+    "order": 1,
+    "tag": "p",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 446,
+    "text_end": 521,
+    "html_start": 1456,
+    "html_end": 1567,
+    "pages": [
+      5
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 5,
+        "order": 0,
+        "x0": 0.1,
+        "y0": 0.08,
+        "x1": 0.9,
+        "y1": 0.15,
+        "text_start": 446,
+        "text_end": 521
+      }
+    ]
+  },
+  {
+    "nid": 24,
+    "path": "0001.0006.0003",
+    "parent": 21,
+    "order": 2,
+    "tag": "p",
+    "level": null,
+    "title": null,
+    "source": "detected",
+    "text_start": 523,
+    "text_end": 538,
+    "html_start": 1567,
+    "html_end": 1618,
+    "pages": [
+      5
+    ],
+    "date": null,
+    "regions": [
+      {
+        "page": 5,
+        "order": 0,
+        "x0": 0.6,
+        "y0": 0.2,
+        "x1": 0.9,
+        "y1": 0.23,
+        "text_start": 523,
+        "text_end": 538
+      }
+    ]
+  }
+]

@@ -1,0 +1,75 @@
+{
+  "blocks": [
+    {
+      "box_2d": [
+        10,
+        50,
+        40,
+        950
+      ],
+      "continues_from_previous_page": false,
+      "kind": "page_header",
+      "text": "Klinik Musterstadt · Orthopädie"
+    },
+    {
+      "box_2d": [
+        80,
+        100,
+        130,
+        400
+      ],
+      "continues_from_previous_page": false,
+      "kind": "heading",
+      "level": 2,
+      "text": "Verlauf"
+    },
+    {
+      "box_2d": [
+        150,
+        100,
+        200,
+        900
+      ],
+      "continues_from_previous_page": false,
+      "kind": "paragraph",
+      "text": "Die Nach-"
+    },
+    {
+      "box_2d": [
+        900,
+        100,
+        940,
+        400
+      ],
+      "continues_from_previous_page": false,
+      "kind": "heading",
+      "level": 2,
+      "text": "Beurteilung"
+    },
+    {
+      "box_2d": [
+        960,
+        100,
+        985,
+        400
+      ],
+      "continues_from_previous_page": false,
+      "kind": "page_footer",
+      "text": "Vertraulich"
+    },
+    {
+      "box_2d": [
+        960,
+        480,
+        985,
+        520
+      ],
+      "continues_from_previous_page": false,
+      "kind": "page_number",
+      "text": "4"
+    }
+  ],
+  "height": 842.0,
+  "number": 4,
+  "width": 595.0
+}

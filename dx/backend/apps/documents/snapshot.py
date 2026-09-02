@@ -299,7 +299,7 @@ def extract_now(
     assert content is not None
     result = run_extraction(content.pk, strategy)
     # The run flipped another instance of the row; keep the caller's facade in step.
-    document.refresh_from_db(fields=["current_content", "meta", "version", "modified"])
+    document.refresh_from_db(fields=["current_content", "meta", "thumbnail", "version", "modified"])
     return result
 
 
@@ -572,7 +572,9 @@ def _render(node: _Planned, out: list[str]) -> None:
     if node.date is not None:
         attrs += f' data-date="{html.escape(node.date.date.edtf, quote=True)}"'
     out.append(f"<{item.tag}{attrs}>")
-    if item.rows is not None:
+    if item.table_html is not None:
+        out.append(item.table_html)  # the extractor's own cell markup; nh3 checks it
+    elif item.rows is not None:
         rows = item.rows
         if item.header and rows:
             out.append("<thead><tr>")
@@ -679,22 +681,31 @@ def _dated[RowT: Dated](row: RowT, estimate: DateEstimate | None) -> RowT:
     return row
 
 
-def write_snapshot(
-    content: DocumentContent, extraction: Extraction, *, raw_output: Blob | None = None
-) -> None:
-    """Turn an extraction into the frozen rows of `content`, all in one transaction."""
+@dataclass
+class Built:
+    """A snapshot before it is written: the strings, the planned rows, the dating report."""
+
+    nodes: list[_Planned]
+    pages: list[_PlannedPage]
+    regions: list[_Region]
+    text: str
+    html: str
+    report: dating.DatingReport
+    page_conf: dict[int, ConfStats | None]
+    stats: dict[str, object]
+
+
+def build(
+    extraction: Extraction, *, hint: str | None = None, metadata_date: str | None = None
+) -> Built:
+    """The pure half of `write_snapshot`: plan, date, render, sanitize, measure, check —
+    everything that needs no database. `manage.py ocr assemble` writes its result to files;
+    `write_snapshot` to rows."""
     nodes, text = plan(extraction)
     place(nodes, extraction, text)
     planned_pages = [_PlannedPage(item=page, number=page.number) for page in extraction.pages]
-    hint = (
-        content.document.meta.get("date_hint") if isinstance(content.document.meta, dict) else None
-    )
     report = dating.date_snapshot(
-        nodes,
-        planned_pages,
-        text,
-        hint=str(hint) if hint else None,
-        metadata_date=str(extraction.meta["created"]) if extraction.meta.get("created") else None,
+        nodes, planned_pages, text, hint=hint, metadata_date=metadata_date
     )
     dated = dating.check_dating(nodes, planned_pages, report.content)
     if dated:
@@ -707,15 +718,12 @@ def write_snapshot(
         except KeyError:
             raise SnapshotError(f"the sanitizer dropped node #{node.nid} <{node.tag}>") from None
     _check(nodes, clean, text)
-
     regions = [r for node in nodes for r in node.regions]
     page_conf = {
         page.number: ConfStats.merge(r.conf for r in regions if r.page == page.number)
         for page in extraction.pages
     }
-    finished = timezone.now()
-    started = content.started_at or finished
-    stats = {
+    stats: dict[str, object] = {
         "pages": len(extraction.pages),
         "failed_pages": sorted(extraction.failed_pages),
         "nodes": len(nodes),
@@ -723,10 +731,85 @@ def write_snapshot(
         "words": sum(len(r.words or []) for r in regions),
         "html_chars": len(clean),
         "text_chars": len(text),
-        "duration_s": round((finished - started).total_seconds(), 3),
         "meta": extraction.meta,
         "dating": report.stats,
+        **extraction.stats,
     }
+    return Built(
+        nodes=nodes,
+        pages=planned_pages,
+        regions=regions,
+        text=text,
+        html=clean,
+        report=report,
+        page_conf=page_conf,
+        stats=stats,
+    )
+
+
+def payload(built: Built) -> list[dict[str, object]]:
+    """The would-be `Node` and `PageRegion` rows of a build, as plain data (`nodes.json`)."""
+    rows = []
+    for node in built.nodes:
+        rows.append(
+            {
+                "nid": node.nid,
+                "path": node.path,
+                "parent": node.parent.nid if node.parent is not None else None,
+                "order": node.order,
+                "tag": node.tag,
+                "level": node.level(),
+                "title": node.title(built.text),
+                "source": str(node.item.source),
+                "text_start": node.text_start,
+                "text_end": node.text_end,
+                "html_start": node.html_start,
+                "html_end": node.html_end,
+                "pages": sorted(node.pages),
+                "date": (
+                    {
+                        "edtf": node.date.date.edtf,
+                        "source": node.date.source.value,
+                        "conf": node.date.conf,
+                    }
+                    if node.date is not None
+                    else None
+                ),
+                "regions": [
+                    {
+                        "page": region.page,
+                        "order": index,
+                        "x0": region.x0,
+                        "y0": region.y0,
+                        "x1": region.x1,
+                        "y1": region.y1,
+                        "text_start": region.text_start,
+                        "text_end": region.text_end,
+                    }
+                    for index, region in enumerate(node.regions)
+                ],
+            }
+        )
+    return rows
+
+
+def write_snapshot(
+    content: DocumentContent, extraction: Extraction, *, raw_output: Blob | None = None
+) -> None:
+    """Turn an extraction into the frozen rows of `content`, all in one transaction."""
+    meta = content.document.meta if isinstance(content.document.meta, dict) else {}
+    hint = meta.get("date_hint")
+    created = extraction.meta.get("created")
+    built = build(
+        extraction,
+        hint=str(hint) if hint else None,
+        metadata_date=str(created) if created else None,
+    )
+    nodes, planned_pages, regions, report = built.nodes, built.pages, built.regions, built.report
+    text, clean, page_conf = built.text, built.html, built.page_conf
+    finished = timezone.now()
+    started = content.started_at or finished
+    stats = {**built.stats, "duration_s": round((finished - started).total_seconds(), 3)}
     owner = content.owner_id
     label = f"{content.extractor.name} {content.extractor.tool_version}"
     with (
@@ -757,6 +840,11 @@ def write_snapshot(
                     height=page.item.height,
                     meta=page.item.meta,
                     conf_stats=page_conf[page.number],
+                    thumbnail=(
+                        store_bytes(owner, page.item.thumbnail, "image/png")
+                        if page.item.thumbnail is not None
+                        else None
+                    ),
                 ),
                 page.date,
             )
@@ -831,13 +919,18 @@ def switch_current(document: Document, new: DocumentContent) -> None:
         extracted = new.stats.get("meta") if isinstance(new.stats, dict) else None
         if isinstance(extracted, dict):
             locked.meta = {**extracted, **locked.meta}
+        if locked.thumbnail_id is None:
+            first = new.pages.exclude(thumbnail=None).order_by("number").first()
+            if first is not None:
+                locked.thumbnail = first.thumbnail
         locked.save(
             operation="switch document content",
             sources=[new],
-            update_fields=["current_content", "meta"],
+            update_fields=["current_content", "meta", "thumbnail"],
         )
         document.current_content = new
         document.meta = locked.meta
+        document.thumbnail = locked.thumbnail
         document.version = locked.version
         content_switched.send(sender=Document, document=locked, content=new, previous=previous)
 

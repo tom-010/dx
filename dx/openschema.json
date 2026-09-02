@@ -3142,7 +3142,7 @@
     },
     "/api/documents/{document_id}/reextract": {
       "post": {
-        "description": "Queue a fresh extraction with the extractor registered for this file type. With\n`from_raw` the run rebuilds from the latest snapshot's extractor output instead of\nextracting again (a re-dating: no OCR cost, a normal flip).",
+        "description": "Queue a fresh extraction — with the strategy registered for this file type, or the\nnamed one (`?strategy=gemini-ocr`). With `from_raw` the run rebuilds from the latest\nsnapshot's extractor output instead of extracting again (a re-dating: no OCR cost, a\nnormal flip).",
         "operationId": "reextract_document",
         "parameters": [
           {
@@ -3163,6 +3163,22 @@
               "default": false,
               "title": "From Raw",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "strategy",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Strategy"
             }
           }
         ],

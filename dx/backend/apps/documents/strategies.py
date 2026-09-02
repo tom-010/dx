@@ -26,7 +26,8 @@ a whole-document failure; report pages that failed through `Extraction.failed_pa
 The registry at the bottom is the whole "which strategy for which file" decision:
 `strategy_for_mime()` at upload, `strategy_named()` when the task runs (the `Extractor` row a
 snapshot points at is a strategy's `name` + `tool_version`). Built in: `plain-text`, `html`,
-`pypdf` (born-digital PDFs without OCR, so no confidence).
+`pypdf` (born-digital PDFs without OCR, so no confidence), and `gemini-ocr` (opt-in vision
+OCR for scans, `apps/documents/ocr/`).
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ from apps.documents.extraction import (
     HtmlTree,
 )
 from apps.documents.models import Document, DocumentContent, StructureSource
+from apps.documents.ocr import assembly, gemini_client, page_schema, render, run
+from config.env import env
 
 
 class ExtractionStrategy(ABC):
@@ -238,6 +241,61 @@ def _creation_date(info: pypdf.DocumentInformation) -> str | None:
     return created.date().isoformat() if created is not None else None
 
 
+class GeminiOcrStrategy(ExtractionStrategy):
+    """Gemini-vision OCR for scans (`apps/documents/ocr/`): every page image goes to the model
+    once, the assembly turns the answers into the tree, the builder does the rest. Opt-in
+    (`reextract(strategy=...)`, `?strategy=gemini-ocr`): it costs money and sends page images
+    to Google — never the default for a MIME type. A rebuild (`from_raw=True`) replays the
+    stored per-page JSON without a single request.
+
+    No per-word confidence exists here, so `conf_stats` stays NULL ("no per-word confidence
+    data available"); the model is never asked to rate itself.
+    """
+
+    name = "gemini-ocr"
+    #: Bump on any change to the prompt or the response schema: they are the extractor.
+    tool_version = "1"
+    config: ClassVar[dict[str, Any]] = {
+        "model": gemini_client.MODEL,
+        "dpi": render.DPI,
+        "prompt_sha256": gemini_client.prompt_sha256(),
+        "schema_version": page_schema.SCHEMA_VERSION,
+    }
+
+    def __init__(self, reader: gemini_client.PageReader | None = None) -> None:
+        self._reader = reader
+
+    def reader(self) -> gemini_client.PageReader:
+        if self._reader is None:
+            if not env.GEMINI_API_KEY:
+                raise ExtractionError("GEMINI_API_KEY is not set (backend/.env)")
+            self._reader = gemini_client.GeminiPageReader(
+                env.GEMINI_API_KEY, model=str(self.config["model"])
+            )
+        return self._reader
+
+    def extract(self, document: Document) -> DocumentContent:
+        from apps.documents import snapshot  # noqa: PLC0415 - snapshot imports this module
+
+        source = snapshot.rebuild_source()
+        if source is not None:
+            pages = assembly.pages_from_raw(source[0])
+        else:
+            pages = list(
+                run.read_document(
+                    document.source_blob.read_bytes(),
+                    self.reader(),
+                    dpi=int(self.config["dpi"]),
+                    thumbnails=True,
+                )
+            )
+        if not pages:
+            raise ExtractionError("the PDF has no pages")
+        if all(page.failed for page in pages):
+            raise ExtractionError(f"no page could be read: {pages[0].error}")
+        return self.snapshot(document, assembly.assemble(pages))
+
+
 # --- Registry ------------------------------------------------------------------------------------
 
 
@@ -246,7 +304,8 @@ class UnknownStrategy(LookupError):
 
 
 STRATEGIES: dict[str, ExtractionStrategy] = {
-    strategy.name: strategy for strategy in (PlainTextStrategy(), HtmlStrategy(), PdfStrategy())
+    strategy.name: strategy
+    for strategy in (PlainTextStrategy(), HtmlStrategy(), PdfStrategy(), GeminiOcrStrategy())
 }
 
 #: MIME type → strategy name: the default strategy for an upload of that type.

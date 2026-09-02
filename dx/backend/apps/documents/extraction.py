@@ -73,6 +73,9 @@ class ExtractedNode:
     #: not nodes: clicking a table selects the whole table.
     rows: list[list[str]] | None = None
     header: bool = False
+    #: A table's inner markup (thead/tbody/tr/th/td with colspan/rowspan), when the extractor
+    #: has it: emitted instead of rendering `rows`, which still give the text projection.
+    table_html: str | None = None
 
 
 @dataclass
@@ -82,6 +85,8 @@ class ExtractedPage:
     width: float | None = None
     height: float | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    #: A PNG of the page, scaled down, stored as a blob → `Page.thumbnail`.
+    thumbnail: bytes | None = None
 
 
 @dataclass
@@ -95,6 +100,8 @@ class Extraction:
     raw_mime: str = "application/json"
     #: Document-level metadata the file carried (title, author, language).
     meta: dict[str, Any] = field(default_factory=dict)
+    #: Extractor-specific figures for `DocumentContent.stats` (`{"ocr": {...}}`).
+    stats: dict[str, Any] = field(default_factory=dict)
 
 
 def decode(data: bytes) -> str:

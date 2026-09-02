@@ -33,7 +33,7 @@ from apps.accounts.api import current_user
 from apps.accounts.models import User
 from apps.core.db import tenant_context
 from apps.core.schemas import StrictSchema
-from apps.documents import snapshot
+from apps.documents import snapshot, strategies
 from apps.documents.dating import DateSource, InvalidDate, UncertainDate
 from apps.documents.models import (
     ConfStats,
@@ -596,14 +596,24 @@ def list_extractions(request: HttpRequest, document_id: uuid.UUID) -> list[Extra
 
 @router.post("/documents/{document_id}/reextract", response={202: ExtractionOut})
 def reextract_document(
-    request: HttpRequest, document_id: uuid.UUID, from_raw: bool = False
+    request: HttpRequest,
+    document_id: uuid.UUID,
+    from_raw: bool = False,
+    strategy: str | None = None,
 ) -> Status[ExtractionOut]:
-    """Queue a fresh extraction with the extractor registered for this file type. With
-    `from_raw` the run rebuilds from the latest snapshot's extractor output instead of
-    extracting again (a re-dating: no OCR cost, a normal flip)."""
+    """Queue a fresh extraction — with the strategy registered for this file type, or the
+    named one (`?strategy=gemini-ocr`). With `from_raw` the run rebuilds from the latest
+    snapshot's extractor output instead of extracting again (a re-dating: no OCR cost, a
+    normal flip)."""
     document = get_document_for(current_user(request), DocumentId(document_id))
+    chosen = None
+    if strategy:
+        try:
+            chosen = strategies.strategy_named(strategy)
+        except strategies.UnknownStrategy as exc:
+            raise HttpError(422, str(exc)) from None
     try:
-        content = document.reextract(from_raw=from_raw)
+        content = document.reextract(chosen, from_raw=from_raw)
     except snapshot.NothingToRebuildFrom as exc:
         raise HttpError(422, str(exc)) from None
     if content is None:

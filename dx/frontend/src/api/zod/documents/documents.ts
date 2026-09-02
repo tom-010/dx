@@ -640,9 +640,10 @@ export const GetDocumentPageResponse = zod.object({
 });
 
 /**
- * Queue a fresh extraction with the extractor registered for this file type. With
- * `from_raw` the run rebuilds from the latest snapshot's extractor output instead of
- * extracting again (a re-dating: no OCR cost, a normal flip).
+ * Queue a fresh extraction — with the strategy registered for this file type, or the
+ * named one (`?strategy=gemini-ocr`). With `from_raw` the run rebuilds from the latest
+ * snapshot's extractor output instead of extracting again (a re-dating: no OCR cost, a
+ * normal flip).
  * @summary Reextract Document
  */
 export const ReextractDocumentParams = zod.object({
@@ -653,6 +654,7 @@ export const reextractDocumentQueryFromRawDefault = false;
 
 export const ReextractDocumentQueryParams = zod.object({
   from_raw: zod.boolean().default(reextractDocumentQueryFromRawDefault),
+  strategy: zod.union([zod.string(), zod.null()]).optional(),
 });
 
 export const ReextractDocumentResponse = zod

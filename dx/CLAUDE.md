@@ -135,6 +135,7 @@ Other little ideas:
 | What a write records | `docs/history_lineage_what_is_recorded.md` (version, edge, function source, request — every column and the mechanism behind it) |
 | Soft delete API      | `docs/soft-delete.md` (delete, read, restore, cascade, the one escape hatch) |
 | Snapshot housekeeping | `DB_ROLE=migrator manage.py prune_contents [--days N] [--keep-latest] [--dry-run]` (retire old non-current extraction snapshots) · `DB_ROLE=migrator manage.py gc_blobs [--dry-run]` (retire blobs nothing references); both soft-delete — `apps/documents/ops.py` |
+| OCR iteration loop   | `cd backend && uv run python manage.py ocr extract FILE.pdf --out out/ --pages 1-3` (pdfium → Gemini → `out/raw/`; needs `GEMINI_API_KEY`; **synthetic/redacted pages only until the legal basis for real records is confirmed**) · `ocr assemble --out out/` (raw → `content.html`, `content.txt`, `nodes.json`, `preview/`) · `ocr run FILE.pdf` = both; `apps/documents/ocr/` |
 | Lineage demo data    | `cd backend && uv run python manage.py lineage_demo [--clean]` (builds 11 lineage shapes out of ModelA/ModelB — chain, merge, split, diamond, feedback, rebuild, erased, hub, churn, restore, moving — and prints an explorer link per shape) |
 | Lineage explorer     | http://127.0.0.1:8000/explorer/ (dev only, staff session): pick a user → models → rows → one row's versions and lineage (`apps/core/explorer.py`) |
 | Health / readiness   | `curl http://127.0.0.1:8000/api/health` (liveness) · `/api/ready` (503 + failing checks; see `.claude/rules/health-checks.md`) |
