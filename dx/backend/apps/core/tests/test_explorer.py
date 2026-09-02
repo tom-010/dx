@@ -6,8 +6,10 @@ make it a liability: that it does not exist outside development, that it is not 
 non-staff, and that browsing a tenant shows *that* tenant's rows and nobody else's.
 """
 
+import json
 import re
 import uuid
+from collections.abc import Callable
 from datetime import timedelta
 
 import pytest
@@ -19,7 +21,10 @@ from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core import explorer, lineage
-from apps.core.history import event_model_for, event_rows, history_context
+from apps.core.db import tenant_context
+from apps.core.history import event_model_for, event_rows, hard_delete, history_context
+from apps.core.request_record import RequestRecord
+from apps.core.source import SourceSnippet
 from apps.core.testing import acting_as
 from apps.datasets.api import create_dataset_for
 from apps.datasets.models import Dataset
@@ -510,7 +515,10 @@ def test_no_page_leaks_a_template_comment(staff_client: Client, user: User) -> N
     ]
     for url in pages:
         body = staff_client.get(url).content.decode()
-        assert "{#" not in body and "{%" not in body, url
+        # The stack pages show function source, and source may legitimately contain anything —
+        # including this very assertion's `"{#"`. A leaked template comment is in the *markup*.
+        markup = re.sub(r"<pre>.*?</pre>", "", body, flags=re.S)
+        assert "{#" not in markup and "{%" not in markup, url
         assert body.lstrip().startswith("<!doctype html>"), url
 
 
@@ -909,3 +917,82 @@ def test_a_version_with_no_recorded_writer_says_so(staff_client: Client, user: U
 
     assert "Not recorded" in body
     assert "a bulk update" in body
+
+
+def test_the_stack_pages_show_each_functions_source_with_the_line_marked(
+    staff_client: Client, user: User
+) -> None:
+    """A reviewer without a checkout still sees the code that ran — the whole function, numbered,
+    the executing line marked — folded under each frame."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="with source")
+
+    body = staff_client.get(version_url(user, dataset, 1)).content.decode()
+    written_by = body.split('id="written-by"', 1)[1].split("</section>", 1)[0]
+
+    assert "<details>" in written_by and "<pre>" in written_by
+    assert "def create_dataset_for(" in written_by  # the service's whole function
+    assert "<mark>" in written_by  # ...with the executing line marked
+
+
+def test_a_missing_snippet_degrades_to_the_line_alone(staff_client: Client, user: User) -> None:
+    """The database reset under a running process is the one way to a sha the table lacks."""
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="orphaned source")
+        sha = dataset.history()[-1].caller.sha  # type: ignore[union-attr]  # set above
+    with hard_delete():
+        SourceSnippet.objects.filter(sha=sha).delete()
+
+    body = staff_client.get(version_url(user, dataset, 1)).content.decode()
+
+    assert "source not stored" in body
+    assert "apps/datasets/api.py" in body  # the frame itself is still there
+
+
+# --- the request behind a write -------------------------------------------------------------------
+
+
+def test_the_request_page_shows_what_the_client_sent_and_what_it_wrote(
+    staff_client: Client, user: User, client_for: Callable[[User], Client]
+) -> None:
+    api = client_for(user)
+    payload = {"name": "via api", "description": "", "row_count": 0, "options": {}, "tags": ["t"]}
+    created = api.post(
+        "/api/datasets?why=test", data=json.dumps(payload), content_type="application/json"
+    )
+    assert created.status_code == 201
+
+    with tenant_context(user.pk):
+        record = RequestRecord.objects.get()
+    body = staff_client.get(reverse("explorer:request", args=[user.pk, record.pk])).content.decode()
+
+    assert "POST /api/datasets" in body
+    assert "why=test" in body
+    assert "&lt;redacted&gt;" in body  # the Authorization header, present but not its value
+    assert "&quot;via api&quot;" in body  # the JSON body, pretty-printed
+    assert "wrote 3 versions" in body  # the dataset, its tag link and the tag
+    assert "Dataset</span>" in body and "Tag</span>" in body
+
+
+def test_every_page_that_shows_a_write_links_to_its_request(
+    staff_client: Client, user: User, client_for: Callable[[User], Client]
+) -> None:
+    api = client_for(user)
+    payload = {"name": "linked", "description": "", "row_count": 0, "options": {}, "tags": []}
+    created = api.post("/api/datasets", data=json.dumps(payload), content_type="application/json")
+    with tenant_context(user.pk):
+        dataset = Dataset.objects.get(pk=created.json()["id"])
+        record = RequestRecord.objects.get()
+    link = reverse("explorer:request", args=[user.pk, record.pk])
+
+    assert link in staff_client.get(object_url(user, dataset)).content.decode()  # history group
+    assert link in staff_client.get(version_url(user, dataset, 1)).content.decode()
+
+
+def test_a_write_from_a_shell_shows_no_request(staff_client: Client, user: User) -> None:
+    with acting_as(user):
+        dataset = create_dataset_for(user, name="no request")
+
+    body = staff_client.get(version_url(user, dataset, 1)).content.decode()
+
+    assert "request</dt>" not in body

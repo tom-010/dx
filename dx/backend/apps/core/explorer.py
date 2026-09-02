@@ -12,6 +12,8 @@ Four pages, four hrefs, no JavaScript:
                                             it was built from, and what was built from it
     /explorer/<user>/edge/<id>/             one lineage edge: the whole call stack that recorded
                                             it, and the build it ran on
+    /explorer/<user>/request/<id>/          one HTTP request as it arrived, and every version and
+                                            edge it wrote
 
 Those last two are deliberately different pages, because they are different things and
 confusing them is the mistake this whole schema exists to prevent. A row is mutable and has one
@@ -46,6 +48,7 @@ would be lying about the one property this schema guarantees.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -70,6 +73,8 @@ from apps.core import lineage, revisions
 from apps.core.db import tenant_context
 from apps.core.history import Version, as_event_row, event_model_for, versions
 from apps.core.models import OwnedModel, VersionedModel
+from apps.core.request_record import RequestRecord
+from apps.core.source import SourceSnippet
 
 #: Rows per page. An explorer is for orientation, not for reading a table: the newest few
 #: answer "did that write land", and the ones further back are reached by paging or by narrowing
@@ -138,7 +143,9 @@ def kind_of(model: type[models.Model]) -> str:
     """Which of the three kinds of table this is — the distinction the whole schema turns on."""
     if is_event_model(model):
         return "history"
-    if issubclass(model, OwnedModel):
+    # By the column, not the class: `Lineage` and `RequestRecord` carry an owner and the tenant
+    # policy without being `OwnedModel`s — what makes a table owned is what RLS keys on.
+    if any(field.name == "owner" for field in model._meta.fields):
         return "owned"
     return "shared"
 
@@ -227,6 +234,27 @@ class FieldValue:
 
 
 @dataclass(frozen=True)
+class RequestLink:
+    """`METHOD /path`, and the page for the whole request."""
+
+    label: str
+    url: str
+
+
+def _request_links(user_id: uuid.UUID, ids: set[uuid.UUID]) -> dict[uuid.UUID, RequestLink]:
+    """One query for every request a page mentions."""
+    if not ids:
+        return {}
+    return {
+        record.pk: RequestLink(
+            label=f"{record.method} {record.path}",
+            url=reverse("explorer:request", args=[user_id, record.pk]),
+        )
+        for record in RequestRecord.objects.filter(pk__in=ids)
+    }
+
+
+@dataclass(frozen=True)
 class RevisionRow:
     """One version inside a save, as the object page lists it."""
 
@@ -255,6 +283,8 @@ class HistoryGroup:
     #: The write's `operation_description`, when it gave one — what the step did in this run.
     description: str
     at: datetime
+    #: The HTTP request these versions were written in, when there was one.
+    request: RequestLink | None
     revisions: list[RevisionRow]
 
 
@@ -286,6 +316,8 @@ class EdgeGroup:
     #: The write's `operation_description`, when it gave one — what the step did in this run.
     description: str
     at: datetime
+    #: The HTTP request these edges were recorded in, when there was one.
+    request: RequestLink | None
     edges: list[EdgeRow]
 
 
@@ -824,6 +856,14 @@ def _safe_back(value: str, *, fallback: str) -> str:
 
 
 @dataclass(frozen=True)
+class SourceLine:
+    number: int
+    text: str
+    #: The line the frame was executing.
+    current: bool
+
+
+@dataclass(frozen=True)
 class Frame:
     """One line of a recorded call stack, as the page shows it."""
 
@@ -833,15 +873,25 @@ class Frame:
     code: str
     #: False for the frames inside site-packages — the same stack, but not this project's code.
     ours: bool
+    #: The whole function the frame was executing in, as it read at the time — from
+    #: `source.SourceSnippet` by the frame's sha. Empty when the frame carries no sha (a shell,
+    #: a row from before the source was kept) or the snippet is not in this database.
+    source: list[SourceLine]
+    sha: str
 
 
 def _frames(stack: list[lineage.StackFrame]) -> list[Frame]:
-    """The stack outermost first, with this project's own files told apart from its dependencies.
+    """The stack outermost first, each frame with the source of the function it was in.
 
-    A stack is mostly framework plumbing — click, Django's handler, the test client — and the
-    two or three frames that belong to the application are the ones anybody reading it is
-    looking for; `StackFrame.ours` is that distinction, `location` the repo-relative path.
+    One query for the whole stack: every distinct sha the frames name, fetched together from
+    `SourceSnippet`. A sha the table does not have — the database was reset under a running
+    process, or the row predates the store — leaves that frame's source empty rather than
+    failing the page; the location and the executing line are still there.
     """
+    shas = {frame.sha for frame in stack if frame.sha}
+    texts = (
+        dict(SourceSnippet.objects.filter(sha__in=shas).values_list("sha", "text")) if shas else {}
+    )
     return [
         Frame(
             depth=depth,
@@ -849,6 +899,13 @@ def _frames(stack: list[lineage.StackFrame]) -> list[Frame]:
             func=frame.func,
             code=frame.code,
             ours=frame.ours,
+            sha=frame.sha,
+            source=[
+                SourceLine(number=number, text=text, current=number == frame.line)
+                for number, text in enumerate(
+                    texts.get(frame.sha, "").splitlines(), start=frame.first_line
+                )
+            ],
         )
         for depth, frame in enumerate(stack, start=1)
     ]
@@ -890,6 +947,79 @@ def edge_detail(request: HttpRequest, user_id: uuid.UUID, edge_id: uuid.UUID) ->
                     labels.get(edge.pgh_context, "unknown") if edge.pgh_context else "unknown"
                 ),
                 "frames": _frames(edge.stack),
+                "request": (
+                    _request_links(tenant.pk, {edge.request}).get(edge.request)
+                    if edge.request is not None
+                    else None
+                ),
+            },
+        )
+
+
+@dataclass(frozen=True)
+class WrittenVersion:
+    """One version a request wrote, as its page lists them."""
+
+    model: str
+    label: str
+    version: int
+    url: str
+
+
+def request_detail(request: HttpRequest, user_id: uuid.UUID, request_id: uuid.UUID) -> HttpResponse:
+    """One HTTP request as it arrived, and everything it wrote.
+
+    The third question about a row, after which code and which step: what did the client
+    actually send? Method, path, headers (credentials redacted at recording time), the JSON
+    body — and, gathered from every event table, the versions stamped with this request
+    (`Event.pgh_request`) plus the lineage edges (`Lineage.request`).
+    """
+    denied = _guard(request)
+    if denied is not None:
+        return denied
+    tenant = _tenant_or_404(user_id)
+
+    with tenant_context(tenant.pk):
+        record = RequestRecord.objects.filter(pk=request_id).first()
+        if record is None:
+            raise Http404(f"no request {request_id}")
+
+        written: list[WrittenVersion] = []
+        for model in explorer_models():
+            event_model = event_model_for(model)
+            if event_model is None:
+                continue
+            table: type[models.Model] = event_model
+            events = table._base_manager.filter(pgh_request=record.pk).order_by("pgh_created_at")
+            for event in events:
+                row = as_event_row(event)
+                written.append(
+                    WrittenVersion(
+                        model=model.__name__,
+                        label=revisions.row_label(event, row.id),
+                        version=row.version,
+                        url=version_url(tenant.pk, model, row.pgh_obj_id, row.version),
+                    )
+                )
+        edge_count = lineage.Lineage.objects.filter(request=record.pk).count()
+
+        return render(
+            request,
+            "explorer/request.html",
+            {
+                "tenant": tenant,
+                "index_url": reverse("explorer:index", args=[tenant.pk]),
+                "record": record,
+                "label": f"{record.method} {record.path}",
+                "headers": sorted(record.sent_headers.items()),
+                "query": sorted(record.sent_query.items()),
+                "body": (
+                    json.dumps(record.sent_body, indent=2, ensure_ascii=False)
+                    if record.sent_body is not None
+                    else ""
+                ),
+                "written": written,
+                "edge_count": edge_count,
             },
         )
 
@@ -1012,6 +1142,11 @@ def object_version(
                 # for every version rather than only for a derivation.
                 "release": current.release,
                 "frames": _frames(current.stack),
+                "request": (
+                    _request_links(tenant.pk, {current.request_id}).get(current.request_id)
+                    if current.request_id is not None
+                    else None
+                ),
                 "index_url": reverse("explorer:index", args=[tenant.pk]),
                 "model_url": reverse(
                     "explorer:model",
@@ -1102,11 +1237,23 @@ def _history(user_id: uuid.UUID, obj: models.Model) -> list[HistoryGroup]:
         {group.context_id for group in groups if group.context_id}
     )
     writers = _writers([revision for group in groups for revision in group.revisions])
+    requests = _request_links(
+        user_id, {request for _, _, request in writers.values() if request is not None}
+    )
     return [
         HistoryGroup(
             source=group.source,
             description=descriptions.get(group.context_id, "") if group.context_id else "",
             at=group.at,
+            request=next(
+                (
+                    requests[request]
+                    for revision in group.revisions
+                    for _, _, request in (writers.get(revision.pgh_id, (None, "", None)),)
+                    if request in requests
+                ),
+                None,
+            ),
             revisions=[
                 RevisionRow(
                     version=revision.version,
@@ -1123,7 +1270,7 @@ def _history(user_id: uuid.UUID, obj: models.Model) -> list[HistoryGroup]:
                     release=release,
                 )
                 for revision in group.revisions
-                for writer, release in (writers.get(revision.pgh_id, (None, "")),)
+                for writer, release, _ in (writers.get(revision.pgh_id, (None, "", None)),)
             ],
         )
         for group in groups
@@ -1132,8 +1279,8 @@ def _history(user_id: uuid.UUID, obj: models.Model) -> list[HistoryGroup]:
 
 def _writers(
     rows: list[revisions.Revision],
-) -> dict[uuid.UUID, tuple[lineage.StackFrame | None, str]]:
-    """Who wrote each of these versions: the caller frame and the build, by `pgh_id`.
+) -> dict[uuid.UUID, tuple[lineage.StackFrame | None, str, uuid.UUID | None]]:
+    """Who wrote each of these versions: the caller frame, the build and the request, by `pgh_id`.
 
     Grouped by model — one query per event table rather than one per revision — because a
     revision list mixes the object's own versions with the child rows written in the same save,
@@ -1143,7 +1290,7 @@ def _writers(
     for revision in rows:
         by_model.setdefault(revision.model, []).append(revision.pgh_id)
 
-    found: dict[uuid.UUID, tuple[lineage.StackFrame | None, str]] = {}
+    found: dict[uuid.UUID, tuple[lineage.StackFrame | None, str, uuid.UUID | None]] = {}
     for name, pgh_ids in by_model.items():
         model = _model_by_name(name)
         event_model = event_model_for(model) if model is not None else None
@@ -1152,11 +1299,11 @@ def _writers(
         # Through a plain handle: the mirrored columns exist on the generated subclass only.
         table: type[models.Model] = event_model
         for event in table._base_manager.filter(pgh_id__in=sorted(pgh_ids)).values(
-            "pgh_id", "pgh_stack", "pgh_release"
+            "pgh_id", "pgh_stack", "pgh_release", "pgh_request"
         ):
             frames = [lineage.StackFrame(**frame) for frame in event["pgh_stack"] or ()]
             caller = next((frame for frame in reversed(frames) if frame.ours), None)
-            found[event["pgh_id"]] = (caller, event["pgh_release"] or "")
+            found[event["pgh_id"]] = (caller, event["pgh_release"] or "", event["pgh_request"])
     return found
 
 
@@ -1241,12 +1388,18 @@ def _group_edges(
     contexts = {edge.pgh_context for edge, _ in pairs if edge.pgh_context}
     labels = revisions.context_sources(contexts)
     descriptions = revisions.context_descriptions(contexts)
+    requests = _request_links(
+        user_id, {edge.request for edge, _ in pairs if edge.request is not None}
+    )
     gone = _deleted_now(pairs)
     return [
         EdgeGroup(
             source="unknown" if context is None else labels.get(context, "unknown"),
             description="" if context is None else descriptions.get(context, ""),
             at=members[0][0].created,
+            request=next(
+                (requests[edge.request] for edge, _ in members if edge.request in requests), None
+            ),
             edges=[
                 _edge_row(user_id, edge, far_end, far_end.object_id in gone)
                 for edge, far_end in members
@@ -1308,6 +1461,7 @@ urlpatterns = [
     path("<uuid:user_id>/", index, name="index"),
     path("<uuid:user_id>/jump/", jump, name="jump"),
     path("<uuid:user_id>/edge/<uuid:edge_id>/", edge_detail, name="edge"),
+    path("<uuid:user_id>/request/<uuid:request_id>/", request_detail, name="request"),
     path("<uuid:user_id>/<str:app_label>/<str:model_name>/", model_rows, name="model"),
     path(
         "<uuid:user_id>/<str:app_label>/<str:model_name>/<uuid:pk>/",

@@ -48,6 +48,9 @@ context and belongs to the same revision, even when it touched several tables.">
         <h3>
           {{ group.source }} ·
           <time datetime="{{ group.at|date:'c' }}">{{ group.at|date:"Y-m-d H:i" }}</time>
+          {% if group.request %}
+            · <a href="{{ group.request.url }}" title="The HTTP request that wrote this"><code>{{ group.request.label }}</code></a>
+          {% endif %}
           {% if group.description %}<br><q>{{ group.description }}</q>{% endif %}
         </h3>
         <table>

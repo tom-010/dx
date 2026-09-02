@@ -116,6 +116,11 @@ HISTORY_EXEMPT = {
     "accounts.ApiToken",  # ditto — a credential's history is the credential.
     # Append-only and immutable by construction; it *is* the lineage graph, not a subject of it.
     "core.Lineage",
+    # Content-addressed function source behind the stack frames (apps/core/source.py): a row is
+    # its own hash, so "a version of it" is a contradiction in terms.
+    "core.SourceSnippet",
+    # One HTTP request as it arrived (apps/core/request_record.py): a log entry, written once.
+    "core.RequestRecord",
     # An operational log of what was run (apps/core/usage.py). Rows are written once and never
     # edited, so a version chain over them would only ever mirror the insert.
     "core.CommandRun",
@@ -171,6 +176,10 @@ class Event(pghistory.models.Event):
     pgh_release = models.TextField(
         null=True, db_default=_from_setting("dx.release", models.TextField())
     )
+    #: The HTTP request this version was written in (`core.RequestRecord`), NULL outside one.
+    pgh_request = models.UUIDField(
+        null=True, db_default=_from_setting("dx.request", models.UUIDField()), db_index=True
+    )
 
     class Meta:
         abstract = True
@@ -217,6 +226,7 @@ class EventRow(Protocol):
     pgh_archive: dict[str, Any] | None
     pgh_stack: list[dict[str, Any]] | None
     pgh_release: str | None
+    pgh_request: uuid.UUID | None
 
     id: uuid.UUID
     owner_id: uuid.UUID
@@ -332,6 +342,12 @@ class Version[ModelT: models.Model]:
         """The innermost frame of *this project's* code in `stack` — the line that wrote this
         version. What a page shows; the whole stack is for when that is not enough."""
         return next((frame for frame in reversed(self.stack) if frame.ours), None)
+
+    @property
+    def request_id(self) -> uuid.UUID | None:
+        """The `core.RequestRecord` this version was written in, or None for a write outside a
+        request — a task, a command, a shell."""
+        return self.event.pgh_request
 
     def is_current(self) -> bool:
         """Is this still the row's latest version, or has it moved on since?

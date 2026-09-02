@@ -71,6 +71,8 @@ from django_pydantic_field import SchemaField
 from pydantic import BaseModel as PydanticModel
 from pydantic import ConfigDict
 
+from apps.core import request_record
+from apps.core import source as source_store
 from apps.core.db import NoTenantContext, current_user_id
 from apps.core.history import (
     EventRow,
@@ -146,6 +148,12 @@ class StackFrame(PydanticModel):
     #: The module the frame belongs to (`apps.datasets.api`). Empty on rows written before it
     #: was recorded.
     module: str = ""
+    #: sha-256 of the source of the function this frame was executing in — the key into
+    #: `source.SourceSnippet`, which holds the text once for every write that ever ran it. Empty
+    #: for a frame with no file behind it (`<stdin>`), and on rows written before it was kept.
+    sha: str = ""
+    #: The line the function starts on, so the snippet can be numbered and `line` found in it.
+    first_line: int = 0
 
     def __str__(self) -> str:
         return f"{self.file}:{self.line} in {self.func}"
@@ -196,6 +204,9 @@ class Lineage(models.Model):
     #: in, so this is stored *beside* the stack and captured in the same breath — `git show
     #: <release>:<file>` then reconstructs exactly what ran.
     release = models.CharField(max_length=64, default="", editable=False)
+    #: The HTTP request this edge was recorded in (`apps/core/request_record.py`), when there was
+    #: one. Plain uuid rather than a foreign key, like every pointer in this file.
+    request = models.UUIDField(null=True, default=None, db_index=True, editable=False)
     created = models.DateTimeField(db_default=Now(), editable=False)
 
     class Meta:
@@ -322,6 +333,7 @@ def ambient_sources() -> tuple[VersionedModel, ...] | None:
 #: like pghistory's own context, so they never outlive the write that set them.
 STACK_SETTING = "dx.stack"
 RELEASE_SETTING = "dx.release"
+REQUEST_SETTING = "dx.request"
 
 
 @contextmanager
@@ -339,11 +351,23 @@ def declare_write_origin() -> Iterator[None]:
 
     Must run inside the transaction that does the write, and immediately before it.
     """
-    frames = [frame.model_dump() for frame in _capture_stack()]
+    capture = _capture_stack()
+    source_store.store(capture.snippets)
+    frames = [frame.model_dump() for frame in capture.frames]
+    # The request, recorded on the first write of it and stamped on every version after — the
+    # third question a reviewer asks of a row, after which code and which step.
+    request_id = request_record.record_current()
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT set_config(%s, %s, true), set_config(%s, %s, true)",
-            [STACK_SETTING, json.dumps(frames), RELEASE_SETTING, _release()],
+            "SELECT set_config(%s, %s, true), set_config(%s, %s, true), set_config(%s, %s, true)",
+            [
+                STACK_SETTING,
+                json.dumps(frames),
+                RELEASE_SETTING,
+                _release(),
+                REQUEST_SETTING,
+                str(request_id) if request_id else "",
+            ],
         )
     try:
         yield
@@ -422,24 +446,40 @@ def _git_release() -> str:
     return f"{commit}-dirty" if dirty else commit
 
 
-def _capture_stack() -> list[StackFrame]:
-    """The frames of *this project's* code on the stack right now, outermost first.
+@dataclass(frozen=True)
+class Capture:
+    """A stack as recorded: the frames, and the source of every function they were in."""
+
+    frames: list[StackFrame]
+    #: `sha -> text`, for `source.store()`. One entry per distinct function, not per frame.
+    snippets: dict[str, str]
+
+
+def _capture_stack() -> Capture:
+    """The frames of *this project's* code on the stack right now, outermost first, with the
+    source of each function they were executing in.
 
     A raw stack is forty-odd frames of which one or two matter: the request went through the
     WSGI server, twelve middlewares and ninja before it reached the view that called `save()`,
     and none of that is what "who wrote this version" asks. So the filter runs at capture —
     `is_ours`, which asks the interpreter what is not ours rather than us what is — and only the
-    frames that survive have their source line looked up, which also makes this cheaper than
-    `extract_stack()`, whose `linecache` reads are the bulk of its cost.
+    frames that survive have their source looked up.
 
     Every frame of ours is kept, in calling order: a write five calls deep into the project
-    records all five, not just the last, so the chain that led there can be read back.
+    records all five, not just the last, so the chain that led there can be read back — and with
+    each one the whole function it was in, keyed by content so the text is stored once however
+    often that code writes (`apps/core/source.py`).
     """
-    kept = []
+    kept: list[StackFrame] = []
+    snippets: dict[str, str] = {}
     for frame, lineno in traceback.walk_stack(None):
         filename = frame.f_code.co_filename
         if not is_ours(filename) or Path(filename).resolve() in _MECHANISM:
             continue
+        first, _last, text = source_store.function_source(frame.f_code)
+        sha = source_store.digest(text) if text else ""
+        if sha:
+            snippets[sha] = text
         kept.append(
             StackFrame(
                 file=filename,
@@ -447,10 +487,12 @@ def _capture_stack() -> list[StackFrame]:
                 func=frame.f_code.co_name,
                 code=linecache.getline(filename, lineno).strip(),
                 module=frame.f_globals.get("__name__", ""),
+                sha=sha,
+                first_line=first,
             )
         )
     kept.reverse()  # walk_stack yields innermost first
-    return kept
+    return Capture(frames=kept, snippets=snippets)
 
 
 def record_derivation(
@@ -471,7 +513,9 @@ def record_derivation(
     target_event = current_event(target)
     target_type = _event_type(target)
     # Captured once: every edge of one call was recorded from the same place, by the same build.
-    stack = _capture_stack()
+    capture = _capture_stack()
+    source_store.store(capture.snippets)
+    stack = capture.frames
     release = _release()
     edges = []
     for source in sources:
@@ -488,6 +532,7 @@ def record_derivation(
                 pgh_context=context_id or target_event.pgh_context_id,
                 stack=stack,
                 release=release,
+                request=request_record.current_request_id(),
             )
         )
     Lineage.objects.bulk_create(edges)

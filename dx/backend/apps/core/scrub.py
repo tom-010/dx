@@ -18,10 +18,22 @@ Scrubber = Callable[[models.Model, int], object]  # (instance, running number) -
 # Field names that carry personal data wherever they appear.
 PII_FIELDS: frozenset[str] = frozenset(
     {"password", "email", "first_name", "last_name", "last_login", "phone", "address"}
+    # A recorded HTTP request (apps/core/request_record.py): what the client sent is whatever
+    # the client sent, and the headers name their machine. Distinctive names on purpose — this
+    # list matches field names across every model, and `body` is also a note's text.
+    | {"sent_headers", "sent_query", "sent_body"}
 )
 
 # "app_label.modelname" -> field -> replacement.
 SCRUBBERS: dict[str, dict[str, Scrubber]] = {
+    "core.requestrecord": {
+        # Shape kept, content gone: the method, path and status still say what happened.
+        "sent_headers": lambda obj, n: (
+            {"Content-Type": kind} if (kind := getattr(obj, "content_type", "")) else {}
+        ),
+        "sent_query": lambda obj, n: {},
+        "sent_body": lambda obj, n: None,
+    },
     "accounts.user": {
         "password": lambda obj, n: make_password(None),  # unusable: nobody can log in
         "email": lambda obj, n: f"user{n}@example.invalid",

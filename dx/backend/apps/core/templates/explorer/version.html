@@ -45,6 +45,10 @@ version was written, and whether this version is still the row's current state."
       <dd><a href="{{ object_page }}"><code>{{ object_id }}</code></a></dd>
       <dt>version row</dt>
       <dd><code>{{ pgh_id }}</code> · schema {{ schema_tag }}</dd>
+      {% if request %}
+        <dt title="The HTTP request this version was written in — what the client sent.">request</dt>
+        <dd><a href="{{ request.url }}"><code>{{ request.label }}</code></a></dd>
+      {% endif %}
       {% if release %}
         <dt title="APP_VERSION: the short commit the image was built from, or the working tree's
 commit when the write happened outside one.">build</dt>
@@ -114,7 +118,19 @@ not go through save() — a bulk update, a data migration, raw SQL.">Written by<
                 {% if frame.ours %}<span class="tag">app</span>{% endif %}
               </td>
               <td><code>{{ frame.func }}()</code></td>
-              <td><code>{{ frame.code|default:"—" }}</code></td>
+              <td><code>{{ frame.code|default:"—" }}</code>
+                {% if frame.source %}
+                  <details>
+                    <summary title="The whole function this frame was executing in, as it read
+when the write happened — stored once per distinct text (apps/core/source.py), so this is the code
+that ran, whatever the file says today.">source</summary>
+<pre>{% for line in frame.source %}{% if line.current %}<mark>{% endif %}<span>{{ line.number }}</span>  {{ line.text }}{% if line.current %}</mark>{% endif %}
+{% endfor %}</pre>
+                  </details>
+                {% elif frame.sha %}
+                  <br><small>source not stored</small>
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>

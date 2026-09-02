@@ -29,6 +29,10 @@ version, plus the call stack that made the claim and the build it ran on.">
       <dt title="APP_VERSION: the short commit the image was built from, or the working tree's
 commit when it was recorded outside one.">build</dt>
       <dd><code>{{ release }}</code></dd>
+      {% if request %}
+        <dt title="The HTTP request this edge was recorded in — what the client sent.">request</dt>
+        <dd><a href="{{ request.url }}"><code>{{ request.label }}</code></a></dd>
+      {% endif %}
       <dt>source state</dt>
       <dd>{% if source.is_stale %}<mark>superseded</mark>{% else %}current{% endif %}</dd>
     </dl>
@@ -57,7 +61,19 @@ first. Frames of this project are marked; the rest is framework plumbing.">Call 
                 {% if frame.ours %}<span class="tag">app</span>{% endif %}
               </td>
               <td><code>{{ frame.func }}()</code></td>
-              <td><code>{{ frame.code|default:"—" }}</code></td>
+              <td><code>{{ frame.code|default:"—" }}</code>
+                {% if frame.source %}
+                  <details>
+                    <summary title="The whole function this frame was executing in, as it read
+when the write happened — stored once per distinct text (apps/core/source.py), so this is the code
+that ran, whatever the file says today.">source</summary>
+<pre>{% for line in frame.source %}{% if line.current %}<mark>{% endif %}<span>{{ line.number }}</span>  {{ line.text }}{% if line.current %}</mark>{% endif %}
+{% endfor %}</pre>
+                  </details>
+                {% elif frame.sha %}
+                  <br><small>source not stored</small>
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>

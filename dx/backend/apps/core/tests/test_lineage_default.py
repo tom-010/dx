@@ -7,13 +7,20 @@ it gets forgotten. These tests pin the shape that inverts that: `Model.create(..
 write inside it, and not recording lineage is something you have to say (`sources=[]`).
 """
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import Any
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
-from apps.core import lineage, revisions
+from apps.core import lineage, revisions, source
 from apps.core.history import history_context
+from apps.core.source import SourceSnippet
 from apps.core.testing import acting_as
 from apps.datasets.models import Dataset
 
@@ -346,3 +353,108 @@ def test_ours_is_decided_by_the_interpreter_not_by_a_list() -> None:
     assert not lineage.is_ours(f"{sys.prefix}/lib/python3/site-packages/django/db/models/base.py")
     assert not lineage.is_ours(f"{sys.base_prefix}/lib/python3/contextlib.py")
     assert not lineage.is_ours("<frozen importlib._bootstrap>")
+
+
+# --- the source behind every frame ---------------------------------------------------------------
+
+
+def test_a_frame_references_the_source_of_the_function_it_was_in(user: User) -> None:
+    """Not a window around the line: the whole function, keyed by its content, stored once
+    (`apps/core/source.py`). The frame keeps `first_line`, so the executing line can be found
+    inside the text without needing the file."""
+    with acting_as(user):
+        dataset = Dataset.create(operation=None, sources=[], name="with source")
+        frame = dataset.history()[-1].caller
+
+    assert frame is not None and frame.sha
+    snippet = SourceSnippet.objects.get(sha=frame.sha)
+    assert snippet.text.startswith("def test_a_frame_references_the_source_of_the_function")
+    assert source.digest(snippet.text) == frame.sha
+    # `first_line` + the text reproduce the executing line the frame recorded.
+    lines = snippet.text.splitlines()
+    assert lines[frame.line - frame.first_line].strip() == frame.code
+
+
+def test_the_same_function_is_stored_once_however_often_it_writes(
+    user: User, django_capture_on_commit_callbacks: Callable[..., AbstractContextManager[Any]]
+) -> None:
+    """Every `save()` records a stack, the same call site fires thousands of times, and the source
+    changes in one run out of many. After the first commit the process knows the sha and Postgres
+    is not asked again — no INSERT, no SELECT — which is what makes recording the whole function
+    affordable on the hot path."""
+
+    def write(name: str) -> None:
+        Dataset.create(operation=None, sources=[], name=name)
+
+    with acting_as(user), django_capture_on_commit_callbacks(execute=True):
+        write("first")  # stores the snippets and, on "commit", remembers them
+    with acting_as(user), CaptureQueriesContext(connection) as queries:
+        write("second")
+
+    # Two distinct functions were on the stack — the nested `write` and this test — so two rows,
+    # each stored once. The nested one keeps its indentation: the text is the exact slice of the
+    # file, so `contains` finds both and the leading `def` singles out the inner one.
+    snippets = [s.text for s in SourceSnippet.objects.filter(text__contains="def write(name: str)")]
+    assert len(snippets) == 2
+    assert sum(text.lstrip().startswith("def write(") for text in snippets) == 1
+    assert not any("core_sourcesnippet" in q["sql"] for q in queries.captured_queries)
+
+
+def test_a_rolled_back_write_does_not_make_the_process_trust_its_snippets(user: User) -> None:
+    """The caches are marked on commit only. A test's transaction never commits, so nothing is
+    remembered here — and the second write must therefore still insert (idempotently)."""
+    with acting_as(user):
+        Dataset.create(operation=None, sources=[], name="first")
+    with acting_as(user), CaptureQueriesContext(connection) as queries:
+        Dataset.create(operation=None, sources=[], name="second")
+
+    assert any(
+        "core_sourcesnippet" in q["sql"] and "ON CONFLICT" in q["sql"]
+        for q in queries.captured_queries
+    )
+
+
+def test_an_edge_and_its_version_share_the_snippet(user: User) -> None:
+    """One write, one function, one row — referenced from the version and from every edge."""
+    with acting_as(user):
+        origin = Dataset.create(operation=None, sources=[], name="origin")
+        derived = Dataset.create(operation="derive", sources=[origin], name="derived")
+        version_frame = derived.history()[-1].caller
+        (edge,) = lineage.all_sources_of(derived)
+        edge_frame = edge.caller
+
+    assert version_frame is not None and edge_frame is not None
+    assert version_frame.sha == edge_frame.sha
+    assert SourceSnippet.objects.filter(sha=edge_frame.sha).count() == 1
+
+
+def test_recording_source_needs_no_git(
+    user: User, monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    """The text comes from the interpreter, not from a checkout: with no git binary at all the
+    snippet is still stored, and only the build falls back to "dev"."""
+    import subprocess
+
+    def no_git(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("git")
+
+    settings.APP_VERSION = "dev"
+    lineage._git_release.cache_clear()
+    monkeypatch.setattr(subprocess, "run", no_git)
+    try:
+        with acting_as(user):
+            dataset = Dataset.create(operation=None, sources=[], name="no git here")
+            version = dataset.history()[-1]
+    finally:
+        lineage._git_release.cache_clear()
+
+    assert version.release == "dev"
+    assert version.caller is not None and version.caller.sha
+    assert SourceSnippet.objects.filter(sha=version.caller.sha).exists()
+
+
+def test_a_frame_without_a_file_has_no_source(user: User) -> None:
+    """`<stdin>` and frozen modules have nothing `linecache` can read: no sha, no row, no error."""
+    first, last, text = source.function_source(compile("x = 1", "<stdin>", "exec"))
+
+    assert (first, last, text) == (1, 1, "")

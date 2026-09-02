@@ -48,7 +48,11 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
   from** — the test is "if that row changed, would this have to be recomputed?" — not structural
   foreign keys (`owner`, a tag's dataset). Full guidance in `VersionedModel.save.__doc__`;
   the why in `docs/history_lineage_delete_tenants.md`. Every write also records **who made
-  it**: `version.caller`/`.stack`/`.release` for a version, the same three on a lineage edge.
+  it**: `version.caller`/`.stack`/`.release` for a version, the same three on a lineage edge —
+  and each frame's `sha` points at the whole function's source in `core.SourceSnippet`, stored
+  once per distinct text (`apps/core/source.py`). A write through the API also records the
+  request that made it — method, path, redacted headers, JSON body — once per request, in
+  `core.RequestRecord` (`version.request_id`, `edge.request`; `apps/core/request_record.py`).
 - **Soft delete in one line**: `obj.delete()` / `qs.delete()` are soft (a versioned UPDATE of
   `deleted_at`, no cascade), `obj.hard_delete()` / `qs.hard_delete()` really remove the row and
   its history (erasure, credential purging, test teardown only), `Model.objects` hides deleted

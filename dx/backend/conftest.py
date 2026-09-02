@@ -24,7 +24,7 @@ from pytest_django import DjangoDbBlocker
 
 from apps.accounts.api import issue_access_token
 from apps.accounts.models import User
-from apps.core import rls
+from apps.core import rls, source
 
 AUTO_MARKERS = {"test_api.py": "api", "test_commands.py": "infra"}
 
@@ -93,3 +93,13 @@ def client_for() -> Callable[[User], Client]:
 @pytest.fixture
 def auth_client(user: User, client_for: Callable[[User], Client]) -> Client:
     return client_for(user)
+
+
+@pytest.fixture(autouse=True)
+def forget_known_sources() -> Iterator[None]:
+    """`apps.core.source` remembers which snippets are committed. A test's transaction never
+    commits, so a callback forced to run there (`django_capture_on_commit_callbacks`) would leave
+    every later test in the process trusting rows that were rolled back."""
+    source.forget()
+    yield
+    source.forget()

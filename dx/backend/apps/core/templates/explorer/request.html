@@ -1,0 +1,79 @@
+{% extends "explorer/base.html" %}
+
+{% block title %}{{ label }}{% endblock %}
+{% block breadcrumbs %}
+  <li><a href="{{ index_url }}">{{ tenant }}</a></li>
+  <li>request</li>
+{% endblock %}
+
+{% block content %}
+  <h1>{{ label }} <span class="tag">request</span></h1>
+  <p title="One HTTP request as it arrived, recorded on its first write. Credentials were redacted
+before storing; a file upload has no body here; JSON above the size limit is recorded by size.">
+    <time datetime="{{ record.created|date:'c' }}">{{ record.created|date:"Y-m-d H:i:s" }}</time>
+    · wrote {{ written|length }} version{{ written|length|pluralize }}
+    {% if edge_count %}and {{ edge_count }} lineage edge{{ edge_count|pluralize }}{% endif %}
+  </p>
+
+  <section>
+    <h2>Request</h2>
+    <dl>
+      <dt>method</dt><dd>{{ record.method }}</dd>
+      <dt>path</dt><dd><code>{{ record.path }}</code></dd>
+      {% if query %}
+        <dt>query</dt>
+        <dd>{% for key, value in query %}<code>{{ key }}={{ value }}</code> {% endfor %}</dd>
+      {% endif %}
+      <dt title="django-structlog's id for this request — every log line of it carries the same
+value, so this is the join key into the logs.">request id</dt>
+      <dd><code>{{ record.request_id|default:"—" }}</code></dd>
+      <dt>content type</dt><dd>{{ record.content_type|default:"—" }}</dd>
+      <dt title="json: stored below. none: no body, or not JSON. unreadable: a multipart upload
+the view had already consumed. too-large: above the limit, size kept. invalid-json: sent as JSON,
+was not.">body</dt>
+      <dd>{{ record.body_status }}{% if record.body_size %} · {{ record.body_size }} bytes{% endif %}</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Headers</h2>
+    <table>
+      <tbody>
+        {% for name, value in headers %}
+          <tr><th scope="row">{{ name }}</th><td><code>{{ value }}</code></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  {% if body %}
+    <section>
+      <h2>Body</h2>
+      <pre>{{ body }}</pre>
+    </section>
+  {% endif %}
+
+  <section>
+    <h2 title="Every version stamped with this request, across all tables, in the order they were
+written.">Wrote</h2>
+    {% if written %}
+      <table>
+        <thead>
+          <tr><th scope="col">Row</th><th scope="col">Version</th></tr>
+        </thead>
+        <tbody>
+          {% for item in written %}
+            <tr>
+              <th scope="row">
+                <a href="{{ item.url }}">{{ item.label }}</a> <span class="tag">{{ item.model }}</span>
+              </th>
+              <td>v{{ item.version }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">No versions carry this request.</p>
+    {% endif %}
+  </section>
+{% endblock %}

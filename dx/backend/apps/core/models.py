@@ -39,6 +39,8 @@ from apps.core.history import Version, event_model_for, hard_delete, history_con
 # has to be pulled in from here. `apps.core.lineage` imports nothing from this module at
 # runtime (only under TYPE_CHECKING), so this is not a cycle — keep it that way.
 from apps.core.lineage import Lineage as Lineage
+from apps.core.request_record import RequestRecord as RequestRecord
+from apps.core.source import SourceSnippet as SourceSnippet
 
 # Same reason, the other way round: `apps.core.usage` imports the bases from *this* module, so
 # it can only be pulled in at the end — and it has to be pulled in, or its table is not part of

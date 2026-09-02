@@ -154,6 +154,23 @@ mark {
 del { color: var(--warn); text-decoration: none; }
 p:empty { display: none; }
 
+/* A frame's function source: numbered, the executing line marked, folded by default. */
+details { margin-top: .25rem; }
+summary { cursor: pointer; font-size: .8rem; }
+pre {
+  margin: .35rem 0 0;
+  padding: .5rem .75rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: .8rem;
+  line-height: 1.45;
+  overflow-x: auto;
+  max-width: 100%;
+}
+pre span { display: inline-block; width: 3.5ch; text-align: right; opacity: .6; }
+pre mark { display: inline-block; width: 100%; font-weight: 600; }
+
 .tag {
   font-size: .75rem;
   padding: 0 .35rem;

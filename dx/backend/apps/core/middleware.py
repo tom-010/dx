@@ -21,6 +21,7 @@ from django.http.response import HttpResponseBase
 from apps.accounts import api as accounts_api
 from apps.accounts.models import User
 from apps.core.db import NoTenantContext, tenant_context
+from apps.core.request_record import request_scope
 
 log = structlog.get_logger(__name__)
 
@@ -55,7 +56,7 @@ class TenantMiddleware:
             return self.get_response(request)
 
         request.user = user  # BearerAuth reuses it — the token is verified exactly once
-        with tenant_context(user.pk):
+        with tenant_context(user.pk), request_scope(request):
             response = self.get_response(request)
         if response.streaming and not isinstance(response, HttpResponse):
             # The transaction (and with it the context) is gone before the body is consumed:
@@ -89,5 +90,5 @@ class AdminTenantMiddleware:
         user_id = user.pk
         if not isinstance(user_id, uuid.UUID):  # pragma: no cover - AbstractUser has a UUID pk
             raise NoTenantContext(f"admin request has no usable user id: {user_id!r}")
-        with tenant_context(user_id):
+        with tenant_context(user_id), request_scope(request):
             return self.get_response(request)
