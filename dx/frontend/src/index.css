@@ -269,6 +269,46 @@
   background: none;
 }
 
+/* Standing matter — the letterhead, the address, the bank line, the signature block, marked
+   `data-aside` while the page was read. It is on the paper, so it is in the artifact; it is
+   the same in every letter, so it is out of the way until the reader asks for it. A list whose
+   items are all standing matter goes with them, rather than leaving an empty bullet box. */
+.document-html:not([data-aside-shown]) [data-aside],
+.document-html:not([data-aside-shown])
+  :is(ul, ol):not(:has(li:not([data-aside]))) {
+  display: none;
+}
+.document-html[data-aside-shown] [data-aside] {
+  color: var(--muted-foreground);
+  font-size: 0.9375rem;
+  border-left: 2px solid var(--border);
+  padding-left: 0.75rem;
+}
+
+/* When this passage is from, in the right margin, while the pointer is on it. The dating
+   stage puts an estimate on the tag; the pane formats it into `data-when` (TextPane). */
+.document-html [data-nid]:not(:has([data-nid])) {
+  position: relative;
+}
+.document-html [data-nid]:not(:has([data-nid]))[data-when]:hover::after {
+  content: attr(data-when);
+  position: absolute;
+  top: 0.2em;
+  right: calc(-1 * var(--gutter));
+  width: calc(var(--gutter) - 0.75rem);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+/* No margin to put it in: on a phone there is no pointer to hover with either. */
+@media (width < 48rem) {
+  .document-html [data-when]:hover::after {
+    display: none;
+  }
+}
+
 /* Where each page begins, in the margin: the paper's rhythm kept, the text left in one flow. */
 .document-html [data-marker] {
   position: relative;

@@ -29,7 +29,35 @@ def test_database_url_maps_to_django_with_psycopg_options() -> None:
         "CONN_MAX_AGE": 60,
         "CONN_HEALTH_CHECKS": True,
         "ATOMIC_REQUESTS": False,
+        "DISABLE_SERVER_SIDE_CURSORS": False,
     }
+
+
+def test_pooled_database_disables_server_side_cursors() -> None:
+    url = PostgresDsn("postgres://app_user:runtime@pgbouncer:6432/dx")
+
+    assert django_database(url, pooled=True)["DISABLE_SERVER_SIDE_CURSORS"] is True
+
+
+def test_database_url_follows_the_pooler_switch_and_the_role() -> None:
+    direct = PostgresDsn("postgres://app_user:runtime@db:5432/dx")
+    pooled = PostgresDsn("postgres://app_user:runtime@pgbouncer:6432/dx")
+
+    unpooled = IsolatedEnv(DATABASE_URL=direct, DATABASE_POOL_URL=pooled)
+    assert unpooled.database_url() == direct  # DB_POOLED off: Postgres itself
+    assert unpooled.pooled() is False
+
+    web = IsolatedEnv(DATABASE_URL=direct, DATABASE_POOL_URL=pooled, DB_POOLED=True)
+    assert web.database_url() == pooled
+    assert web.pooled() is True
+    # Maintenance roles never go through the pooler, whatever the process says.
+    assert web.database_url("migrator") == direct
+    assert web.database_url("admin") == direct
+    assert web.pooled("migrator") is False
+
+    without_pooler = IsolatedEnv(DATABASE_URL=direct, DATABASE_POOL_URL=None, DB_POOLED=True)
+    with pytest.raises(ValueError, match="DATABASE_POOL_URL"):
+        without_pooler.database_url()
 
 
 def test_database_credentials_follow_the_role() -> None:

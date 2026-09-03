@@ -424,6 +424,7 @@ export const GetDocumentContentResponse = zod
           ]),
           id: zod.uuid(),
           is_current: zod.boolean(),
+          stale: zod.boolean(),
           started_at: zod.union([
             zod.iso.datetime({ offset: true }),
             zod.null(),
@@ -458,6 +459,7 @@ export const GetDocumentContentResponse = zod
       }),
     ),
     page_count: zod.int(),
+    resumable_pages: zod.int(),
     status: zod.union([
       zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
       zod.null(),
@@ -514,6 +516,7 @@ export const ListExtractionsResponseItem = zod
     finished_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
     id: zod.uuid(),
     is_current: zod.boolean(),
+    stale: zod.boolean(),
     started_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
     stats: zod.record(zod.string(), zod.unknown()),
     status: zod.enum(["pending", "running", "succeeded", "partial", "failed"]),
@@ -793,6 +796,7 @@ export const ReextractDocumentResponse = zod
     finished_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
     id: zod.uuid(),
     is_current: zod.boolean(),
+    stale: zod.boolean(),
     started_at: zod.union([zod.iso.datetime({ offset: true }), zod.null()]),
     stats: zod.record(zod.string(), zod.unknown()),
     status: zod.enum(["pending", "running", "succeeded", "partial", "failed"]),

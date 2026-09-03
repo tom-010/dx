@@ -1,15 +1,45 @@
-# Dev infrastructure. `db`, `redis` and `s3` are always started; `app` + `worker` (the built
-# image) only with `--profile app`.
+# Dev infrastructure. `db`, `pgbouncer`, `redis` and `s3` are always started; `app` + `worker`
+# (the built image) only with `--profile app`.
 name: dx
+
+# Environment of the bundled image (`app` and `worker`, --profile app).
+x-app-env: &app_env
+  # Runtime role for gunicorn/workers; the entrypoint migrates as the owner (DB_MIGRATOR_*).
+  # DATABASE_URL is Postgres itself, DATABASE_POOL_URL the pooler — only `app` connects there
+  # (DB_POOLED below); the worker needs a real session.
+  DATABASE_URL: postgres://app_user:app_user@db:5432/dx
+  DATABASE_POOL_URL: postgres://app_user:app_user@pgbouncer:6432/dx
+  DB_MIGRATOR_USER: dx
+  DB_MIGRATOR_PASSWORD: dx
+  CACHE_URL: redis://redis:6379/1
+  CELERY_BROKER_URL: redis://redis:6379/0
+  S3_ENDPOINT_URL: http://s3:9000
+  S3_ACCESS_KEY: dx
+  S3_SECRET_KEY: dxdxdxdx
+  S3_BUCKET: dx-media
+  DEBUG: "false"
+  ALLOWED_HOSTS: '["localhost"]'
+  # Plain http on :8080 — the production image refuses to start otherwise (docker/entrypoint.sh
+  # runs `check --deploy`). Real values: docker/.env.prod.example + docker-compose.prod.yml.
+  SECRET_KEY: dev-compose-only-not-a-secret-0123456789abcdefghijklmnopqrstuvwxyz
+  HTTPS_ONLY: "false"
+  EMAIL_URL: dummy://
 
 services:
   # `dx` is the bootstrap superuser (dev migrator: creates the test database, runs migrations).
   # docker/postgres/10-roles.sh adds the application roles — app_migrator (owns the tables),
   # app_user (the runtime role row-level security applies to; DATABASE_URL), app_admin
-  # (BYPASSRLS for shell_admin) — on a fresh volume, and ./scripts/db.sh re-runs it on every
-  # start for existing volumes. Dev passwords = role names.
+  # (BYPASSRLS for shell_admin), pgbouncer (the pooler's password lookup, nothing else) — on a
+  # fresh volume, and ./scripts/db.sh re-runs it on every start for existing volumes. Dev
+  # passwords = role names.
   db:
     image: postgres:18-alpine
+    # 100 (the default) is thin for a dev box. The web process no longer counts here (it comes
+    # in through `pgbouncer`: at most 25 backends for all of its threads), but the worker, a
+    # shell or two and `./scripts/test.sh`'s eight parallel workers with their own test
+    # databases share it with the pooler's 25, and running out shows up as "sorry, too many
+    # clients already" in whatever asked last.
+    command: ["postgres", "-c", "max_connections=200"]
     environment:
       POSTGRES_USER: dx
       POSTGRES_PASSWORD: dx
@@ -17,6 +47,7 @@ services:
       APP_MIGRATOR_PASSWORD: app_migrator
       APP_USER_PASSWORD: app_user
       APP_ADMIN_PASSWORD: app_admin
+      PGBOUNCER_PASSWORD: pgbouncer
     ports:
       - "5432:5432"
     volumes:
@@ -28,6 +59,65 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # Connection pooler in front of `db` (PgBouncer, transaction pooling). The web process holds
+  # its client connections here — thousands are cheap, one costs PgBouncer a few kB and no
+  # Postgres backend — and every transaction borrows one of a small pool of real connections
+  # for its duration. **Only the web process uses it** (DB_POOLED, backend/config/env.py;
+  # backend/scripts/serve.sh sets it for runserver): transaction pooling drops session state
+  # after every commit, and the Celery worker (pins its tenant per session), the shells,
+  # backups and the test suite (creates and drops databases) all need a real session, so they
+  # connect to `db` directly. Same numbers as production so dev behaves the same —
+  # docker-compose.prod.yml explains them.
+  # Authentication: a client logs in with its own Postgres password (SCRAM) and PgBouncer checks
+  # it against the secret Postgres holds, fetched through the `pgbouncer` role and its lookup
+  # function (docker/postgres/10-roles.sh) — no second copy of any password here. The lookup
+  # refuses superusers and BYPASSRLS roles, so nothing that bypasses row-level security can come
+  # through the pooler. Pools/clients/stats:
+  #   ./scripts/db.sh exec -e PGPASSWORD=pgbouncer pgbouncer psql -h 127.0.0.1 -p 6432 -U pgbouncer pgbouncer -c 'SHOW POOLS'
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: dx
+      # The lookup role's own credentials — the one entry in PgBouncer's user list; every
+      # other user is verified through AUTH_QUERY.
+      DB_USER: pgbouncer
+      DB_PASSWORD: pgbouncer
+      AUTH_TYPE: scram-sha-256
+      AUTH_QUERY: SELECT uname, phash FROM pgbouncer.user_lookup($$1)
+      ADMIN_USERS: pgbouncer
+      LISTEN_PORT: "6432"
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "10000"
+      DEFAULT_POOL_SIZE: "20"
+      RESERVE_POOL_SIZE: "5"
+      RESERVE_POOL_TIMEOUT: "3"
+      MAX_DB_CONNECTIONS: "60"
+      SERVER_RESET_QUERY_ALWAYS: "1"
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+      # Silent on success (CLAUDE.md "Logging"): no line per client login/logout — with a
+      # connection per request that would be two per request — and no stats every minute
+      # (`SHOW STATS` on the console has them). Pooler errors are still logged.
+      LOG_CONNECTIONS: "0"
+      LOG_DISCONNECTIONS: "0"
+      LOG_STATS: "0"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "6432:6432"
+    healthcheck:
+      # The admin database, as the user PgBouncer knows by itself: answers without Postgres.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432", "-U", "pgbouncer", "-d", "pgbouncer"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      db:
+        condition: service_healthy
 
   # Celery broker + result store (Valkey is the open-source Redis fork; same protocol).
   # Persistent: the append-only file is fsynced every second and lives in the `valkeydata`
@@ -74,24 +164,10 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    environment: &app_env
-      # Runtime role for gunicorn/workers; the entrypoint migrates as the owner (DB_MIGRATOR_*).
-      DATABASE_URL: postgres://app_user:app_user@db:5432/dx
-      DB_MIGRATOR_USER: dx
-      DB_MIGRATOR_PASSWORD: dx
-      CACHE_URL: redis://redis:6379/1
-      CELERY_BROKER_URL: redis://redis:6379/0
-      S3_ENDPOINT_URL: http://s3:9000
-      S3_ACCESS_KEY: dx
-      S3_SECRET_KEY: dxdxdxdx
-      S3_BUCKET: dx-media
-      DEBUG: "false"
-      ALLOWED_HOSTS: '["localhost"]'
-      # Plain http on :8080 — the production image refuses to start otherwise (docker/entrypoint.sh
-      # runs `check --deploy`). Real values: docker/.env.prod.example + docker-compose.prod.yml.
-      SECRET_KEY: dev-compose-only-not-a-secret-0123456789abcdefghijklmnopqrstuvwxyz
-      HTTPS_ONLY: "false"
-      EMAIL_URL: dummy://
+    environment:
+      <<: *app_env
+      # gunicorn's threads connect through the pooler; the worker below does not.
+      DB_POOLED: "true"
     ports:
       - "8080:8000"
     healthcheck:
@@ -102,6 +178,8 @@ services:
       start_period: 5s
     depends_on:
       db:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy

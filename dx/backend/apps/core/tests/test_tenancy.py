@@ -77,6 +77,8 @@ def minimal_kwargs(model: type[OwnedModel], owner: User) -> dict[str, object]:
             values[field.name] = create_owned(target, owner)
         elif isinstance(field, models.FileField):
             values[field.name] = ContentFile(b"x", name="x.bin")
+        elif isinstance(field, models.JSONField):
+            values[field.name] = {}
         elif field.choices:
             values[field.name] = field.choices[0][0]
         elif isinstance(field, models.CharField | models.TextField):
@@ -91,6 +93,8 @@ def minimal_kwargs(model: type[OwnedModel], owner: User) -> dict[str, object]:
             values[field.name] = False
         elif isinstance(field, models.DateTimeField):
             values[field.name] = timezone.now()
+        elif isinstance(field, models.UUIDField):
+            values[field.name] = uuid.uuid7()
         else:  # pragma: no cover - reached only when a new field type is added
             raise NotImplementedError(f"minimal_kwargs: add a value for {model}.{field.name}")
     return values
@@ -479,6 +483,8 @@ def test_settings_derive_tenant_apps_from_installed_apps() -> None:
         "apps.documents",
         "apps.gallery",
         "apps.notes",
+        "apps.notifications",
+        "apps.timeline",
     ]
     assert settings.SHARED_MODELS == []
     assert isinstance(uuid.UUID(str(uuid.uuid7())), uuid.UUID)  # ids are UUIDs, as the policy casts
@@ -907,12 +913,20 @@ def test_delete_tenant_removes_every_row_and_file_of_one_user(
     # literal list would only ever be updated by copying whatever the code now says.
     assert set(summary) == {model._meta.label for model in rls.isolated_models()}
     assert {label: count for label, count in summary.items() if count} == {
+        # Uploading a document also puts a card on the timeline, derived from the document —
+        # so the projection, its history and that lineage edge are erased with it.
+        "core.Lineage": 1,
         "datasets.Dataset": 1,
         "datasets.DatasetEvent": 1,
         "documents.Blob": 1,
         "documents.BlobEvent": 1,
         "documents.Document": 1,
         "documents.DocumentEvent": 1,
+        # Creating a dataset also sends its owner a notification, which is their data too.
+        "notifications.Notification": 1,
+        "notifications.NotificationEvent": 1,
+        "timeline.TimelineEvent": 1,
+        "timeline.TimelineEventEvent": 1,
     }
     assert (erasure.username, erasure.rows, erasure.files) == ("alice", summary, 1)
     with scopes_disabled():

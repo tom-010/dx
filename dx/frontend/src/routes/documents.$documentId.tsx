@@ -27,16 +27,21 @@ import {
   ChevronRight,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   GitBranch,
   Info,
+  Maximize2,
   MoreVertical,
   Pencil,
   RefreshCw,
+  X,
 } from "lucide-react";
 import {
   type FormEvent,
   type JSX,
   type ReactNode,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -103,7 +108,17 @@ import { StatusBadge } from "./documents.index";
 type View = "split" | "text" | "pages";
 /** All are optional, so a plain `/documents/<id>` link needs no parameters and the URL only
  * ever carries what the reader actually changed. */
-type Search = { view?: View; page?: number; nid?: number; rename?: boolean };
+type Search = {
+  view?: View;
+  page?: number;
+  nid?: number;
+  rename?: boolean;
+  /** Show the standing matter the reader was asked about — off unless the URL says so. */
+  aside?: boolean;
+  /** The page on its own, over everything else. A modal is view state: it belongs in the URL,
+   * so a shared link opens on the same page, blown up. */
+  full?: boolean;
+};
 
 /** The panes fill the window rather than a fixed slice of it: this is a reading surface. */
 const PANE = "h-[65svh] min-h-80 lg:h-[calc(100svh-17rem)] lg:min-h-96";
@@ -133,11 +148,14 @@ export const Route = createFileRoute("/documents/$documentId")({
     nid: asPositive(search.nid),
     rename:
       search.rename === true || search.rename === "true" ? true : undefined,
+    aside: search.aside === true || search.aside === "true" ? true : undefined,
+    full: search.full === true || search.full === "true" ? true : undefined,
   }),
 });
 
-/** Polled only while a run is in flight; the stream below is the primary signal. */
-const POLL_MS = 2000;
+/** Polled only while a run is in flight, and the stream below is the primary signal — so this
+ * is the fallback's fallback and can afford to be slow. */
+const POLL_MS = 4000;
 
 function isActive(status: ExtractionStatus | null | undefined): boolean {
   return status === "pending" || status === "running";
@@ -147,17 +165,29 @@ function isActive(status: ExtractionStatus | null | undefined): boolean {
  * Follows the run's Celery task over Server-Sent Events: the extraction reports the page it is
  * on (`snapshot.report_progress`), and the stream carries that through without polling. The
  * URL is signed because `EventSource` cannot send the bearer header.
+ *
+ * **The run's id is what identifies the stream, not its URL.** The signature carries a
+ * timestamp (`tasks.sign_stream`), so every refetch of the run — every two seconds while one
+ * is going — hands back a different `stream_url` for the same task. Keyed on the URL, this
+ * effect tore down the EventSource and opened another one twice a second, and every abandoned
+ * one left a request thread on the server holding a database connection until its next
+ * heartbeat write hit the closed socket. One run, one stream.
  */
 function useRunProgress(
+  runId: string | null,
   streamUrl: string | null,
   onFinished: () => void,
 ): TaskOut | null {
   const [task, setTask] = useState<TaskOut | null>(null);
+  // Read at connect time, never depended on: it is a fresh signature of the same thing.
+  const link = useRef<string | null>(streamUrl);
+  link.current = streamUrl;
 
   useEffect(() => {
     setTask(null);
-    if (streamUrl === null) return;
-    const source = new EventSource(apiUrl(streamUrl));
+    const url = link.current;
+    if (runId === null || url === null) return;
+    const source = new EventSource(apiUrl(url));
     source.addEventListener("status", (event: MessageEvent<string>) => {
       const parsed = GetTaskResponse.safeParse(JSON.parse(event.data));
       if (!parsed.success) return;
@@ -169,7 +199,7 @@ function useRunProgress(
       }
     });
     return () => source.close();
-  }, [streamUrl, onFinished]);
+  }, [runId, onFinished]);
 
   return task;
 }
@@ -179,9 +209,11 @@ type Structure = {
   pages: Map<number, number[]>;
   /** node → the page it is the first of, i.e. where a page marker belongs in the flow. */
   opens: Map<number, number>;
+  /** How many nodes the reading marked as standing matter — none means no toggle to offer. */
+  aside: number;
 };
 
-const EMPTY: Structure = { pages: new Map(), opens: new Map() };
+const EMPTY: Structure = { pages: new Map(), opens: new Map(), aside: 0 };
 
 /**
  * Where the artifact sits on the paper, read out of the artifact once.
@@ -211,7 +243,8 @@ function useStructure(html: string): Structure {
       seen.add(first);
       opens.set(Number(leaf.dataset.nid), first);
     }
-    return { pages, opens };
+    const aside = parsed.querySelectorAll("[data-aside]").length;
+    return { pages, opens, aside };
   }, [html]);
 }
 
@@ -224,7 +257,14 @@ function pagesOf(node: HTMLElement): number[] {
 
 function DocumentWorkspace(): JSX.Element {
   const { documentId } = Route.useParams();
-  const { view = "split", page = 1, nid, rename } = Route.useSearch();
+  const {
+    view = "split",
+    page = 1,
+    nid,
+    rename,
+    aside,
+    full,
+  } = Route.useSearch();
   const navigate = Route.useNavigate();
   const queryClient = useQueryClient();
 
@@ -279,8 +319,21 @@ function DocumentWorkspace(): JSX.Element {
   }, [documentId, queryClient]);
 
   const running = extractions.data?.find((run) => isActive(run.status)) ?? null;
-  const task = useRunProgress(running?.stream_url ?? null, refresh);
+  /** Whether a run is really in flight. A run whose worker is gone still says "running", but
+      nothing is going to land, so no pane should promise that it will. */
+  const inFlight = running !== null && !running.stale;
+  const task = useRunProgress(
+    running?.id ?? null,
+    running?.stream_url ?? null,
+    refresh,
+  );
   const reextract = useReextractDocument({ mutation: { onSuccess: refresh } });
+  /** Read the document again with the default strategy — resuming whatever a dead or failed
+      run already got through. */
+  const retry = useCallback(
+    (): void => reextract.mutate({ documentId, params: { from_raw: false } }),
+    [reextract, documentId],
+  );
   const retitle = useUpdateDocument({ mutation: { onSuccess: refresh } });
 
   /** The one place the workspace's view state changes — and it changes the URL. */
@@ -328,6 +381,11 @@ function DocumentWorkspace(): JSX.Element {
         view={view}
         onView={(next: View): void => show({ view: next })}
         hasPages={hasPages}
+        asideCount={structure.aside}
+        aside={aside === true}
+        onAside={(next: boolean): void =>
+          show({ aside: next ? true : undefined })
+        }
         onExtract={(strategy: string | undefined, fromRaw: boolean): void =>
           reextract.mutate({
             documentId,
@@ -339,15 +397,22 @@ function DocumentWorkspace(): JSX.Element {
         error={reextract.isError ? errorMessage(reextract.error) : null}
       />
 
-      {running !== null && <RunBanner run={running} task={task} />}
+      {running !== null && (
+        <RunBanner
+          run={running}
+          task={task}
+          resumable={content.data?.resumable_pages ?? 0}
+          pending={reextract.isPending}
+          onRetry={retry}
+        />
+      )}
       {content.data?.extraction?.status === "failed" && (
-        <Notice tone="destructive">
-          <strong className="font-medium">
-            This document could not be read — the original is kept.
-          </strong>{" "}
-          {content.data.extraction.error} You can still open every page and the
-          file itself; "Read again" in the menu tries once more.
-        </Notice>
+        <FailedBanner
+          error={content.data.extraction.error}
+          resumable={content.data.resumable_pages}
+          pending={reextract.isPending}
+          onRetry={retry}
+        />
       )}
 
       <div
@@ -362,11 +427,13 @@ function DocumentWorkspace(): JSX.Element {
         {showText && (
           <TextPane
             content={content.data ?? null}
+            running={inFlight}
             pending={content.isPending}
             structure={structure}
             unreadable={unreadable}
             nid={nid}
             page={current}
+            aside={aside === true}
             onSelect={select}
             onReading={turnTo}
           />
@@ -392,17 +459,30 @@ function DocumentWorkspace(): JSX.Element {
                 }
                 onSelect={(selected: number): void => select(selected)}
                 onPage={(next: number): void => show({ page: next })}
+                onOpen={(): void => show({ full: true })}
               />
             ) : (
               <EmptyPane
                 isPdf={isPdf}
-                status={content.data?.status ?? null}
+                noExtractor={content.data?.status === null}
+                running={inFlight}
                 pending={pages.isPending || document.isPending}
               />
             )}
           </div>
         )}
       </div>
+
+      {full === true && hasPages && (
+        <PageLightbox
+          page={openPage.data ?? null}
+          pages={pageList.length}
+          selected={nid}
+          onSelect={(selected: number): void => select(selected)}
+          onPage={(next: number): void => show({ page: next })}
+          onClose={(): void => show({ full: undefined })}
+        />
+      )}
 
       {/* A phone has no room beside the text, so the scan comes over it: the page the
           paragraph is on, with its box lit. Driven by the same `?nid=` as the split view, so
@@ -440,6 +520,10 @@ type HeaderProps = {
   view: View;
   onView: (view: View) => void;
   hasPages: boolean;
+  /** Standing matter: how much of it there is, whether it is shown, and the switch. */
+  asideCount: number;
+  aside: boolean;
+  onAside: (aside: boolean) => void;
   onExtract: (strategy: string | undefined, fromRaw: boolean) => void;
   onRename: () => void;
   pending: boolean;
@@ -453,6 +537,9 @@ function DocumentHeader({
   view,
   onView,
   hasPages,
+  asideCount,
+  aside,
+  onAside,
   onExtract,
   onRename,
   pending,
@@ -503,6 +590,27 @@ function DocumentHeader({
                 ))}
             </TabsList>
           </Tabs>
+          {/* Every letter carries the same letterhead, address and bank line. They are read
+              and kept, but they are not what the document says, so they start folded away —
+              and the switch lives up here rather than costing the reader a line of page. */}
+          {asideCount > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-pressed={aside}
+              title={`${aside ? "Hide" : "Show"} the letterhead, address and contact details (${asideCount})`}
+              aria-label={`${aside ? "Hide" : "Show"} the letterhead, address and contact details`}
+              className="text-muted-foreground tabular-nums"
+              onClick={(): void => onAside(!aside)}
+            >
+              {aside ? (
+                <EyeOff aria-hidden="true" />
+              ) : (
+                <Eye aria-hidden="true" />
+              )}
+              {asideCount}
+            </Button>
+          )}
           {document && (
             <>
               <Button variant="outline" size="sm" asChild>
@@ -585,8 +693,9 @@ function DocumentHeader({
           )}
         </div>
       </div>
-      error && (
-      <p className="text-destructive text-sm">Extraction refused: {error}</p>)
+      {error && (
+        <p className="text-destructive text-sm">Extraction refused: {error}</p>
+      )}
     </header>
   );
 }
@@ -679,19 +788,93 @@ function Notice({
   );
 }
 
+/**
+ * A run that gave up. The button is the point: reading is resumable — every page an earlier
+ * run got back is stored (`DraftPage`), so trying again pays only for what is still missing,
+ * which is what makes it worth offering next to the error rather than buried in a menu.
+ */
+function FailedBanner({
+  error,
+  resumable,
+  pending,
+  onRetry,
+}: {
+  error: string;
+  resumable: number;
+  pending: boolean;
+  onRetry: () => void;
+}): JSX.Element {
+  return (
+    <Notice tone="destructive">
+      <strong className="font-medium">
+        This document could not be read — the original is kept.
+      </strong>{" "}
+      {error} You can still open every page and the file itself.{" "}
+      {resumable > 0 && `${keptPages(resumable)} `}
+      <RetryButton pending={pending} onRetry={onRetry} />
+    </Notice>
+  );
+}
+
+/** What a retry will not have to pay for again — the run's state, in one line. */
+function keptPages(resumable: number): string {
+  return `${resumable} ${resumable === 1 ? "page is" : "pages are"} already read and will not be read again.`;
+}
+
+function RetryButton({
+  pending,
+  onRetry,
+}: {
+  pending: boolean;
+  onRetry: () => void;
+}): JSX.Element {
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="mt-2 ml-1 align-middle"
+      disabled={pending}
+      onClick={onRetry}
+    >
+      <RefreshCw aria-hidden="true" />
+      {pending ? "Queueing..." : "Read again"}
+    </Button>
+  );
+}
+
 /** What a run is doing right now: the page it reached, straight from the worker. */
 function RunBanner({
   run,
   task,
+  resumable,
+  pending,
+  onRetry,
 }: {
   run: ExtractionOut;
   task: TaskOut | null;
+  resumable: number;
+  pending: boolean;
+  onRetry: () => void;
 }): JSX.Element {
   const progress = task?.progress ?? null;
   const percent =
     progress && progress.total > 0
       ? Math.round((100 * progress.current) / progress.total)
       : null;
+  // A run whose worker was restarted or killed keeps saying "reading" for ever. Say what has
+  // actually happened and offer the way out, which picks up whatever that run got through.
+  if (run.stale) {
+    return (
+      <Notice tone="warning">
+        <strong className="font-medium">
+          This reading stopped — its worker is gone.
+        </strong>{" "}
+        Nothing has come back from it for a while.{" "}
+        {resumable > 0 && `${keptPages(resumable)} `}
+        <RetryButton pending={pending} onRetry={onRetry} />
+      </Notice>
+    );
+  }
   return (
     <div className="flex flex-col gap-2 rounded-lg border bg-muted/40 p-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
@@ -730,11 +913,15 @@ function RunBanner({
 
 type TextPaneProps = {
   content: ContentOut | null;
+  /** Whether a run is really in flight — see `inFlight` in the workspace. */
+  running: boolean;
   pending: boolean;
   structure: Structure;
   unreadable: number[];
   nid: number | undefined;
   page: number;
+  /** Whether the standing matter is on screen. */
+  aside: boolean;
   onSelect: (nid: number | undefined, page?: number) => void;
   /** The reader has scrolled a new page's first block past the top of the pane. */
   onReading: (page: number) => void;
@@ -752,16 +939,20 @@ const READING_LINE = 0.05;
  */
 function TextPane({
   content,
+  running,
   pending,
   structure,
   unreadable,
   nid,
   page,
+  aside,
   onSelect,
   onReading,
 }: TextPaneProps): JSX.Element {
   const container = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  /** The page this pane itself reported while the reader scrolled — not one to scroll to. */
+  const reported = useRef<number | undefined>(undefined);
   const shown = useRef<{ nid: number | undefined; page: number }>({
     nid,
     page,
@@ -782,6 +973,11 @@ function TextPane({
       marked.removeAttribute("data-marker");
       marked.removeAttribute("data-marker-rule");
     }
+    // When each passage is from, in the margin under the pointer: the artifact carries the
+    // estimate as EDTF on the tag itself, and a reader wants a date, not a notation.
+    for (const dated of root.querySelectorAll<HTMLElement>("[data-date]")) {
+      dated.dataset.when = edtfText(dated.dataset.date ?? "");
+    }
     // Where each page begins, in the margin — the paper's rhythm without cutting the text up.
     // Every page but the first also gets the hairline: a document does not open on a break.
     let firstPage = true;
@@ -801,12 +997,15 @@ function TextPane({
     shown.current = { nid, page };
     if (nidChanged && target instanceof HTMLElement) {
       target.scrollIntoView({ block: "center", behavior: "smooth" });
-    } else if (pageChanged && !nidChanged) {
+    } else if (pageChanged && !nidChanged && page !== reported.current) {
       // Turning a page in the other pane brings the text along: the first node drawn there.
       const first = [
         ...root.querySelectorAll<HTMLElement>("[data-pages]"),
-      ].find((node) =>
-        (node.dataset.pages ?? "").split(",").includes(String(page)),
+      ].find(
+        (node) =>
+          // Standing matter that is folded away cannot be scrolled to.
+          node.getClientRects().length > 0 &&
+          (node.dataset.pages ?? "").split(",").includes(String(page)),
       );
       first?.scrollIntoView({ block: "start", behavior: "smooth" });
     }
@@ -851,11 +1050,17 @@ function TextPane({
       for (const node of rendered.querySelectorAll<HTMLElement>(
         "[data-pages]",
       )) {
-        if (node.getBoundingClientRect().top > line) break;
+        const rect = node.getBoundingClientRect();
+        if (rect.height === 0) continue; // folded away: it is not what is being read
+        if (rect.top > line) break;
         reading = pagesOf(node)[0] ?? reading;
       }
-      if (reading !== undefined && reading !== shown.current.page) {
-        shown.current.page = reading;
+      if (
+        reading !== undefined &&
+        reading !== reported.current &&
+        reading !== shown.current.page
+      ) {
+        reported.current = reading;
         onReading(reading);
       }
     }
@@ -881,7 +1086,7 @@ function TextPane({
       <PaneBox>
         {content?.status === null
           ? "No extractor handles this kind of file, so there is nothing to read here."
-          : isActive(content?.status)
+          : running
             ? "The extraction is running; this pane fills itself when it lands."
             : "The extraction produced no content."}
       </PaneBox>
@@ -913,9 +1118,95 @@ function TextPane({
         <div
           ref={container}
           className="document-html"
+          data-aside-shown={aside ? "true" : undefined}
           // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized server-side with nh3 against the tag allowlist that is the node vocabulary (apps/documents/snapshot.py)
           dangerouslySetInnerHTML={{ __html: html }}
         />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One page, as big as the window will make it: the same image and the same regions as the
+ * pane, with the neighbours a click away. Escape and the arrow keys work, because a reader
+ * looking closely at page 4 wants page 5 without going back to the pane for it.
+ */
+function PageLightbox({
+  page,
+  pages,
+  selected,
+  onSelect,
+  onPage,
+  onClose,
+}: {
+  page: PageOut | null;
+  pages: number;
+  selected: number | undefined;
+  onSelect: (nid: number) => void;
+  onPage: (page: number) => void;
+  onClose: () => void;
+}): JSX.Element {
+  const number = page?.number ?? 1;
+  useEffect(() => {
+    function onKey(event: KeyboardEvent): void {
+      if (event.key === "Escape") onClose();
+      if (event.key === "ArrowRight" && number < pages) onPage(number + 1);
+      if (event.key === "ArrowLeft" && number > 1) onPage(number - 1);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, onPage, number, pages]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Page ${number} of ${pages}`}
+      className="fixed inset-0 z-50 flex flex-col gap-2 bg-background/95 p-3 backdrop-blur-sm"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-2">
+        <span className="text-muted-foreground text-sm tabular-nums">
+          Page {number} of {pages}
+          <span className="ml-2 hidden sm:inline">
+            — scroll to zoom, drag to move
+          </span>
+        </span>
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          <X aria-hidden="true" />
+          Close
+        </Button>
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center gap-2">
+        <Button
+          variant="outline"
+          size="icon"
+          aria-label="Previous page"
+          disabled={number <= 1}
+          onClick={(): void => onPage(number - 1)}
+        >
+          <ChevronLeft aria-hidden="true" />
+        </Button>
+        {page === null ? (
+          <PaneBox>Loading the page...</PaneBox>
+        ) : (
+          <PageImage
+            page={page}
+            selected={selected}
+            onSelect={onSelect}
+            ratio={ratioOf(page)}
+            className="max-h-full max-w-full"
+          />
+        )}
+        <Button
+          variant="outline"
+          size="icon"
+          aria-label="Next page"
+          disabled={number >= pages}
+          onClick={(): void => onPage(number + 1)}
+        >
+          <ChevronRight aria-hidden="true" />
+        </Button>
       </div>
     </div>
   );
@@ -934,11 +1225,11 @@ function ScanPeek({
   onClose: () => void;
 }): JSX.Element {
   useEffect(() => {
-    function escape(event: KeyboardEvent): void {
+    function onKey(event: KeyboardEvent): void {
       if (event.key === "Escape") onClose();
     }
-    window.addEventListener("keydown", escape);
-    return () => window.removeEventListener("keydown", escape);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   const region = page?.regions.find(
@@ -1024,22 +1315,26 @@ function PaneBox({ children }: { children: ReactNode }): JSX.Element {
 
 function EmptyPane({
   isPdf,
-  status,
+  noExtractor,
+  running,
   pending,
 }: {
   isPdf: boolean;
-  status: ExtractionStatus | null;
+  noExtractor: boolean;
+  running: boolean;
   pending: boolean;
 }): JSX.Element {
   return (
     <PaneBox>
       {pending
         ? "Loading the pages..."
-        : isActive(status)
+        : running
           ? "The pages appear once the extraction lands."
-          : isPdf
-            ? "This snapshot has no pages."
-            : "Only scanned or paged documents have page images."}
+          : noExtractor
+            ? "No extractor handles this kind of file."
+            : isPdf
+              ? "This snapshot has no pages."
+              : "Only scanned or paged documents have page images."}
     </PaneBox>
   );
 }
@@ -1089,6 +1384,181 @@ function clipOf(region: LocatedRegion): string | undefined {
   return `polygon(${points.join(",")})`;
 }
 
+/** How far the wheel may magnify a page, and how much of a notch one turn is worth. */
+const MAX_ZOOM = 8;
+const WHEEL_ZOOM = 400;
+
+/** The page's own transform: a scale and the offset of its top-left corner inside the frame. */
+type Zoom = { scale: number; x: number; y: number };
+const UNZOOMED: Zoom = { scale: 1, x: 0, y: 0 };
+
+function clamp(value: number, low: number, high: number): number {
+  return Math.min(Math.max(value, low), high);
+}
+
+/** No blank margin beside a magnified page: the frame stays covered by it. */
+function settle(next: Zoom, width: number, height: number): Zoom {
+  return {
+    scale: next.scale,
+    x: clamp(next.x, width * (1 - next.scale), 0),
+    y: clamp(next.y, height * (1 - next.scale), 0),
+  };
+}
+
+/**
+ * One page image with its regions on it, magnified by the wheel and dragged with the pointer.
+ *
+ * The regions are children of the transformed box rather than of the frame, so they are scaled
+ * by the same matrix as the pixels and cannot drift away from the words they outline. Zoom is
+ * deliberately *not* in the URL: it is where a reader's eye is, like a scroll position, and it
+ * changes with every notch of the wheel.
+ */
+function PageImage({
+  page,
+  selected,
+  onSelect,
+  ratio,
+  className,
+}: {
+  page: PageOut;
+  selected: number | undefined;
+  onSelect: ((nid: number) => void) | null;
+  ratio: string;
+  className?: string;
+}): JSX.Element {
+  const frame = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState<Zoom>(UNZOOMED);
+  const drag = useRef<{ x: number; y: number } | null>(null);
+
+  // Back to the whole page whenever another one is put in the frame.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the page number is the identity of what is shown
+  useEffect(() => setZoom(UNZOOMED), [page.number]);
+
+  // A non-passive listener, because a wheel over the page has to zoom it instead of scrolling
+  // the pane behind it — React's own onWheel cannot call preventDefault.
+  useEffect(() => {
+    const box = frame.current;
+    if (!box) return;
+    function onWheel(event: WheelEvent): void {
+      if (!box) return;
+      event.preventDefault();
+      const rect = box.getBoundingClientRect();
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      setZoom((now: Zoom): Zoom => {
+        const scale = clamp(
+          now.scale * Math.exp(-event.deltaY / WHEEL_ZOOM),
+          1,
+          MAX_ZOOM,
+        );
+        if (scale === 1) return UNZOOMED;
+        // Whatever sits under the pointer stays under the pointer.
+        const grew = scale / now.scale;
+        return settle(
+          { scale, x: px - grew * (px - now.x), y: py - grew * (py - now.y) },
+          rect.width,
+          rect.height,
+        );
+      });
+    }
+    box.addEventListener("wheel", onWheel, { passive: false });
+    return () => box.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const zoomed = zoom.scale > 1;
+  return (
+    <div
+      ref={frame}
+      className={cn(
+        "relative overflow-hidden",
+        zoomed && "cursor-grab",
+        className,
+      )}
+      style={{ aspectRatio: ratio, touchAction: zoomed ? "none" : undefined }}
+      onPointerDown={(event: ReactPointerEvent<HTMLDivElement>): void => {
+        if (!zoomed) return;
+        drag.current = { x: event.clientX - zoom.x, y: event.clientY - zoom.y };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event: ReactPointerEvent<HTMLDivElement>): void => {
+        const from = drag.current;
+        const box = frame.current;
+        if (from === null || box === null) return;
+        const rect = box.getBoundingClientRect();
+        setZoom(
+          (now: Zoom): Zoom =>
+            settle(
+              {
+                scale: now.scale,
+                x: event.clientX - from.x,
+                y: event.clientY - from.y,
+              },
+              rect.width,
+              rect.height,
+            ),
+        );
+      }}
+      onPointerUp={(): void => {
+        drag.current = null;
+      }}
+    >
+      <div
+        className="absolute inset-0 origin-top-left"
+        style={{
+          transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`,
+        }}
+      >
+        <img
+          src={apiUrl(page.image_url)}
+          alt={`Page ${page.number}`}
+          className="block h-full w-full rounded-sm bg-background object-contain shadow-sm"
+          decoding="async"
+          draggable={false}
+        />
+        {located(page.regions).map((region) => {
+          const box = {
+            left: `${region.x0 * 100}%`,
+            top: `${region.y0 * 100}%`,
+            width: `${(region.x1 - region.x0) * 100}%`,
+            height: `${(region.y1 - region.y0) * 100}%`,
+            clipPath: clipOf(region),
+          };
+          const mark = region.nid === selected ? "true" : undefined;
+          return onSelect === null ? (
+            <span
+              key={`${region.nid}-${region.order}`}
+              className="page-region pointer-events-none"
+              data-selected={mark}
+              style={box}
+            />
+          ) : (
+            <button
+              key={`${region.nid}-${region.order}`}
+              type="button"
+              title={`<${region.tag}> #${region.nid}\n${region.text.slice(0, 200)}`}
+              onClick={(): void => onSelect(region.nid)}
+              data-selected={mark}
+              className="page-region"
+              style={box}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** The page's own proportions, so the regions — fractions of the page, not pixels — land
+ * where they belong at whatever size the frame happens to be. */
+function ratioOf(page: {
+  width: number | null;
+  height: number | null;
+}): string {
+  return page.width && page.height
+    ? `${page.width} / ${page.height}`
+    : "1 / 1.414";
+}
+
 type ScanPaneProps = {
   page: PageOut | null;
   pages: PageSummaryOut[];
@@ -1096,6 +1566,8 @@ type ScanPaneProps = {
   selectedPages: number[];
   onSelect: (nid: number) => void;
   onPage: (page: number) => void;
+  /** Show this page on its own, over everything else. */
+  onOpen: () => void;
 };
 
 /**
@@ -1110,12 +1582,9 @@ function ScanPane({
   selectedPages,
   onSelect,
   onPage,
+  onOpen,
 }: ScanPaneProps): JSX.Element {
   if (page === null) return <PaneBox>Loading the page...</PaneBox>;
-  // The frame keeps the page's own proportions, so the regions — which are fractions of the
-  // page, not pixels — land where they belong at whatever size the pane happens to be.
-  const ratio =
-    page.width && page.height ? `${page.width} / ${page.height}` : "1 / 1.414";
   const continues = selectedPages.find(
     (number: number): boolean => number > page.number,
   );
@@ -1127,34 +1596,13 @@ function ScanPane({
       )}
     >
       <div className="relative flex min-h-0 flex-1 justify-center">
-        <div
-          className="relative max-h-full max-w-full"
-          style={{ aspectRatio: ratio }}
-        >
-          <img
-            src={apiUrl(page.image_url)}
-            alt={`Page ${page.number} of ${pages.length}`}
-            className="block h-full w-full rounded-sm bg-background object-contain shadow-sm"
-            decoding="async"
-          />
-          {located(page.regions).map((region) => (
-            <button
-              key={`${region.nid}-${region.order}`}
-              type="button"
-              title={`<${region.tag}> #${region.nid}\n${region.text.slice(0, 200)}`}
-              onClick={(): void => onSelect(region.nid)}
-              data-selected={region.nid === selected ? "true" : undefined}
-              className="page-region"
-              style={{
-                left: `${region.x0 * 100}%`,
-                top: `${region.y0 * 100}%`,
-                width: `${(region.x1 - region.x0) * 100}%`,
-                height: `${(region.y1 - region.y0) * 100}%`,
-                clipPath: clipOf(region),
-              }}
-            />
-          ))}
-        </div>
+        <PageImage
+          page={page}
+          selected={selected}
+          onSelect={onSelect}
+          ratio={ratioOf(page)}
+          className="max-h-full max-w-full"
+        />
 
         {/* Over the page, where a reader's eye already is: which sheet this is, and whether
             the passage they picked runs on. */}
@@ -1183,6 +1631,15 @@ function ScanPane({
         </span>
         <span className="flex items-center gap-1">
           {page.date && <DateLabel date={page.date} />}
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Open the page larger"
+            title="Open the page larger"
+            onClick={onOpen}
+          >
+            <Maximize2 aria-hidden="true" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -1253,6 +1710,23 @@ function ScanPane({
 }
 
 /** The original file in the browser's own PDF viewer — the bytes, not our reading of them. */
+/**
+ * An EDTF estimate as a reader's date: "2026-08-05" → "05.08.2026", "2026-08" → "08.2026",
+ * "2026-08-05/2026-08-10" → a span, "../2026-08-05" → "until …". The qualifiers EDTF allows
+ * on an uncertain date (?, ~, %) say something the tooltip cannot, and are dropped.
+ */
+function edtfText(edtf: string): string {
+  const cleaned = edtf.replace(/[?~%]/g, "").trim();
+  if (cleaned === "") return "";
+  const [from = "", to] = cleaned.split("/");
+  if (to === undefined) return plainDate(from);
+  if (from === "" || from === "..") return `until ${plainDate(to)}`;
+  if (to === "" || to === "..") return `from ${plainDate(from)}`;
+  return from === to
+    ? plainDate(from)
+    : `${plainDate(from)} - ${plainDate(to)}`;
+}
+
 /** `2026-08-05` → `05.08.2026`; a month or a year keeps the precision it has. */
 function plainDate(iso: string): string {
   const [year, month, day] = iso.split("-");

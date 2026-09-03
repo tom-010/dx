@@ -34,12 +34,27 @@ def stop_worker(
     process: subprocess.Popen[bytes], stop_timeout: float, echo: Echo | None = None
 ) -> None:
     """Warm shutdown via SIGTERM; SIGKILL if the worker is still around after `stop_timeout`
-    seconds (a killed task is re-queued only after the broker's visibility timeout)."""
+    seconds (a killed task is re-queued only after the broker's visibility timeout).
+
+    A worker with a task in flight does not stop at once and cannot be made to: the task's own
+    threads (an OCR run has a page per thread waiting on the network) are not interruptible
+    from outside, so the worker leaves when they return or their request times out. That is
+    what the wait is for, and it is the cheap outcome — the expensive one is the kill.
+    """
     if process.poll() is not None:
         return
     process.send_signal(signal.SIGTERM)
     try:
-        process.wait(stop_timeout)
+        process.wait(1.0)
+        return
+    except subprocess.TimeoutExpired:
+        if echo is not None:
+            echo(
+                f"waiting up to {stop_timeout:g} s for the running task to finish "
+                "(killing it would cost the broker's redelivery timeout)"
+            )
+    try:
+        process.wait(max(stop_timeout - 1.0, 0.0))
     except subprocess.TimeoutExpired:
         if echo is not None:
             echo(f"worker still running after {stop_timeout:g} s, killing it")

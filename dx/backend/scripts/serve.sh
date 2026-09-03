@@ -29,7 +29,9 @@ prefix() {  # prefix TAG — label every line; survive the SIGINT sent to the jo
 }
 
 pids=()
-{ uv run python manage.py runserver "${HOST:-127.0.0.1}:${PORT:-8000}" 2>&1 \
+# The dev server connects through PgBouncer, as gunicorn does in the image (DB_POOLED,
+# config/env.py); the worker below keeps a direct connection — it pins its tenant per session.
+{ DB_POOLED=true uv run python manage.py runserver "${HOST:-127.0.0.1}:${PORT:-8000}" 2>&1 \
     | tee -a -i "$LOG" | prefix "[django]"; } &
 pids+=("$!")
 if [ "${WORKER:-1}" != "0" ]; then

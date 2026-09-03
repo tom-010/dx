@@ -3,22 +3,19 @@
 `PageInput` is what a run stores per page — the model's own HTML (or its failure), plus the
 page's size — and `raw_payload` is exactly the bytes `manage.py ocr` writes and a snapshot
 keeps in `raw_output`, so a production run replays bit for bit. What is specific to Gemini
-lives here and in `page_html.py`: the box format, the furniture names, the repair call. From
+lives here and in `page_html.py`: the box format and the furniture names. From
 `page_contents()` on, a scan and a born-digital PDF are the same thing to the pipeline.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from apps.documents.ocr.page_html import as_page_html
 from apps.documents.pipeline import PageHtml
-
-#: Broken page markup and what is wrong with it, in; valid markup out.
-type Repair = Callable[[str, Sequence[str]], str]
 
 
 @dataclass
@@ -53,12 +50,13 @@ class PageInput:
     def to_raw(self) -> dict[str, Any]:
         if self.html is None:
             return {"number": self.number, "failed": True, "error": self.error or "failed"}
-        return {
+        record: dict[str, Any] = {
             "number": self.number,
             "width": self.width,
             "height": self.height,
             "html": self.html,
         }
+        return record
 
 
 def raw_payload(pages: Sequence[PageInput]) -> bytes:
@@ -74,14 +72,11 @@ def pages_from_raw(raw: bytes) -> list[PageInput]:
     return [PageInput.from_raw(record) for record in records]
 
 
-def page_contents(
-    pages: Sequence[PageInput], *, repair: Repair | None = None
-) -> tuple[list[PageHtml], list[str]]:
+def page_contents(pages: Sequence[PageInput]) -> tuple[list[PageHtml], list[str]]:
     """Stage 1: the model's pages as canonical page HTML, with what was wrong with them.
 
-    A page whose HTML does not parse cleanly is offered to `repair` — a flash model asked to
-    fix the markup and nothing else. The repair is kept only when it leaves fewer problems
-    behind, so a worse answer cannot replace a merely imperfect one.
+    A page whose HTML does not parse cleanly keeps whatever the parser could make of it; the
+    problems travel to the snapshot's stats rather than back to a model.
     """
     contents: list[PageHtml] = []
     problems: list[str] = []
@@ -90,11 +85,6 @@ def page_contents(
             contents.append(PageHtml(number=page.number, failed=True))
             continue
         html, page_problems = as_page_html(page.html, page.number)
-        if page_problems and repair is not None:
-            fixed, fixed_problems = as_page_html(repair(page.html, page_problems), page.number)
-            if len(fixed_problems) < len(page_problems):
-                html, page_problems = fixed, fixed_problems
-                problems.append(f"page {page.number}: repaired")
         problems += [f"page {page.number}: {problem}" for problem in page_problems]
         contents.append(
             PageHtml(

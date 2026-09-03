@@ -528,6 +528,7 @@ def test_playground_render_writes_one_png_per_page_into_a_fresh_out_dir(
     assert sorted(p.name for p in out.iterdir()) == ["0001.png", "0002.png", "row", "thumb"]
     for sub in ("thumb", "row"):
         assert sorted(p.name for p in (out / sub).iterdir()) == ["0001.png", "0002.png"]
-    assert Image.open(out / "0001.png").size == (60, 80)
-    assert Image.open(out / "thumb" / "0001.png").size == (30, 40)
-    assert Image.open(out / "row" / "0001.png").size == (15, 20)
+    sizes = {"0001.png": (60, 80), "thumb/0001.png": (30, 40), "row/0001.png": (15, 20)}
+    for name, size in sizes.items():
+        with Image.open(out / name) as image:  # closed: an unclosed reader is a failed test
+            assert image.size == size

@@ -73,7 +73,10 @@ paths:
     module docstring of `models.py` lists what was adapted to this project's invariants).
     `models.py`: `Blob` (content-addressed bytes, per-tenant dedup by sha256, keys
     `documents/<owner id>/blobs/ab/cd/<sha256>`), `Extractor` (a strategy at a version),
-    `Document` (title, meta, `source_blob`, `current_content` — the **facade**: `text`, `html`,
+    `Document` (title, `md5`, meta, `source_blob`, `current_content`; the md5 is unique per
+    active row per owner and is what makes an upload **idempotent** — `store_documents` hands
+    back the document the tenant already holds instead of filing the same bytes twice, and the
+    upload view queues an extraction only for a document that has none. The **facade**: `text`, `html`,
     `pages`, `outline()`, `hit()`, `confidence()`, all empty-safe), and the immutable snapshot
     `DocumentContent` (status, `is_current` with a partial unique index, the sanitized `html`,
     the plain `text` with a GIN full-text index) → `Page` → `Node` (one row per `data-nid` tag:
@@ -94,13 +97,13 @@ paths:
     (`reextract(from_raw=True)`, `TreeStrategy.reproject`), a normal flip, no second lifecycle.
     `strategies.py`: the abstract `ExtractionStrategy` (`extract(document) -> DocumentContent`,
     with `self.snapshot(document, tree)` doing the rows), the built-ins `plain-text`, `html`,
-    `pypdf`, and the opt-in `gemini-ocr` (**`ocr/`**: `page_schema.py` — the per-page block
-    contract, pydantic + `google.genai` schema, the y-first `box_2d` → envelope conversion;
-    `gemini_client.py` — the versioned prompt and `GeminiPageReader` with backoff and one
-    repair retry; `render.py` — pdfium rasterization, one page in memory; `assembly.py` — the
-    deterministic reduce: furniture off, cross-page merge, lists/figures grouped, the outline
-    stack, one region per fragment; `run.py` — the resumable page loop; `preview.py` — the
-    QA pages). `manage.py ocr extract|assemble|run` is the same core without a database, and
+    `pypdf`, and the opt-in `gemini-ocr` (**`ocr/`**: `page_html.py` — the page contract, the
+    versioned prompt and the y-first `data-box` → envelope conversion; `gemini_client.py` —
+    `GeminiPageReader` with backoff, thinking at MINIMAL, and **one request per page: no
+    review round and no repair call**; `render.py` — pdfium rasterization, one page in memory;
+    `assembly.py` — the deterministic reduce: furniture off, cross-page merge, lists/figures
+    grouped, the outline stack, one region per fragment; `run.py` — the resumable page loop;
+    `preview.py` — the QA pages). `manage.py ocr extract|assemble|run` is the same core without a database, and
     `assemble` replays a production `raw_output` bit for bit. `conf_stats` stays NULL there
     ("no per-word confidence data available"); the model is never asked to rate itself.
     `?strategy=gemini-ocr` on `POST …/reextract` opts a document in — page images go to
@@ -109,7 +112,14 @@ paths:
     `snapshot.py`: the write path — `store_blob`, `start_extraction` (a PENDING row + the
     `extract_content` task on commit), `run_extraction`, `write_snapshot` (plan → render →
     nh3 → measure offsets → rollups → one transaction), `switch_current` (the only writer of
-    `is_current`/`current_content`, sends `content_switched`), `verify_snapshot`; `ops.py` +
+    `is_current`/`current_content`, sends `content_switched`), `verify_snapshot`, and the
+    **resume path** — `run_state()` hands the running strategy one `RunState` holding the
+    whole `ExtractionState` (the pages read so far), stored in a `DocumentContentDraft` row per
+    (document, blob, extractor) as it grows, so a run that dies on page 27 of 30 is resumed and
+    not repeated; a stored state this code cannot read is discarded rather than migrated
+    (`stored_state`), writing a snapshot discards it (`discard_draft`), and a state that cannot
+    be *stored* never fails the run. That table is deliberately unversioned (`HISTORY_EXEMPT`):
+    it is rewritten once per page. `ops.py` +
     the commands `prune_contents` / `gc_blobs` (soft deletes; files stay). `api.py`: multipart
     `POST /api/documents/upload` (blob + document + a queued extraction per file), paginated
     list/get/PATCH/delete, `GET …/download` (signed link names the owner; the view opens
@@ -125,6 +135,48 @@ paths:
     `image/*`/`video/*` and enforces per-kind size limits (`MAX_SIZE`). `POST /api/gallery/upload`, paginated `GET /api/gallery`, get/delete.
     `MediaItemOut.url` is the signed `/media/…` link (see `.claude/rules/media-storage.md`) — the SPA puts it
     straight into `<img src>` / `<video src>`.
+  - `apps/timeline/` — the feed: **one flat, rebuildable projection** of everything that
+    happened to a tenant, so a card is one indexed row rather than a union over every app.
+    `models.py`: `TimelineEvent` (owned, tracked; `event_type`, `kind` technical|real_world,
+    `status`, `occurred_at`/`occurred_until`/`date_precision`, the common card fields
+    `title`/`description`/`image_url`, a `payload` jsonb, and the source as `source_model` +
+    `source_id` — a label and a UUID, deliberately not a foreign key, so a card outlives a
+    retired row and the API can hand the SPA the `{type, id}` its own registry keys on).
+    `contracts.py` is what other apps import: `EventData` (what `describe()` returns) and the
+    `EventType` registry, keyed `"<app_label>.<snake_name>"`. `services.py` is the only writer:
+    `record` (an upsert against (source, type) — call it again after a rename and the card
+    follows), `remove` (soft, on the source's soft delete), `events_for`, `rebuild`
+    (`backfill()` in both directions, idempotent → `manage.py rebuild_timeline`). Reads:
+    paginated `GET /api/timeline` (`kind`, `types`, `status`, `since`, `until`),
+    `GET /api/timeline/event-types`, `GET /api/timeline/{id}`. A module joins by writing one
+    `timeline_events.py` (imported by `TimelineConfig.ready()` via `autodiscover_modules`) and
+    calling `record`/`remove` where it writes — dependency direction is always module →
+    timeline, and the backend ships no routes, icons or click behaviour (that is the SPA's
+    registry, `frontend/src/features/timeline/`). `apps/documents/timeline_events.py` is the
+    reference: `documents.uploaded`, re-recorded on PATCH and when an extraction retitles the
+    document (`snapshot.switch_current`), retired on delete. Tests use
+    `apps/timeline/testing.py` (`assert_event`/`assert_no_event`) rather than querying the
+    table. What the app dropped from `backend/timeline.md` and why is the module docstring of
+    `models.py` (no patient FK, no actor, no ContentType, no `post_delete` signal).
+  - `apps/notifications/` — the inbox: **the same shape as `apps/timeline`, answering a
+    different question.** The timeline is the record (one row per (source, type), describing the
+    source as it stands, rebuildable); a notification is the message — addressed to a person,
+    unread until they look at it, and with nothing to reconstruct it from. `models.py`:
+    `Notification` (owned, tracked; `notification_type`, `title`, an optional `description`,
+    `source_model` + `source_id`, and `read_at` — the one column the reader owns).
+    `contracts.py`: `NotificationData` + the `NotificationType` registry (no `backfill()`, on
+    purpose). `services.py`: `notify` (an upsert on (source, type) that refreshes the wording
+    and **never un-reads** something), `remove`, `unread_for`, `mark_all_read`. Reads and one
+    write: paginated `GET /api/notifications` (`?unread=true`),
+    `GET /api/notifications/unread-count` (the bell polls this, not the list),
+    `POST /api/notifications/{id}/read`, `POST /api/notifications/read`. **`sources=[]`**, unlike
+    the timeline: nothing recomputes a message, so an edge would only fill
+    `stale_derivations()` with rows no rebuild will act on. A module joins by writing one
+    `notification_types.py` (imported by `NotificationsConfig.ready()`) and calling
+    `notify`/`remove` where it writes; `apps/datasets/notification_types.py` is the reference
+    (`datasets.created`, sent by `create_dataset_for` — so POST *and* the document import both
+    announce it — and retired by `delete_dataset_for`). Tests use
+    `apps/notifications/testing.py` (`assert_notified`/`assert_not_notified`).
   - `config/spa.py` + `config/static.py` — serve the built SPA (see `.claude/rules/spa-serving.md`);
     `config/media.py` — storage classes + `/media/<key>?sig=` view (see `.claude/rules/media-storage.md`).
   - `config/errors.py` — JSON error bodies (`{"detail": …}`) for API clients: Django's
@@ -133,7 +185,8 @@ paths:
     they propagate to Django's logging + `handler500`).
 - Config: defaults in `config/env.py` target the compose database as the runtime role
   (`postgres://app_user:app_user@localhost:5432/dx`; `DB_ROLE`, `DB_MIGRATOR_*`, `DB_ADMIN_*`
-  pick other roles — see `.claude/rules/multitenancy.md`). Override via env vars or `backend/.env`
+  pick other roles, `DATABASE_POOL_URL` + `DB_POOLED` the PgBouncer endpoint for the web
+  process — see `.claude/rules/multitenancy.md`). Override via env vars or `backend/.env`
   (template: `backend/.env.example`; `.env` is git-ignored). Other keys:
   `ACCESS_TOKEN_LIFETIME_MINUTES`, `REFRESH_TOKEN_LIFETIME_DAYS`, `API_FIXED_TOKEN`, `REGISTRATION_OPEN`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` (JSON
   lists, only needed for the Capacitor origins), `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`,

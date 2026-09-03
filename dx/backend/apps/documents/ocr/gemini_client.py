@@ -1,12 +1,15 @@
-"""Stage 1 for a scan: one Gemini request per page image, and the repair call behind it.
+"""Stage 1 for a scan: the Gemini requests one page image takes.
 
-Ported from `manage.py playground gemini`: structured output through `response_schema`,
-thinking level MINIMAL, automatic function calling off, streamed. The SDK is imported inside
-the functions that need it — it is heavy, and nothing else in the app should pay for it.
+One request per page: structured output through `response_schema`, **thinking at MINIMAL**
+(the lowest this model family takes; a budget of 0 is a 400 on flash-lite), temperature 0,
+automatic function calling off. Two more per document — one to date its tags,
+one to name it. The SDK is imported inside the functions that need it: it is heavy, and
+nothing else in the app should pay for it.
 
-Two models: the page reader (vision, cheap, one call per page) and the repairer, which only
-ever sees HTML that did not parse and is asked to fix the markup and nothing else. A page that
-is still broken after that is failed, and the run becomes PARTIAL rather than losing the rest.
+**A page is read once.** There is no review round and no repair call: what comes back is
+untrusted input, validated and clamped by `page_html.parse_page`, and whatever is still wrong
+with it is recorded in the snapshot's stats. A page that cannot be read at all is a failed
+page, and the run becomes PARTIAL rather than losing the rest.
 
 The prompt is part of the extractor's identity: `PROMPT_VERSION` and `prompt_sha256()` go into
 the `Extractor` row's config, and any change to the prompt or the schema bumps
@@ -18,15 +21,24 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Callable, Sequence
-from typing import Protocol
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol
 
-from apps.documents.extraction import Block
+import structlog
+from tenacity import (
+    RetryCallState,
+    Retrying,
+    retry_if_exception,
+    stop_after_attempt,
+    stop_after_delay,
+    wait_chain,
+    wait_fixed,
+)
+
 from apps.documents.ocr.page_html import (
     DATING_PROMPT,
     NAMING_PROMPT,
     PROMPT,
-    REPAIR_PROMPT,
     dating_schema,
     naming_schema,
     prompt_for,
@@ -34,41 +46,57 @@ from apps.documents.ocr.page_html import (
     strip_fence,
 )
 
+if TYPE_CHECKING:
+    from google.genai import types
+
 MODEL = "gemini-3.5-flash-lite"
-#: What repairs an answer that did not parse — a cheap model doing a mechanical job.
-REPAIR_MODEL = "gemini-3.5-flash"
-PROMPT_VERSION = 2
-#: How much of the previous page's last block the next request sees.
-TAIL_CHARS = 500
-FIRST_PAGE = "first page"
+PROMPT_VERSION = 3
+#: Longest any one request may take. A call that hangs would otherwise hang the whole run, and
+#: it is also what bounds a shutdown: Python cannot kill a thread, so a worker asked to stop
+#: leaves when the requests in flight have returned or timed out (`apps/core/worker_reload.py`).
+REQUEST_TIMEOUT_S = 120
+#: What a failed call waits before the next one: nine attempts, eight waits, 22 seconds of
+#: sleeping in all. Many tries and short ones, because what fails here fails in bursts — a rate
+#: limit, a model that is briefly busy — and none of that is helped by waiting a minute.
+RETRY_WAITS = (1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 4.0, 5.0)
+#: …and it gives up here whatever the attempt count says. Nine attempts that each *time out*
+#: would be eighteen minutes on one page, which is no longer retrying, it is hanging.
+RETRY_BUDGET_S = 300
 #: `DocumentContent.title` is 500 characters; a name is a line, not a paragraph.
 TITLE_LIMIT = 200
+
+
+log = structlog.get_logger(__name__)
 
 
 def prompt_sha256() -> str:
     return hashlib.sha256(PROMPT.encode()).hexdigest()
 
 
-def tail_context(blocks: Sequence[Block]) -> str:
-    """The previous page's last block — its tag and up to `TAIL_CHARS` of its text. This is
-    the only thing the model is told about the rest of the document."""
-    if not blocks:
-        return "the previous page was blank"
-    last = blocks[-1]
-    text = (last.text or last.table_html or "")[-TAIL_CHARS:]
-    return f"{last.tag}: {text}" if text else last.tag
+def transient(exc: BaseException) -> bool:
+    """Whether another try could plausibly go better.
+
+    A rate limit, a server fault, or a call that never got an answer at all: yes. A 400 is the
+    request itself being wrong — nine identical ones would be wrong nine times — and so is
+    anything that is not the network failing.
+    """
+    import httpx  # noqa: PLC0415 - only where a request is made
+    from google.genai import errors  # noqa: PLC0415
+
+    if isinstance(exc, errors.APIError):
+        code = exc.code or 0
+        return code in (0, 429) or code >= 500
+    return isinstance(exc, httpx.TransportError | TimeoutError | ConnectionError)
 
 
 class PageFailed(Exception):
-    """The page could not be read: refused, or not valid JSON after the repair retry."""
+    """The page could not be read: refused, or the answer was not usable JSON."""
 
 
 class PageReader(Protocol):
     """What the pipeline needs of a reader — `GeminiPageReader`, or a stub in tests."""
 
-    def read(self, png: bytes, number: int, total: int, tail: str) -> str: ...
-
-    def repair(self, html: str, problems: Sequence[str]) -> str: ...
+    def read(self, png: bytes, number: int, total: int) -> str: ...
 
     def date(self, html: str) -> dict[int, tuple[str, float]]: ...
 
@@ -76,101 +104,110 @@ class PageReader(Protocol):
 
 
 class GeminiPageReader:
-    """Reads one page per request, and repairs markup on demand. 429/5xx: exponential
-    backoff."""
+    """Reads one page per request, and dates and names the assembled document.
+
+    Every call goes through the same retry policy (`RETRY_WAITS`): a rate limit, a server
+    fault or a connection that dropped is tried again, and anything else is not. What the
+    retries cannot fix is handled per call — a page that will not read is a failed page, while
+    a dating or a naming that will not run leaves the reading it already has.
+    """
 
     def __init__(
         self,
         api_key: str,
         *,
         model: str = MODEL,
-        repair_model: str = REPAIR_MODEL,
-        retries: int = 3,
-        backoff: float = 2.0,
+        timeout: float = REQUEST_TIMEOUT_S,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         from google import genai  # noqa: PLC0415 - heavy; only where a request is made
+        from google.genai import types  # noqa: PLC0415
 
-        self._client = genai.Client(api_key=api_key)
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=int(timeout * 1000)),  # the SDK takes ms
+        )
         self._model = model
-        self._repair_model = repair_model
-        self._retries = retries
-        self._backoff = backoff
         self._sleep = sleep
 
-    def read(self, png: bytes, number: int, total: int, tail: str) -> str:
-        """One page image as HTML. Retries a rate-limited or failing API; a page whose answer
-        is empty is a blank page, not an error."""
-        from google.genai import errors, types  # noqa: PLC0415
+    def _retry(self, call: str) -> Retrying:
+        """The policy, and a line in the log for every wait — a run that is being throttled
+        should say so rather than just look slow."""
 
-        message = prompt_for(number, total, tail)
-        attempt = 0
-        while True:
-            contents = types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_bytes(data=png, mime_type="image/png"),
-                    types.Part.from_text(text=message),
-                ],
+        def note(state: RetryCallState) -> None:
+            failure = state.outcome.exception() if state.outcome is not None else None
+            log.warning(
+                "gemini_retry",
+                call=call,
+                attempt=state.attempt_number,
+                waiting=round(state.next_action.sleep, 1) if state.next_action else 0.0,
+                error=f"{type(failure).__name__}: {failure}"[:300],
             )
-            config = types.GenerateContentConfig(
-                system_instruction=PROMPT,
-                temperature=0,
-                thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                response_mime_type="application/json",
-                response_schema=response_schema(),
-            )
-            try:
-                chunks = self._client.models.generate_content_stream(
-                    model=self._model, contents=contents, config=config
-                )
-                text = "".join(chunk.text or "" for chunk in chunks)
-            except errors.APIError as exc:
-                code = exc.code or 0
-                if (code == 429 or code >= 500) and attempt < self._retries:
-                    self._sleep(self._backoff**attempt)
-                    attempt += 1
-                    continue
-                raise PageFailed(f"{code}: {exc}") from exc
-            try:
-                payload = json.loads(text)
-            except ValueError as exc:
-                raise PageFailed(f"the answer is not JSON: {exc}") from exc
-            if not isinstance(payload, dict):
-                raise PageFailed("the answer is not an object")
-            if payload.get("blank") is True:
-                return ""  # the model says the page carries nothing; believe it
-            html = payload.get("html")
-            if not isinstance(html, str):
-                raise PageFailed("the answer carries no html")
-            return strip_fence(html)
 
-    def repair(self, html: str, problems: Sequence[str]) -> str:
-        """Broken markup in, valid markup out — the content untouched. Failure returns the
-        original: a repair that cannot be made is not a reason to lose the page."""
-        from google.genai import errors, types  # noqa: PLC0415
+        return Retrying(
+            stop=stop_after_attempt(len(RETRY_WAITS) + 1) | stop_after_delay(RETRY_BUDGET_S),
+            wait=wait_chain(*(wait_fixed(seconds) for seconds in RETRY_WAITS)),
+            retry=retry_if_exception(transient),
+            before_sleep=note,
+            sleep=self._sleep,
+            reraise=True,
+        )
 
-        prompt = REPAIR_PROMPT.format(problems="\n".join(f"- {p}" for p in problems), html=html)
-        try:
+    def _ask(
+        self,
+        call: str,
+        parts: list[types.Part],
+        schema: types.Schema,
+        *,
+        system: str | None = None,
+    ) -> dict[str, Any]:
+        """One request, retried while retrying is worth it, and its JSON answer as an object."""
+        from google.genai import types  # noqa: PLC0415 - only where a request is made
+
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=0,
+            # As low as this model family goes — `thinking_budget=0` is a 400 on flash-lite.
+            # This is transcription, not reasoning: a budget spent thinking about a page is
+            # latency and money the reading does not get.
+            thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            response_mime_type="application/json",
+            response_schema=schema,
+        )
+
+        def request() -> str:
             answer = self._client.models.generate_content(
-                model=self._repair_model,
-                contents=types.Content(role="user", parts=[types.Part.from_text(text=prompt)]),
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level=types.ThinkingLevel.MINIMAL
-                    ),
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    response_mime_type="application/json",
-                    response_schema=response_schema(),
-                ),
+                model=self._model,
+                contents=types.Content(role="user", parts=parts),
+                config=config,
             )
-            payload = json.loads(answer.text or "{}")
-        except errors.APIError, ValueError:
-            return html
-        repaired = payload.get("html") if isinstance(payload, dict) else None
-        return strip_fence(repaired) if isinstance(repaired, str) and repaired.strip() else html
+            return answer.text or "{}"
+
+        payload = json.loads(self._retry(call)(request))
+        if not isinstance(payload, dict):
+            raise ValueError("the answer is not an object")
+        return payload
+
+    def read(self, png: bytes, number: int, total: int) -> str:
+        """One page image as HTML. Retries a rate-limited or failing API; a page the model
+        calls blank is a blank page, not an error."""
+        from google.genai import types  # noqa: PLC0415
+
+        parts = [
+            types.Part.from_bytes(data=png, mime_type="image/png"),
+            types.Part.from_text(text=prompt_for(number, total)),
+        ]
+        try:
+            payload = self._ask("read", parts, response_schema(), system=PROMPT)
+        except Exception as exc:  # noqa: BLE001 - the API or the network, after the last attempt
+            raise PageFailed(f"{type(exc).__name__}: {exc}") from exc
+        if payload.get("blank") is True:
+            return ""  # the model says the page carries nothing; believe it
+        html = payload.get("html")
+        if not isinstance(html, str):
+            raise PageFailed("the answer carries no html")
+        return strip_fence(html)
 
     def date(self, html: str) -> dict[int, tuple[str, float]]:
         """When the information in each tag originates: `{nid: (EDTF, confidence)}`.
@@ -181,29 +218,15 @@ class GeminiPageReader:
         is an `INFERRED` estimate that any printed dateline still overrules
         (`apps/documents/dating.py`).
         """
-        from google.genai import errors, types  # noqa: PLC0415
+        from google.genai import types  # noqa: PLC0415
 
+        parts = [types.Part.from_text(text=DATING_PROMPT.format(html=html))]
         try:
-            answer = self._client.models.generate_content(
-                model=self._model,
-                contents=types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=DATING_PROMPT.format(html=html))],
-                ),
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level=types.ThinkingLevel.MINIMAL
-                    ),
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    response_mime_type="application/json",
-                    response_schema=dating_schema(),
-                ),
-            )
-            payload = json.loads(answer.text or "{}")
-        except errors.APIError, ValueError:
+            payload = self._ask("date", parts, dating_schema())
+        except Exception as exc:  # noqa: BLE001 - best effort, but never silently
+            log.warning("gemini_dating_failed", error=f"{type(exc).__name__}: {exc}")
             return {}
-        entries = payload.get("dates") if isinstance(payload, dict) else None
+        entries = payload.get("dates")
         found: dict[int, tuple[str, float]] = {}
         for entry in entries if isinstance(entries, list) else []:
             if not isinstance(entry, dict):
@@ -219,27 +242,13 @@ class GeminiPageReader:
         The last step of the pipeline and the cheapest: one line for a whole file. A file name
         says what a scanner called it; this says what it is.
         """
-        from google.genai import errors, types  # noqa: PLC0415
+        from google.genai import types  # noqa: PLC0415
 
+        parts = [types.Part.from_text(text=NAMING_PROMPT.format(html=html))]
         try:
-            answer = self._client.models.generate_content(
-                model=self._model,
-                contents=types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=NAMING_PROMPT.format(html=html))],
-                ),
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level=types.ThinkingLevel.MINIMAL
-                    ),
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    response_mime_type="application/json",
-                    response_schema=naming_schema(),
-                ),
-            )
-            payload = json.loads(answer.text or "{}")
-        except errors.APIError, ValueError:
+            payload = self._ask("name", parts, naming_schema())
+        except Exception as exc:  # noqa: BLE001 - best effort, but never silently
+            log.warning("gemini_naming_failed", error=f"{type(exc).__name__}: {exc}")
             return ""
-        title = payload.get("title") if isinstance(payload, dict) else None
+        title = payload.get("title")
         return " ".join(title.split())[:TITLE_LIMIT] if isinstance(title, str) else ""

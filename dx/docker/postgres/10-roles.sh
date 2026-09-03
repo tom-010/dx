@@ -12,9 +12,12 @@
 #                 owner). DATABASE_URL carries its credentials.
 #   app_admin     BYPASSRLS for `manage.py shell_admin` and support tooling; credentials only in
 #                 ops shells, never in the app/worker environment.
+#   pgbouncer     the connection pooler's lookup role (the `pgbouncer` service): may call
+#                 pgbouncer.user_lookup() to fetch a role's password secret for its own SCRAM
+#                 check, and nothing else — no table, not even the public schema.
 #
 # Passwords come from the container environment (APP_MIGRATOR_PASSWORD, APP_USER_PASSWORD,
-# APP_ADMIN_PASSWORD; the dev compose passes the role names). An empty/unset variable leaves that
+# APP_ADMIN_PASSWORD, PGBOUNCER_PASSWORD; the dev compose passes the role names). An empty/unset variable leaves that
 # role's password untouched — a fresh app_admin then has none and cannot log in until an operator
 # sets one (`ALTER ROLE app_admin PASSWORD '…'`), which keeps it out of the app's environment.
 # The bootstrap superuser (POSTGRES_USER, `dx`) keeps working and is the dev migrator: tables it
@@ -41,6 +44,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_admin') THEN
     CREATE ROLE app_admin LOGIN;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer') THEN
+    CREATE ROLE pgbouncer LOGIN;
+  END IF;
 END
 $$;
 
@@ -48,11 +54,31 @@ $$;
 ALTER ROLE app_migrator LOGIN NOSUPERUSER NOBYPASSRLS;
 ALTER ROLE app_user LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
 ALTER ROLE app_admin LOGIN NOSUPERUSER BYPASSRLS;
+ALTER ROLE pgbouncer LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT;
 SQL
 password_sql app_migrator "${APP_MIGRATOR_PASSWORD:-}"
 password_sql app_user "${APP_USER_PASSWORD:-}"
 password_sql app_admin "${APP_ADMIN_PASSWORD:-}"
+password_sql pgbouncer "${PGBOUNCER_PASSWORD:-}"
 cat <<'SQL'
+-- PgBouncer's auth_query (docker/docker-compose*.yml): the SCRAM secret of the role that is
+-- logging in, read from pg_shadow on the pooler's behalf (SECURITY DEFINER: the function runs
+-- as the superuser that created it). Superusers and BYPASSRLS roles are never returned, so
+-- the pooled endpoint only hands out connections row-level security applies to; those roles
+-- connect to Postgres directly. Column names are what PgBouncer expects: user, then secret.
+CREATE SCHEMA IF NOT EXISTS pgbouncer;
+CREATE OR REPLACE FUNCTION pgbouncer.user_lookup(username text, OUT uname text, OUT phash text)
+  RETURNS record
+  LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog
+  AS $$
+    SELECT usename::text, passwd FROM pg_shadow
+    WHERE usename = username AND NOT usesuper AND NOT usebypassrls;
+  $$;
+REVOKE ALL ON SCHEMA pgbouncer FROM PUBLIC;
+REVOKE ALL ON FUNCTION pgbouncer.user_lookup(text) FROM PUBLIC;
+GRANT USAGE ON SCHEMA pgbouncer TO pgbouncer;
+GRANT EXECUTE ON FUNCTION pgbouncer.user_lookup(text) TO pgbouncer;
+
 -- The migrator may SET ROLE app_user: the test suite verifies the policies from the runtime role.
 DO $$
 BEGIN
@@ -94,4 +120,4 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user,
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user, app_admin;
 SQL
 } | sed "s/__DBNAME__/$POSTGRES_DB/" | psql -v ON_ERROR_STOP=1 --quiet --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"
-echo "roles app_migrator / app_user / app_admin ready"
+echo "roles app_migrator / app_user / app_admin / pgbouncer ready"

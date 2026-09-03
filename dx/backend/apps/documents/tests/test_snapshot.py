@@ -2,11 +2,13 @@
 the acceptance tests of `documents_agent_brief.md` §9 plus the write-path rules of §4.
 """
 
+from datetime import timedelta
 from html.parser import HTMLParser
 
 import pytest
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
@@ -469,10 +471,43 @@ def test_reextract_queues_one_pending_run_per_input(user: User, document: Docume
         assert done.is_current and done.started_at is not None and done.finished_at is not None
         assert done.stats["nodes"] == 10 and done.stats["failed_pages"] == []
         assert done.raw_output is not None and done.raw_output.read_bytes() == b'{"fake": true}'
-        assert Document.objects.get(pk=document.pk).meta == {"title": "Annual report"}
+        stored = Document.objects.get(pk=document.pk)
+        assert stored.meta == {"title": "Annual report", "filename": "report.fake"}
         assert snapshot.run_extraction(queued.pk) == done  # a redelivered task changes nothing
         again = document.reextract()
         assert again is not None and again.pk != queued.pk
+
+
+def test_a_run_whose_worker_is_gone_is_taken_over_by_the_next_one(
+    user: User, document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker restarted mid-run leaves its row RUNNING for ever. Without this, "Read again"
+    would hand that dead row back and the document could never be read at all."""
+    with acting_as(user):
+        queued = document.reextract()
+        assert queued is not None
+        queued.status = ExtractionStatus.RUNNING
+        queued.started_at = timezone.now()
+        queued.save(operation=None, sources=[], update_fields=["status", "started_at"])
+        # A run that is still working is left alone, however long it has been going.
+        assert not snapshot.is_stale(queued)
+        assert document.reextract() == queued
+
+        # …and one nothing has touched since before the cutoff is closed and replaced. The
+        # cutoff is moved rather than the row: `modified` is set by the database trigger on
+        # every write, which is exactly what makes it a heartbeat and what makes it unfakeable.
+        monkeypatch.setattr(snapshot, "STALE_RUN", timedelta(0))
+        assert snapshot.is_stale(queued)
+        taken_over = document.reextract()
+        assert taken_over is not None and taken_over.pk != queued.pk
+        assert taken_over.status == ExtractionStatus.PENDING
+        abandoned = DocumentContent.objects.get(pk=queued.pk)
+        assert abandoned.status == ExtractionStatus.FAILED
+        assert abandoned.error == "the worker did not finish this run"
+        # A PENDING row is never taken over, however old: it may simply be waiting behind a
+        # long job, and queueing a second one would pay for the same document twice.
+        assert not snapshot.is_stale(taken_over)
+        assert document.reextract() == taken_over
 
 
 class BrokenStrategy(strategies.TreeStrategy):
@@ -511,6 +546,39 @@ def test_a_failing_strategy_is_recorded_not_raised(user: User, document: Documen
         assert not failed.is_current and failed.finished_at is not None
         assert Document.objects.get(pk=document.pk).current_content is None
         assert failed.nodes.count() == 0  # no child rows required for a failure
+
+
+class UnbuildableStrategy(strategies.TreeStrategy):
+    """Reads the file fine, then hands the builder a tree it cannot accept."""
+
+    name = "unbuildable"
+    tool_version = "1"
+
+    def parse(self, data: bytes, mime_type: str) -> Extraction:
+        return Extraction(
+            nodes=[
+                ExtractedNode(
+                    tag="p", text="x", regions=[ExtractedRegion(page=9, envelope=(0, 0, 1, 1))]
+                )
+            ],
+            pages=[ExtractedPage(number=1)],
+            raw=b'{"pages": []}',
+            raw_mime="application/json",
+        )
+
+
+def test_a_run_that_fails_in_the_builder_keeps_what_the_extractor_produced(
+    user: User, document: Document
+) -> None:
+    """An OCR read costs money and a bug in the builder must not throw it away: the raw output
+    is on the row before the snapshot is built, so a rebuild can start from it."""
+    with acting_as(user):
+        failed = snapshot.extract_now(document, UnbuildableStrategy())
+        assert failed.status == ExtractionStatus.FAILED
+        assert failed.raw_output is not None
+        assert failed.raw_output.read_bytes() == b'{"pages": []}'
+        # …which is what `start_extraction(from_raw=True)` rebuilds from.
+        assert document.latest_content() == failed
 
 
 def test_a_strategy_may_build_its_own_row(user: User, document: Document) -> None:

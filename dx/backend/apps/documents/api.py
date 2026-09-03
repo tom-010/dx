@@ -48,6 +48,8 @@ from apps.documents.models import (
     Page,
 )
 from apps.documents.ocr import render
+from apps.documents.timeline_events import DOCUMENT_UPLOADED
+from apps.timeline import services as timeline
 
 router = Router(tags=["documents"])
 
@@ -179,6 +181,10 @@ class ExtractionOut(Schema):
     created: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    #: The run says it is working, but nothing has touched it for a while: its worker was
+    #: restarted, killed or lost (`snapshot.is_stale`). "Read again" takes such a run over,
+    #: keeping whatever it managed to read.
+    stale: bool
     #: The Celery task that runs (or ran) this snapshot — its id *is* the snapshot's id
     #: (`snapshot.start_extraction`), so a client can follow a run it did not start.
     stream_url: str = Field(
@@ -216,6 +222,10 @@ class ContentOut(Schema):
 
     status: ExtractionStatus | None
     extraction: ExtractionOut | None
+    #: Pages the latest run already read and stored, which a new run of the same extractor
+    #: would not read again (`ExtractionState`) — what makes "Read again" after a failure
+    #: cheap rather than a second full bill.
+    resumable_pages: int
     html: str
     text: str
     page_count: int
@@ -362,24 +372,41 @@ def validate_upload(files: Sequence[UploadedFile[bytes]]) -> None:
 
 def store_documents(user: User, files: Sequence[UploadedFile[bytes]]) -> list[Document]:
     """Validate the whole batch first, then persist it: one blob per distinct content, one
-    document per file. Extraction is a separate step (`Document.reextract`)."""
+    document per file. Extraction is a separate step (`Document.reextract`).
+
+    **A file the tenant already holds is not filed twice.** The upload's MD5 is looked up
+    first, and a hit puts the document that is already there in the list instead of a second
+    copy of it — so a re-upload is a no-op the caller can still respond with, and the caller
+    does not pay for a second extraction of the same bytes.
+    """
     validate_upload(files)
     documents = []
     for file in files:
+        digest = snapshot.md5_of(file)
+        already = Document.objects.for_user(user).filter(md5=digest).first()
+        if already is not None:
+            documents.append(already)
+            continue
         blob = snapshot.store_blob(user.pk, file, mime_type_of(file))
         name = (file.name or "")[:500]
-        documents.append(
-            Document.create(
-                operation=None,
-                sources=[],
-                owner=user,
-                title=name,
-                # Kept so the extraction may replace the file name with what the document
-                # calls itself, while never overwriting a name a person typed.
-                meta={"filename": name},
-                source_blob=blob,
-            )
+        document = Document.create(
+            operation=None,
+            sources=[],
+            owner=user,
+            title=name,
+            md5=digest,
+            # Kept so the extraction may replace the file name with what the document
+            # calls itself, while never overwriting a name a person typed.
+            meta={"filename": name},
+            source_blob=blob,
         )
+        # The library is one view of a document; the timeline is the other, and it is written
+        # here rather than by a signal so it is visible in the diff and in this transaction
+        # (`apps/timeline/services.py`). The card is refreshed wherever the document changes:
+        # on PATCH below, and when an extraction gives it a title and pages
+        # (`snapshot.switch_current`).
+        timeline.record(DOCUMENT_UPLOADED, document)
+        documents.append(document)
     return documents
 
 
@@ -410,6 +437,7 @@ def extraction_out(content: DocumentContent) -> ExtractionOut:
         id=content.pk,
         stream_url=f"/api/tasks/{task_id}/events?sig={sign_stream(task_id)}",
         status=ExtractionStatus(content.status),
+        stale=snapshot.is_stale(content),
         extractor=str(content.extractor),
         is_current=content.is_current,
         error=content.error,
@@ -480,11 +508,22 @@ def parse_period(period: str) -> UncertainDate:
         raise HttpError(422, f"period: {exc}") from None
 
 
+def resumable_pages(latest: DocumentContent | None) -> int:
+    """How many pages of the next run are already paid for — the pages in the draft state the
+    last run left (`snapshot.stored_state`), which is the extractor "Read again" reaches for.
+    A stored state that cannot be read counts for nothing, and is discarded on the way."""
+    if latest is None:
+        return 0
+    state = snapshot.stored_state(latest)
+    return len(state.pages) if state is not None else 0
+
+
 def content_out(document: Document) -> ContentOut:
     latest = document.latest_content()
     return ContentOut(
         status=ExtractionStatus(latest.status) if latest is not None else None,
         extraction=extraction_out(latest) if latest is not None else None,
+        resumable_pages=resumable_pages(latest),
         html=document.html,
         text=document.text,
         page_count=document.pages.count(),
@@ -679,7 +718,11 @@ def upload_documents(
     user = current_user(request)
     documents = store_documents(user, files)
     for document in documents:
-        document.reextract()
+        # Every document that has none — which is every new one. A file that was already in
+        # the library keeps the extraction it has; re-uploading it buys nothing and, for a
+        # scan, would be a second run of the OCR over the same pages.
+        if not document.contents.exists():
+            document.reextract()
     by_id = {d.pk: d for d in listing(user).filter(pk__in=[d.pk for d in documents])}
     return Status(201, [by_id[d.pk] for d in documents])
 
@@ -697,6 +740,9 @@ def update_document(
     document = get_document_for(user, DocumentId(document_id))
     document.set_payload_partial(payload)
     document.save(operation=None, sources=[])
+    # A rename is a rename everywhere: the timeline card carries the title, so recording again
+    # updates it in place (same row, same id, one more version).
+    timeline.record(DOCUMENT_UPLOADED, document)
     return get_document_for(user, DocumentId(document_id))
 
 
@@ -788,7 +834,12 @@ def delete_document(request: HttpRequest, document_id: uuid.UUID) -> Status[None
     snapshots go with it (they are only reachable through it) and the object is reclaimed when
     the tenant is erased (`apps/core/tenants.py`).
     """
-    get_document_for(current_user(request), DocumentId(document_id)).soft_delete()
+    document = get_document_for(current_user(request), DocumentId(document_id))
+    document.soft_delete()
+    # Cascade is application logic here (`.claude/rules/versioning.md`): the timeline is a
+    # projection of live rows, so a retired document leaves the feed with it. Soft, like the
+    # document — a later `record()` revives the same event row.
+    timeline.remove(document)
     return Status(204, None)
 
 
@@ -858,7 +909,9 @@ def get_document_timeline(
 def list_document_pages(request: HttpRequest, document_id: uuid.UUID) -> list[PageSummaryOut]:
     """Every page of the current snapshot, in order — the page navigator's data."""
     document = get_document_for(current_user(request), DocumentId(document_id))
-    pages = document.pages.annotate(regions_on_page=Count("regions"))
+    # `order_by` explicitly: an aggregate drops the model's own ordering, and a page navigator
+    # in hash-aggregate order is not a page navigator.
+    pages = document.pages.annotate(regions_on_page=Count("regions")).order_by("number")
     unreadable = failed_pages(document.current_content)
     return [
         page_summary_out(document, page, page.regions_on_page, page.number in unreadable)

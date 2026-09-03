@@ -69,6 +69,8 @@ class ExtractedNode:
     level: int | None = None
     source: StructureSource = StructureSource.DETECTED
     regions: list[ExtractedRegion] = field(default_factory=list)
+    #: Standing matter — see `Block.aside`.
+    aside: str | None = None
     #: Table cells, row-major; the first row is the header when `header` is set. Cells are
     #: not nodes: clicking a table selects the whole table.
     rows: list[list[str]] | None = None
@@ -378,6 +380,10 @@ class Block:
     #: Running header, footer or page number (`data-furniture`): never part of the document,
     #: though a page number becomes the page's label.
     furniture: str | None = None
+    #: Standing matter (`data-aside`): the letterhead, the address, the bank details, the
+    #: signature block. Kept, because it is on the page and someone will want it, but not what
+    #: the document says — a reader is shown it only on request.
+    aside: str | None = None
     source: StructureSource = StructureSource.DETECTED
 
 

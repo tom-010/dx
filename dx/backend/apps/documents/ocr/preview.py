@@ -36,14 +36,18 @@ def write_previews(out: Path, built: Built) -> list[Path]:
             for region in node.regions:
                 if region.page != number:
                     continue
+                if region.x0 is None or region.y0 is None:
+                    continue  # the page is known, the place on it is not: nothing to draw
+                x1 = region.x1 if region.x1 is not None else region.x0
+                y1 = region.y1 if region.y1 is not None else region.y0
                 text = ""
                 if region.text_start is not None and region.text_end is not None:
                     text = built.text[region.text_start : region.text_end]
                 title = escape(f"<{node.tag}> #{node.nid}\n{text[:400]}", quote=True)
                 boxes.append(
                     f'<div class="r" title="{title}" style="left:{region.x0 * 100:.2f}%;'
-                    f"top:{region.y0 * 100:.2f}%;width:{(region.x1 - region.x0) * 100:.2f}%;"
-                    f'height:{(region.y1 - region.y0) * 100:.2f}%"></div>'
+                    f"top:{region.y0 * 100:.2f}%;width:{(x1 - region.x0) * 100:.2f}%;"
+                    f'height:{(y1 - region.y0) * 100:.2f}%"></div>'
                 )
         previous = _link(numbers[index - 1], "previous") if index else ""
         following = _link(numbers[index + 1], "next") if index + 1 < len(numbers) else ""

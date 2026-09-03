@@ -33,8 +33,10 @@ from apps.accounts.models import User
 from apps.core.models import VersionedModel
 from apps.core.schemas import StrictSchema
 from apps.datasets.models import Dataset, DatasetId, DatasetOptions, DatasetTag, Tag
+from apps.datasets.notification_types import DATASET_CREATED
 from apps.documents.api import get_document_for
 from apps.documents.models import Document, DocumentId
+from apps.notifications import services as notifications
 
 router = Router(tags=["datasets"])
 
@@ -210,6 +212,10 @@ def create_dataset_for(
         options=options or DatasetOptions(),
     )
     set_dataset_tags(user, dataset, tags)
+    # Both callers land here, so both announce it: a dataset the user typed and one imported
+    # from a document are the same news. Explicit and in this transaction rather than a
+    # `post_save` signal — see `apps/notifications/services.py`.
+    notifications.notify(DATASET_CREATED, dataset)
     return dataset
 
 
@@ -256,6 +262,8 @@ def delete_dataset_for(user: User, dataset_id: DatasetId) -> None:
     dataset = get_dataset_for(user, dataset_id)
     set_dataset_tags(user, dataset, [])
     dataset.soft_delete()
+    # A message pointing at something the user can no longer open is a dead end.
+    notifications.remove(dataset)
 
 
 def import_dataset_for(

@@ -21,6 +21,8 @@ from apps.datasets.api import router as datasets_router
 from apps.documents.api import router as documents_router
 from apps.gallery.api import router as gallery_router
 from apps.notes.api import router as notes_router
+from apps.notifications.api import router as notifications_router
+from apps.timeline.api import router as timeline_router
 from config.errors import install_exception_handlers
 
 
@@ -56,4 +58,6 @@ api.add_router("/", datasets_router)
 api.add_router("/", documents_router)
 api.add_router("/", gallery_router)
 api.add_router("/", notes_router)
+api.add_router("/", notifications_router)
+api.add_router("/", timeline_router)
 # needle: routers (manage.py newapp inserts new routers above this line)

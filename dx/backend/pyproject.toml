@@ -28,6 +28,7 @@ dependencies = [
     "rich>=15.0.0",
     "sentry-sdk>=2.68",
     "structlog>=26.1.0",
+    "tenacity>=9.1.4",
     "textual>=8.2.8",
     "whitenoise[brotli]>=6.12.0",
 ]
@@ -101,7 +102,13 @@ markers = [
     "cross_tenant: keep the table owner's database role (no RLS) — backup/restore tooling only",
 ]
 # Warnings are bugs waiting to happen: fail on them, allow-list third-party noise explicitly.
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # google-genai builds `Union[UnionType, _UnionGenericAlias]` at import time, which Python
+    # 3.14 deprecates. Theirs to fix, and until they do, importing the SDK anywhere under
+    # `error` fails the module that did it. Scoped to the one message.
+    "default:'_UnionGenericAlias' is deprecated:DeprecationWarning",
+]
 
 # ./scripts/coverage.sh
 [tool.coverage.run]

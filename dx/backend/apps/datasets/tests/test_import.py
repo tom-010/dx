@@ -79,15 +79,19 @@ def test_the_edge_keeps_pointing_at_the_version_it_read(user: User) -> None:
         was = cast(DocumentEventRow, edge.resolve_source())
         assert was.title == "orders.csv"  # not "renamed.csv"
         # The question the whole design exists to answer: what needs rebuilding now?
-        assert [e.pk for e in lineage.stale_derivations(document)] == [edge.pk]
+        # The document's timeline card is derived from it as well (`apps/timeline`), so the
+        # answer names that too; the dataset's edge is the one this test is about.
+        assert edge.pk in {e.pk for e in lineage.stale_derivations(document)}
 
 
 def test_nothing_is_stale_until_the_source_moves(user: User) -> None:
     with acting_as(user):
         document = _upload(user)
-        import_dataset_for(user, DocumentId(document.pk))
+        dataset = import_dataset_for(user, DocumentId(document.pk))
 
-        assert lineage.derived_from(document).count() == 1
+        # `derived_from` spans every consumer; asking per model separates the import's edge
+        # from the timeline card the upload wrote.
+        assert [v.to_object().pk for v in document.derived(Dataset)] == [dataset.pk]
         assert lineage.stale_derivations(document).count() == 0
 
 

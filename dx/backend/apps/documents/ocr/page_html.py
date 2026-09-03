@@ -9,8 +9,8 @@ The model's boxes are Gemini's own convention, `[ymin, xmin, ymax, xmax]` on a 0
 the image it was sent. `parse_page` converts them once, here, into the pipeline's normalized
 `(x0, y0, x1, y1)` — the y-first trap, guarded by its own test.
 
-An answer that does not parse is not thrown away: `gemini_client.repair_html` asks a flash
-model to fix it, and only a second failure fails the page.
+A page is read once. An answer that does not parse leaves its problems in the snapshot's stats;
+nothing is sent back to a model to be reviewed or repaired.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from google.genai import types
 
 #: Bumped with the prompt: both are the extractor's identity (`GeminiOcrStrategy.config`).
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 #: Gemini's boxes are integers on this grid, over the image that was sent.
 GRID = 1000
 #: What the model may mark as page furniture.
@@ -34,58 +34,43 @@ FURNITURE_KINDS = ("header", "footer", "page-number")
 
 PROMPT = """You read one scanned page of a document and return it as semantic HTML.
 
-Return the page as HTML, nothing else: no <html>, <head> or <body>, no markdown fence, no
-commentary.
+Return HTML and nothing else: no <html>, <head> or <body>, no markdown fence, no commentary.
 
-Tags — use only these: section, h1, h2, h3, h4, h5, h6, p, ul, ol, li, table, thead, tbody, tr,
-th, td, figure, figcaption, blockquote, pre. Never <div>, <span>, <b>, <i> or <img>.
+Tags — use only these: h1, h2, h3, h4, h5, h6, p, ul, ol, li, table, thead, tbody, tr, th, td,
+figure, figcaption, blockquote, pre. Never <div>, <span>, <b>, <i>, <img> or <section>.
 
-**Read the page, do not decode it glyph by glyph.** You know the language, the vocabulary and
-the kind of document in front of you: use that knowledge to read what is printed, exactly as a
-person reads through a bad photocopy. A smudged or broken word is still the word it plainly is:
-"Bankverbindunq" is "Bankverbindung", "Är.?tbank" is "Ärztebank", "Grui'!dgelenk" is
-"Grundgelenk", "Vofußschmerzen" is "Vorfußschmerzen". Domain terms, drug names, anatomical
-terms, addresses and numbers are to be read with the same care.
+Transcribe what is on the page, in its original language (mostly German), in full and in
+reading order: nothing translated, summarized, rephrased, reordered, added or left out.
+Numbers, dates, codes and amounts exactly as printed. Handwriting is content, not decoration —
+a margin note, a value written into a form, a remark beside a signature, a whole page of notes
+are transcribed in place like any other block. Write [?] where a word is truly illegible.
 
-**But never invent.** Transcribe what is on the page in its original language (mostly German),
-in full: no translation, no summary, no rephrasing, nothing added and nothing left out. If a
-word truly cannot be made out, keep your best reading of the characters rather than guessing at
-the meaning. Numbers, dates, codes and amounts are copied exactly as printed — never corrected,
-never rounded, never reformatted.
+**Let the markup carry what the layout says.**
 
-Rules:
-- Keep the reading order. Several columns: column by column, top to bottom within a column.
-- One tag per block: a paragraph is <p>, a heading is <h1>…<h6> by its visual rank, a list item
-  is <li> inside <ul> (or <ol> when the items are numbered), a table is <table> with
-  thead/tbody/tr/th/td, colspan and rowspan allowed, cell text verbatim.
-- Leave the bullet glyph or the item number out of the <li> text.
-- Do not invent <section> tags: return the blocks in order and nothing around them.
-- Within the page, join words that a line break hyphenates. Keep a hyphen at the very end of
-  the last block only when the word continues on the next page.
-- A figure, photo, stamp, signature or handwriting you cannot read is an empty <figure></figure>;
-  a caption beside it is <figcaption>.
-- Running headers, footers and page numbers are transcribed too, as
-  <p data-furniture="header">, <p data-furniture="footer"> or
-  <p data-furniture="page-number">.
-- Every tag directly in the page carries data-box="ymin,xmin,ymax,xmax": four integers from 0
-  to 1000 over the whole image, y first.
-- The page's first tag carries data-continues="true" when it grammatically continues the last
-  block of the previous page, quoted in the message. Otherwise leave the attribute out.
-- Set blank=true and return no html when the page carries no content at all: an empty sheet, a
-  separator, a scan of the back of a page, speckles and scanner artefacts only. A page with a
-  single line of text on it is not blank.
-"""
+- Columns whose lines line up across the page are a <table>, one row per line across, whether
+  or not the paper prints any rules: a label and its value, a finding and its result, a drug
+  and its dose. Writing them out one after another throws away what the page states. Use <th>
+  for what the paper prints as a label, and colspan/rowspan where it merges cells.
+- A heading is <h1>…<h6> by its visual rank; indented or bulleted matter is <ul>/<ol> with
+  <li>, without the bullet glyph or the item number; a photo, stamp or signature is an empty
+  <figure>, with any text beside it as <figcaption>.
+- One tag per block. Join words a line break hyphenates, and lines a wrapped sentence
+  continues; keep a trailing hyphen only where the word carries on to the next page.
 
-REPAIR_PROMPT = """The following HTML is the transcription of one page, but it is broken:
+**Attributes on every tag:**
 
-{problems}
+- data-box="ymin,xmin,ymax,xmax": four integers from 0 to 1000 over the whole image, y first.
+- data-furniture="header", "footer" or "page-number" on a running header, footer or page
+  number. Transcribe them; just mark them.
+- data-aside="letterhead", "contact", "bank", "legal" or "signature" on standing matter — the
+  letterhead and practice name, the postal address, telephone, fax, email and web lines, bank
+  details, tax and registration numbers, standard legal notices, the closing signature block.
+  Never mark the substance: findings, diagnoses, history, measurements, the body of the
+  letter, its salutation and its date stay unmarked.
+- data-continues="true" on the page's first tag when it plainly begins in mid-sentence.
 
-Return the same content as valid HTML, changing nothing but the markup: keep every word, every
-attribute (data-box, data-furniture, data-continues) and the order. Use only these tags:
-section, h1-h6, p, ul, ol, li, table, thead, tbody, tr, th, td, figure, figcaption, blockquote,
-pre. Return the HTML alone.
-
-{html}
+Set blank=true and return no html when the page carries nothing at all: an empty sheet, a
+separator, the back of a page, scanner artefacts only. A page with one line on it is not blank.
 """
 
 #: A model that wraps its answer in a fence anyway — strip it rather than fail the page.
@@ -97,8 +82,9 @@ def strip_fence(text: str) -> str:
     return match.group("html") if match else text.strip()
 
 
-def prompt_for(number: int, total: int, tail: str) -> str:
-    return f"Page {number} of {total}.\nLast block of the previous page — {tail}"
+def prompt_for(number: int, total: int) -> str:
+    """The message beside the page image."""
+    return f"Page {number} of {total}."
 
 
 def gemini_box(value: str) -> tuple[float, float, float, float] | None:
@@ -175,29 +161,20 @@ def response_schema() -> types.Schema:
 
 DATING_PROMPT = """You date the information in a document.
 
-Below is one document as HTML. Every tag carries data-nid, its number.
+Below is one document as HTML. Every tag carries data-nid, its number. For each tag that
+states something, say when that information **originates** — the day, month or year it was
+recorded, observed, decided or written — not the dates the text talks about. A note written in
+1943 about the war of 1918 originates in 1943.
 
-**Date every tag that states something.** For each one, say when that information
-**originates**: the day, month or year the content was recorded, observed, decided or written.
-This is not about the dates the text talks *about*. A note written in 1943 about the war of
-1918 originates in 1943. A history taken today that recalls an operation in 2022 originates
-today; only a finding *printed* with its own date originates on that date.
+Take the first that applies: a date printed with the tag itself; the date governing its
+section; the document's own date. In a dated letter that gives nearly every tag a date, most
+of them the document's own. Leave a tag out when no date in the document could govern it.
+Never invent a date the document does not support.
 
-Work out each tag's date in this order, and stop at the first that applies:
-1. a date printed with the tag itself, or at the start of its own line;
-2. the date governing the section or list it sits in;
-3. the document's own date — a letter's dateline, a report's date, the date on the letterhead.
-
-In a dated letter or report that means nearly every tag gets a date, most of them the
-document's own. Leave a tag out only when the document carries no date that could govern it at
-all, or when the tag is a heading with nothing under it yet. Never invent a date the document
-does not support, and never take a date out of a sentence that merely mentions one.
-
-Answer with one entry per tag you can date:
+One entry per tag you can date:
 - nid: the tag's data-nid
-- edtf: the date in EDTF (ISO 8601-2). A day is 1943-05-12, a month 1943-05, a year 1943, a
-  range 1943-05-12/1943-05-20, "before" ../1943-05-12, "after" 1943-05-12/... Never invent
-  precision the document does not give.
+- edtf: EDTF (ISO 8601-2) — a day 1943-05-12, a month 1943-05, a year 1943, a range
+  1943-05-12/1943-05-20, "before" ../1943-05-12, "after" 1943-05-12/... Never invent precision.
 - confidence: 0 to 1, how sure you are that this date governs this tag.
 
 {html}
@@ -230,18 +207,23 @@ def dating_schema() -> types.Schema:
 
 # --- Naming the document -------------------------------------------------------------------------
 
-NAMING_PROMPT = """You name a document.
+NAMING_PROMPT = """You name a document for the folder it is filed in.
 
-Below is one document as HTML. Give it the name a person filing it would write on the tab: what
-kind of document it is, who or what it is about, and when — in its own language, in one line.
+Below is one document as HTML. Give it the label a person would write on the tab of that
+folder, 3 to 8 words on one line, in the document's own language, no trailing punctuation:
 
-- 3 to 8 words, no trailing punctuation, no quotation marks.
-- Take the words from the document. Never invent a fact it does not state.
-- A date belongs in the name when the document is dated; write it as it appears.
-- No file extension, no "Scan of", no "Document about".
+1. what kind of document it is — Arztbrief, Befund, MRT-Befund, OP-Bericht, Laborbefund,
+   Entlassungsbrief, Überweisung, Attest, Rezept, Rechnung, and so on;
+2. its subject in two or three words: the body part, the diagnosis, the procedure, the matter;
+3. who it is from: the specialty, the practice, the clinic or the company.
 
-Examples of the shape: "Arztbrief Orthopädie Kempten, 05.08.2026", "Tagebucheintrag 12. Mai
-1943", "Rechnung Stadtwerke März 2026".
+**Never name the person the folder belongs to** — these are one person's own documents, so the
+patient's or addressee's name says nothing. Name the sender instead. **Leave the date out**; it
+is shown beside the name already. Every word comes from the document: leave a part out rather
+than filling it in. No "Scan of", no file extension.
+
+Examples of the shape: "Arztbrief Orthopädie, Vorfußschmerzen links", "MRT-Befund linker
+Vorfuß, Radiologie Kempten", "OP-Bericht Hallux valgus rechts", "Rechnung Physiotherapie".
 
 {html}
 """

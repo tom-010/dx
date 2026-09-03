@@ -33,13 +33,14 @@ OCR for scans, `apps/documents/ocr/`).
 from __future__ import annotations
 
 import json
+import time
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any, ClassVar
 
 import pypdf
+import structlog
 
 from apps.documents import extraction as tree
 from apps.documents import pipeline
@@ -50,9 +51,32 @@ from apps.documents.extraction import (
     ExtractionError,
     HtmlTree,
 )
-from apps.documents.models import Document, DocumentContent, StructureSource
+from apps.documents.models import Document, DocumentContent, PageState, StructureSource
 from apps.documents.ocr import assembly, gemini_client, page_html, render, run
 from config.env import env
+
+log = structlog.get_logger(__name__)
+
+
+def page_state(page: assembly.PageInput) -> PageState:
+    """A page the extractor read, as the run's state keeps it (`models.ExtractionState`)."""
+    return PageState(
+        number=page.number,
+        width=page.width,
+        height=page.height,
+        html=page.html or "",
+    )
+
+
+def page_input(page: PageState) -> assembly.PageInput:
+    """…and back, for a run that resumes from it. Size and thumbnail are filled in again from
+    the file itself, so what is replayed is only what the extractor was paid for."""
+    return assembly.PageInput(
+        number=page.number,
+        width=page.width,
+        height=page.height,
+        html=page.html,
+    )
 
 
 def snapshot_progress(current: int, total: int) -> None:
@@ -141,15 +165,11 @@ class PagedStrategy(ExtractionStrategy):
     def read(self, document: Document) -> PagesRead:
         """Stage 1: the file, page by page, as semantic HTML."""
 
-    def repair(self, html: str, problems: Sequence[str]) -> str:
-        """A model's chance to fix an unsound document; the default keeps it as it is."""
-        return html
-
     def date(self, html: str) -> dict[int, DateEstimate]:
         """A model's reading of when each node's information originates; empty by default."""
         return {}
 
-    def name(self, html: str) -> str:
+    def name_document(self, html: str) -> str:
         """What to call the finished document; the pipeline falls back to its first heading."""
         return ""
 
@@ -160,8 +180,7 @@ class PagedStrategy(ExtractionStrategy):
             meta=read.meta,
             raw=read.raw,
             raw_mime=read.raw_mime,
-            repair=self.repair,
-            name=self.name,
+            name=self.name_document,
         )
         # The document is addressable now (every tag numbered), so a model can date it node by
         # node before the deterministic stage runs over the result.
@@ -354,20 +373,21 @@ class GeminiOcrStrategy(PagedStrategy):
     go through it. A rebuild (`from_raw=True`) replays the stored per-page HTML without a
     single request.
 
-    An answer that does not parse is repaired by a flash model rather than lost, and a
-    document that is still unsound after that is stored as it is, with the problems recorded
-    in `stats` — a snapshot says what it knows about itself.
+    **A page is read once**: no review round, no repair call. An answer that does not parse
+    cleanly is stored for what it is worth, with the problems recorded in `stats` — a snapshot
+    says what it knows about itself.
 
     No per-word confidence exists here, so `conf_stats` stays NULL; the model is never asked
     to rate itself.
     """
 
     name = "gemini-ocr"
-    #: Bump on any change to the prompt or the page contract: they are the extractor.
-    tool_version = "2"
+    #: Bump the number on any change to the prompt, the page contract or anything else in
+    #: `config`: they are the extractor, and `snapshot.extractor_row` refuses a row that says
+    #: otherwise.
+    tool_version = "5"
     config: ClassVar[dict[str, Any]] = {
         "model": gemini_client.MODEL,
-        "repair_model": gemini_client.REPAIR_MODEL,
         "dpi": render.DPI,
         "prompt_sha256": gemini_client.prompt_sha256(),
         "schema_version": page_html.SCHEMA_VERSION,
@@ -381,14 +401,22 @@ class GeminiOcrStrategy(PagedStrategy):
             if not env.GEMINI_API_KEY:
                 raise ExtractionError("GEMINI_API_KEY is not set (backend/.env)")
             self._reader = gemini_client.GeminiPageReader(
-                env.GEMINI_API_KEY,
-                model=str(self.config["model"]),
-                repair_model=str(self.config["repair_model"]),
+                env.GEMINI_API_KEY, model=str(self.config["model"])
             )
         return self._reader
 
     def read(self, document: Document) -> PagesRead:
         from apps.documents import snapshot  # noqa: PLC0415 - snapshot imports this module
+
+        # The state of this run — the pages an earlier attempt already read included. Every
+        # page goes into it as it comes back, so a run that dies is resumed and not repeated.
+        state = snapshot.run_state()
+
+        def keep(page: assembly.PageInput, png: bytes | None) -> None:
+            """The page that just came back, before spending money on the next one. A failed
+            page is not kept: reading it again is the whole point of the next run."""
+            if page.html is not None:
+                state.record_page(page_state(page))
 
         source = snapshot.rebuild_source()
         if source is not None:
@@ -398,7 +426,14 @@ class GeminiOcrStrategy(PagedStrategy):
             total = render.page_count(data)
             inputs = []
             for page in run.read_document(
-                data, self.reader(), dpi=int(self.config["dpi"]), thumbnails=True
+                data,
+                self.reader(),
+                dpi=int(self.config["dpi"]),
+                thumbnails=True,
+                # Fresh objects, not the state's own: the workers fill in each page's size and
+                # thumbnail on what they are given, and the state is not theirs to write to.
+                existing={number: page_input(p) for number, p in state.pages.items()},
+                on_page=keep,
             ):
                 inputs.append(page)
                 # One request per page is the slow part of this strategy; say how far it got.
@@ -407,19 +442,19 @@ class GeminiOcrStrategy(PagedStrategy):
             raise ExtractionError("the PDF has no pages")
         if all(page.failed for page in inputs):
             raise ExtractionError(f"no page could be read: {inputs[0].error}")
-        pages, problems = assembly.page_contents(inputs, repair=self.repair)
+        pages, problems = assembly.page_contents(inputs)
         return PagesRead(
             pages=pages,
             raw=assembly.raw_payload(inputs),
             meta={"ocr_problems": problems} if problems else {},
         )
 
-    def repair(self, html: str, problems: Sequence[str]) -> str:
-        return self.reader().repair(html, problems)
-
-    def name(self, html: str) -> str:
+    def name_document(self, html: str) -> str:
         """The last call of the run: what this document is, in one line."""
-        return self.reader().name(html)
+        started = time.monotonic()
+        title = self.reader().name(html)
+        log.info("ocr_named", title=title, s=round(time.monotonic() - started, 1))
+        return title
 
     def date(self, html: str) -> dict[int, DateEstimate]:
         """One extra call for the whole document: when does each node's information originate.
@@ -427,8 +462,11 @@ class GeminiOcrStrategy(PagedStrategy):
         What comes back is `INFERRED` — a reading, not a statement — so a printed dateline
         still wins, and a date the parser cannot hold is dropped rather than stored.
         """
+        started = time.monotonic()
         estimates: dict[int, DateEstimate] = {}
-        for nid, (edtf, confidence) in self.reader().date(html).items():
+        answered = self.reader().date(html)
+        log.info("ocr_dated", tags=len(answered), s=round(time.monotonic() - started, 1))
+        for nid, (edtf, confidence) in answered.items():
             try:
                 found = UncertainDate.parse(edtf)
             except InvalidDate:

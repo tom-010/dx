@@ -103,7 +103,7 @@ if TYPE_CHECKING:
     from apps.core.models import VersionedModel
 
 # The tracked field set this code writes. Bump on every change to a tracked model's fields.
-SCHEMA_TAG = "2026-09-02b"
+SCHEMA_TAG = "2026-09-03b"
 # Checked-in snapshot of that field set (manage.py history_schema --write).
 SCHEMA_FILE = BASE_DIR / "history_schema.json"
 
@@ -124,6 +124,11 @@ HISTORY_EXEMPT = {
     # An operational log of what was run (apps/core/usage.py). Rows are written once and never
     # edited, so a version chain over them would only ever mirror the insert.
     "core.CommandRun",
+    # The state of an extraction still in flight (apps/documents/models.py): one row rewritten
+    # once per page read and discarded when the snapshot lands. Versioning it would copy the
+    # whole growing reading into the event table once per page — quadratic in the pages, for a
+    # history the snapshot's `raw_output` already keeps better.
+    "documents.DocumentContentDraft",
 }
 
 

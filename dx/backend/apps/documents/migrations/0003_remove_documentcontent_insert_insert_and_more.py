@@ -6,7 +6,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("documents", "0002_remove_pageregion_region_x_in_unit_and_more"),
     ]

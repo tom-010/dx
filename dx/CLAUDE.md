@@ -63,6 +63,14 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
   `save_example(Note.example())` writes the whole tree (`save_deep(obj, operation=…, sources=…)`
   in `apps/core/save_deep.py` for any hand-built one) — `manage.py check_examples` proves every
   model still has a saveable one. Writing them: `.claude/skills/model-examples`.
+- **The timeline is a projection, written by the app that owns the data**: a feature declares an
+  `EventType` in its `timeline_events.py` and calls `timeline.record(key, obj)` / `remove(obj)`
+  where it writes, so a rename updates the same card (`record` is an upsert); the SPA's own
+  registry decides the icon and where a click goes — `.claude/rules/backend-layout.md`.
+- **Notifications are the same pattern, addressed to a person**: a feature declares a
+  `NotificationType` in its `notification_types.py` and calls `notifications.notify(key, obj)` /
+  `remove(obj)`; the row carries `title`, an optional `description` and `read_at`, and there is
+  no rebuild — a message belongs to a moment, so it records no lineage either.
 
 ## Where the detail lives
 
@@ -111,7 +119,8 @@ Other little ideas:
 
 | Task                 | Command                                                     |
 |----------------------|-------------------------------------------------------------|
-| Start dev Postgres+Redis+S3 | `./scripts/db.sh` (`down`, `logs -f`, … are passed through); creates the media bucket |
+| Start dev Postgres+PgBouncer+Redis+S3 | `./scripts/db.sh` (`down`, `logs -f`, … are passed through); creates the media bucket |
+| PgBouncer pools     | `./scripts/db.sh exec -e PGPASSWORD=pgbouncer pgbouncer psql -h 127.0.0.1 -p 6432 -U pgbouncer pgbouncer -c 'SHOW POOLS'` (`SHOW CLIENTS`, `SHOW STATS`); only the web process is pooled (`DB_POOLED`, `serve.sh`) — workers, commands, tests connect to :5432 directly |
 | S3 console          | http://localhost:9101 (dx / dxdxdxdx) · `manage.py ensure_bucket` (media + backup bucket, idempotent) |
 | Celery worker (alone)| `./scripts/celery.sh` (auto-reloads like runserver; `worker` = no reload, `beat`, `flower`, `purge`, `ping`); `serve.sh` already starts it — use this to run it separately; log: `logs/celery.log` |
 | Run Django + worker  | `./scripts/serve.sh` (Django :8000 **and** the Celery worker in one terminal; `PORT=…`, `WORKER=0` = Django only); logs: `logs/backend.log`, `logs/celery.log` |
@@ -134,8 +143,10 @@ Other little ideas:
 | Why any of this      | `docs/history_lineage_delete_tenants.md` (lineage → history → soft delete → tenancy, in that order) |
 | What a write records | `docs/history_lineage_what_is_recorded.md` (version, edge, function source, request — every column and the mechanism behind it) |
 | Soft delete API      | `docs/soft-delete.md` (delete, read, restore, cascade, the one escape hatch) |
+| DB connections       | `docs/db-connections.md` (who holds a connection per process, the runserver + `DB_CONN_MAX_AGE` leak, how to read `pg_stat_activity` against host pids) |
 | Snapshot housekeeping | `DB_ROLE=migrator manage.py prune_contents [--days N] [--keep-latest] [--dry-run]` (retire old non-current extraction snapshots) · `DB_ROLE=migrator manage.py gc_blobs [--dry-run]` (retire blobs nothing references); both soft-delete — `apps/documents/ops.py` |
 | OCR iteration loop   | `cd backend && uv run python manage.py ocr extract FILE.pdf --out out/ --pages 1-3` (pdfium → Gemini → `out/raw/`; needs `GEMINI_API_KEY`; **synthetic/redacted pages only until the legal basis for real records is confirmed**) · `ocr assemble --out out/` (raw → `content.html`, `content.txt`, `nodes.json`, `preview/`) · `ocr run FILE.pdf` = both; `apps/documents/ocr/` |
+| Rebuild the timeline | `cd backend && uv run python manage.py rebuild_timeline [--type KEY] [--user NAME] [--dry-run]` (recomputes `apps/timeline`'s projection from the rows it projects; run once after deploying a new event type) |
 | Lineage demo data    | `cd backend && uv run python manage.py lineage_demo [--clean]` (builds 11 lineage shapes out of ModelA/ModelB — chain, merge, split, diamond, feedback, rebuild, erased, hub, churn, restore, moving — and prints an explorer link per shape) |
 | Lineage explorer     | http://127.0.0.1:8000/explorer/ (dev only, staff session): pick a user → models → rows → one row's versions and lineage (`apps/core/explorer.py`) |
 | Health / readiness   | `curl http://127.0.0.1:8000/api/health` (liveness) · `/api/ready` (503 + failing checks; see `.claude/rules/health-checks.md`) |

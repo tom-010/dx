@@ -34,6 +34,15 @@ rebuild: `start_extraction(document, from_raw=True)` queues a run whose PENDING 
 points at the previous `raw_output`, and a strategy that can `reproject()` from it skips the
 extractor (`rebuild_source()`); the result is a new snapshot and a normal flip.
 
+Resuming: an OCR run costs one request per page and can take half an hour, so the whole state
+of the computation lives in **one object** the run shares between its threads and stores as it
+grows (`run_state()` → `RunState`, holding a `models.ExtractionState`). A run that dies on
+page 27 leaves the 26 pages it read in its `DocumentContentDraft` row, and the next run —
+"Read again" in the UI, `POST …/reextract`, a redelivered task — starts from them and reads
+only the rest. A stored state the current code cannot read is discarded rather than repaired
+(`stored_state`), and writing a snapshot discards it too (`discard_draft`): from then on the
+row's `raw_output` is the record of what the extractor said.
+
 Offsets are Python codepoint offsets, end-exclusive. JavaScript counts UTF-16 units: a
 frontend that highlights must convert at the API boundary, not in the client.
 """
@@ -42,22 +51,27 @@ from __future__ import annotations
 
 import hashlib
 import html
+import threading
 import uuid
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING
 
 import nh3
 import structlog
+from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile, File
 from django.core.files.storage import default_storage
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.utils import timezone
+from pydantic import ValidationError as PydanticValidationError
 
 from apps.core.history import history_context
 from apps.core.lineage import deriving
+from apps.core.models import OwnedQuerySet
 from apps.documents import dating
 from apps.documents.dating import DateEstimate
 from apps.documents.extraction import ExtractedNode, ExtractedPage, ExtractedRegion, Extraction
@@ -74,17 +88,22 @@ from apps.documents.models import (
     Dated,
     Document,
     DocumentContent,
+    DocumentContentDraft,
+    ExtractionState,
     ExtractionStatus,
     Extractor,
     Node,
     Page,
     PageRegion,
+    PageState,
     Point,
     blob_upload_path,
     content_switched,
     envelope_of,
 )
 from apps.documents.ocr import render as page_images
+from apps.documents.timeline_events import DOCUMENT_UPLOADED
+from apps.timeline import services as timeline
 
 if TYPE_CHECKING:
     from apps.documents.strategies import ExtractionStrategy
@@ -95,6 +114,10 @@ log = structlog.get_logger(__name__)
 OPERATION = "extract document"
 #: Longest `DocumentContent.error` kept.
 ERROR_LIMIT = 4000
+#: A RUNNING row nothing has touched for this long is taken to be dead (`is_stale`). Long
+#: enough to outlast the stages that store nothing — the naming and dating calls — and short
+#: enough that a document whose worker was restarted is not stuck for an afternoon.
+STALE_RUN = timedelta(minutes=15)
 #: `Node.title` column width.
 TITLE_LIMIT = 1000
 #: Coordinates this far outside [0, 1] are clamped; further out is an extractor bug.
@@ -122,6 +145,16 @@ def sha256_of(file: File[bytes]) -> tuple[str, int]:
         size += len(chunk)
     file.seek(0)
     return digest.hexdigest(), size
+
+
+def md5_of(file: File[bytes]) -> str:
+    """The upload's MD5, streamed; the file is rewound afterwards. Not a security claim — it
+    is what a person can reproduce with `md5sum` (`Document.md5`)."""
+    digest = hashlib.md5(usedforsecurity=False)
+    for chunk in file.chunks(HASH_CHUNK):
+        digest.update(chunk)
+    file.seek(0)
+    return digest.hexdigest()
 
 
 def store_blob(owner_id: uuid.UUID, file: File[bytes], mime_type: str) -> Blob:
@@ -156,9 +189,21 @@ def store_bytes(owner_id: uuid.UUID, data: bytes, mime_type: str) -> Blob:
 
 
 def extractor_row(strategy: ExtractionStrategy) -> Extractor:
-    """The tenant's row for a strategy at its current version, created on first use."""
+    """The tenant's row for a strategy at its current version, created on first use.
+
+    A version is a promise: two snapshots made by `gemini-ocr 4` were made the same way. So a
+    strategy whose `config` has moved while its `tool_version` stayed put is refused here
+    rather than recorded under the old row's config — the alternative is a snapshot that names
+    a model it was not read by, which is worse than a failed run and much harder to notice.
+    """
     found = Extractor.objects.filter(name=strategy.name, tool_version=strategy.tool_version).first()
     if found is not None:
+        if found.config != dict(strategy.config):
+            raise SnapshotError(
+                f"{strategy.name} {strategy.tool_version} is already on record with a different "
+                f"configuration ({found.config} vs {dict(strategy.config)}) — bump its "
+                "tool_version, because this is a different extractor"
+            )
         return found
     return Extractor.create(
         operation=None,
@@ -171,6 +216,40 @@ def extractor_row(strategy: ExtractionStrategy) -> Extractor:
 
 class NothingToRebuildFrom(LookupError):
     """`from_raw=True`, but no snapshot of the document kept an extractor output."""
+
+
+def heartbeat(content: DocumentContent) -> datetime:
+    """When this run last showed a sign of life — its own row, or the state it is storing.
+
+    A run stores every page it reads (`RunState`), so a live run touches something every few
+    seconds; between the last page and the snapshot sit the document-level model calls, which
+    are a minute at most.
+    """
+    stored = _draft_rows(content).values_list("modified", flat=True).first()
+    return max(content.modified, stored) if stored is not None else content.modified
+
+
+def is_stale(content: DocumentContent) -> bool:
+    """Whether a run has stopped: RUNNING, and nothing has touched it for `STALE_RUN`.
+
+    A worker that is restarted, killed or redeployed mid-run leaves its row RUNNING forever,
+    and a row like that would otherwise make the document unretryable — a queued run returns
+    *it* rather than starting. Only RUNNING is judged this way: a PENDING row may simply be
+    waiting behind a long job, and re-queueing that one would pay for the same document twice.
+    """
+    if content.status != ExtractionStatus.RUNNING:
+        return False
+    return heartbeat(content) < timezone.now() - STALE_RUN
+
+
+def abandon(content: DocumentContent) -> None:
+    """Close a run whose worker is gone, so another can take its place. Its draft is left
+    exactly where it is: what it managed to read is what the next run starts from."""
+    log.warning("extraction_abandoned", content_id=str(content.pk), started=str(content.started_at))
+    content.status = ExtractionStatus.FAILED
+    content.error = "the worker did not finish this run"
+    content.finished_at = timezone.now()
+    content.save(operation=None, sources=[], update_fields=["status", "error", "finished_at"])
 
 
 def _pending_row(
@@ -191,7 +270,9 @@ def _pending_row(
         status__in=[ExtractionStatus.PENDING, ExtractionStatus.RUNNING],
     ).first()
     if queued is not None:
-        return queued
+        if not is_stale(queued):
+            return queued
+        abandon(queued)  # its worker is gone; this run takes over, draft and all
     return DocumentContent.create(
         operation=None,
         sources=[],
@@ -259,6 +340,143 @@ def rebuild_source() -> tuple[bytes, str] | None:
     if content is None or content.raw_output is None:
         return None
     return content.raw_output.read_bytes(), content.raw_output.mime_type
+
+
+# --- Work in flight: the state of a run, kept across runs ----------------------------------------
+
+
+class RunState:
+    """**The one object a run works on**, and the one the next run picks up.
+
+    It holds an `ExtractionState` (the whole computation so far), the lock every thread of the
+    run goes through to touch it, and the row it is stored in. `record_page` is how a strategy
+    hands one page's reading over; the state is written to the database each time, so a run
+    that dies at any point leaves everything up to that page behind.
+
+    **The database write happens on the thread that calls `record_page`, and that must be the
+    run's own thread.** A connection is per thread and the worker pins its tenant on the
+    connection (`apps/core/tasks.py`), so a write from a rendering worker would open a second,
+    tenant-less connection and be refused by row-level security. `ocr.run.read_document`
+    guarantees this by calling `on_page` on the consuming thread; the lock is what makes the
+    *object* safe for the workers that read it while that happens.
+
+    A holder with no row (outside a run, or a strategy that stores nothing) keeps the state in
+    memory and writes nothing, so a strategy may use it unconditionally.
+    """
+
+    def __init__(self, state: ExtractionState, row: DocumentContentDraft | None = None) -> None:
+        self._lock = threading.RLock()
+        self._state = state
+        self._row = row
+
+    @property
+    def pages(self) -> dict[int, PageState]:
+        """The pages already read — a copy, so a caller may iterate it while a run writes."""
+        with self._lock:
+            return dict(self._state.pages)
+
+    def record_page(self, page: PageState) -> None:
+        """One page has been read: put it in the state and store the state."""
+        with self._lock:
+            if self._state.pages.get(page.number) == page:
+                return  # a replayed page says nothing new; do not rewrite the row for it
+            self._state.pages[page.number] = page
+            self._store()
+
+    def _store(self) -> None:
+        """Write the state out. **A run is never lost over its scratch**: a state that cannot
+        be stored costs the *next* run the pages it would have skipped, while letting the
+        exception out would throw away the reading this run has already paid for. Its own
+        savepoint, so the failure does not poison a transaction the caller is inside; and the
+        row is let go afterwards, because one broken write per run is enough to learn from."""
+        if self._row is None:
+            return
+        self._row.state = self._state
+        try:
+            with transaction.atomic():
+                self._row.save(operation=None, sources=[], update_fields=["state"])
+        except DatabaseError as exc:
+            log.warning("draft_not_stored", error=str(exc)[:300])
+            self._row = None
+
+
+def _draft_rows(content: DocumentContent) -> OwnedQuerySet[DocumentContentDraft]:
+    """The draft of this run's bytes read by this run's extractor — an earlier run's as much
+    as this one's; that is the point."""
+    return DocumentContentDraft.objects.filter(
+        document_id=content.document_id,
+        blob_id=content.blob_id,
+        extractor_id=content.extractor_id,
+    )
+
+
+def stored_state(content: DocumentContent) -> ExtractionState | None:
+    """The state an earlier run left for this one, or None — including when what is stored
+    cannot be read.
+
+    A stored state the current code would misread is **discarded, not repaired**: an older
+    `SCHEMA_VERSION`, a field that changed shape, a row somebody edited. It is scratch, and
+    reading the document again is always correct — only slower and dearer, which is the right
+    way round for a wrong answer. The column is fetched by primary key so that a state which
+    fails validation fails *here*, where it can be thrown away, rather than in a query
+    somewhere that only wanted to count pages.
+    """
+    row_id = _draft_rows(content).values_list("pk", flat=True).first()
+    if row_id is None:
+        return None
+    try:
+        state = DocumentContentDraft.objects.get(pk=row_id).state
+        if state.schema_version != ExtractionState.SCHEMA_VERSION:
+            raise ValueError(f"schema version {state.schema_version}")
+    # django-pydantic-field wraps pydantic's error in Django's on the way out of the column;
+    # the pydantic one is what a direct `model_validate` would raise.
+    except (ValidationError, PydanticValidationError, ValueError, TypeError) as exc:
+        log.warning("draft_discarded", document_id=str(content.document_id), error=str(exc)[:300])
+        _retire(_draft_rows(content).filter(pk=row_id))
+        return None
+    return state
+
+
+def run_state() -> RunState:
+    """The state the running strategy works on: what an earlier run left, or a fresh one.
+
+    Outside a run it is a holder that stores nothing, so a strategy may call this
+    unconditionally (`extract_now` in a shell, `manage.py ocr`, a test).
+    """
+    content = _running.get()
+    if content is None:
+        return RunState(ExtractionState())
+    try:
+        with transaction.atomic():
+            state = stored_state(content) or ExtractionState()
+            row = _draft_rows(content).first() or DocumentContentDraft.create(
+                operation=None,
+                sources=[],
+                document_id=content.document_id,
+                blob_id=content.blob_id,
+                extractor_id=content.extractor_id,
+                state=state,
+            )
+    except DatabaseError as exc:
+        # Same rule as `RunState._store`: not being able to keep scratch is not a reason to
+        # refuse to read the document.
+        log.warning("draft_unavailable", document_id=str(content.document_id), error=str(exc)[:300])
+        return RunState(ExtractionState())
+    return RunState(state, row)
+
+
+def discard_draft(content: DocumentContent) -> None:
+    """Drop the draft a written snapshot makes redundant: from here on the run's `raw_output`
+    holds the same reading."""
+    _retire(_draft_rows(content))
+
+
+def _retire(rows: OwnedQuerySet[DocumentContentDraft]) -> None:
+    """Soft-delete drafts *and empty them* in one statement. Deletes are soft in this project,
+    and a retired scratch row that kept its state would be a second copy of a reading the
+    snapshot already stores — storage paid for nothing. There is no history to lose: this
+    table is deliberately not versioned (`apps/core/history.py::HISTORY_EXEMPT`)."""
+    rows.update(state=ExtractionState(), deleted_at=timezone.now())
 
 
 def run_extraction(
@@ -355,6 +573,13 @@ def write_extraction(
         if extraction.raw is not None
         else content.raw_output  # a rebuild keeps what it was rebuilt from
     )
+    # Kept on the row *before* the snapshot is built, so that a build the extractor's output
+    # does not survive (a contract violation, a bug in here) still leaves that output on the
+    # failed row: `start_extraction(from_raw=True)` then rebuilds from it instead of asking
+    # the extractor — and an OCR read that was paid for once is paid for once.
+    if raw is not None and content.raw_output_id != raw.pk:
+        content.raw_output = raw
+        content.save(operation=None, sources=[], update_fields=["raw_output"])
     write_snapshot(content, extraction, raw_output=raw)
     return content
 
@@ -365,10 +590,12 @@ def write_extraction(
 @dataclass
 class _Region:
     page: int
-    x0: float
-    y0: float
-    x1: float
-    y1: float
+    #: None all four when the extractor knows the page but not the place on it: an OCR model
+    #: that returned a tag without `data-box` still says which sheet it read the words off.
+    x0: float | None
+    y0: float | None
+    x1: float | None
+    y1: float | None
     ring: list[Point] | None
     text_start: int | None
     text_end: int | None
@@ -518,6 +745,7 @@ def _region(node: _Planned, item: ExtractedRegion, pages: set[int], text: str) -
             "page for"
         )
     ring: list[Point] | None = None
+    x0 = y0 = x1 = y1 = None
     if item.ring is not None:
         if len(item.ring) < 3:
             raise SnapshotError(f"node #{node.nid}: a polygon needs at least 3 points")
@@ -525,10 +753,9 @@ def _region(node: _Planned, item: ExtractedRegion, pages: set[int], text: str) -
         x0, y0, x1, y1 = envelope_of(ring)
     elif item.envelope is not None:
         x0, y0, x1, y1 = (_unit(v, "envelope") for v in item.envelope)
-    else:
-        raise SnapshotError(f"node #{node.nid}: a region needs a polygon or an envelope")
-    if x0 > x1 or y0 > y1:
-        raise SnapshotError(f"node #{node.nid}: envelope ({x0}, {y0}, {x1}, {y1}) is inverted")
+    if x0 is not None and y0 is not None and x1 is not None and y1 is not None:
+        if x0 > x1 or y0 > y1:
+            raise SnapshotError(f"node #{node.nid}: envelope ({x0}, {y0}, {x1}, {y1}) is inverted")
     length = node.text_end - node.text_start
     start = end = None
     if item.span is not None:
@@ -602,6 +829,10 @@ def _render(node: _Planned, out: list[str]) -> None:
         attrs += f' data-pages="{",".join(str(p) for p in sorted(node.pages))}"'
     if node.date is not None:
         attrs += f' data-date="{html.escape(node.date.date.edtf, quote=True)}"'
+    if node.item.aside is not None:
+        # Standing matter stays in the artifact and says what it is; a reader is shown it
+        # only on request (`.document-html` in the SPA's stylesheet).
+        attrs += f' data-aside="{html.escape(node.item.aside, quote=True)}"'
     out.append(f"<{item.tag}{attrs}>")
     if item.table_html is not None:
         out.append(item.table_html)  # the extractor's own cell markup; nh3 checks it
@@ -865,6 +1096,9 @@ def write_snapshot(
         content.title = extraction.title[:500]
         content.set_date(report.content)
         content.save(operation=None, sources=None)
+        # The reading is stored now, `raw_output` and all: the state the run kept in order to
+        # survive an interruption has nothing left to survive.
+        discard_draft(content)
 
         pages = Page.objects.bulk_create(
             _dated(
@@ -975,6 +1209,10 @@ def switch_current(document: Document, new: DocumentContent) -> None:
         document.meta = locked.meta
         document.thumbnail = locked.thumbnail
         document.version = locked.version
+        # The extraction may have given the document its real title and its first pages, both
+        # of which the timeline card shows: record again so the card says what the document
+        # now says. Same row, same id — `record` is an upsert (`apps/timeline/services.py`).
+        timeline.record(DOCUMENT_UPLOADED, locked)
         content_switched.send(sender=Document, document=locked, content=new, previous=previous)
 
 

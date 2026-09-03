@@ -1,3 +1,8 @@
+/**
+ * Liveness and readiness as the SPA sees them — a dev dashboard, not part of the product.
+ * It moved off `/` when the timeline became the home page; nothing links to it, so it is
+ * reached by typing `/health`.
+ */
 import { createFileRoute } from "@tanstack/react-router";
 import type { JSX } from "react";
 import { useHealthCheck, useReady } from "@/api/core/core";
@@ -13,11 +18,11 @@ import {
 import { ApiError, errorMessage } from "@/lib/custom-fetch";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/")({
-  component: HomePage,
+export const Route = createFileRoute("/health")({
+  component: HealthPage,
 });
 
-function HomePage(): JSX.Element {
+function HealthPage(): JSX.Element {
   // Generated from the OpenAPI spec (orval): typed fetchers + TanStack Query hooks.
   const health = useHealthCheck();
   const ready = useReady();

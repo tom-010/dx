@@ -10,8 +10,9 @@ import {
   useNavigate,
 } from "@tanstack/react-router";
 import {
+  Bell,
+  CalendarClock,
   FileText,
-  House,
   Images,
   ListChecks,
   NotebookPen,
@@ -19,6 +20,10 @@ import {
 } from "lucide-react";
 import { type JSX, useEffect } from "react";
 import { logout as logoutRequest, useGetCurrentUser } from "@/api/auth/auth";
+import {
+  getCountUnreadNotificationsQueryKey,
+  useCountUnreadNotifications,
+} from "@/api/notifications/notifications";
 import { Button } from "@/components/ui/button";
 import {
   getAccessToken,
@@ -42,9 +47,10 @@ export const Route = createRootRoute({
 });
 
 // The same six destinations twice over: a tab bar under the thumb on phones, a row of
-// links in the header from md up. The icon is only ever shown in the tab bar.
+// links in the header from md up. The icon is only ever shown in the tab bar. The home page
+// is the timeline, so it is named for what it shows rather than for where it sits.
 const navItems = [
-  { to: "/", label: "Home", exact: true, icon: House },
+  { to: "/", label: "Timeline", exact: true, icon: CalendarClock },
   { to: "/datasets", label: "Datasets", exact: false, icon: Table2 },
   { to: "/documents", label: "Documents", exact: false, icon: FileText },
   { to: "/gallery", label: "Gallery", exact: false, icon: Images },
@@ -105,6 +111,7 @@ function RootLayout(): JSX.Element {
               </Button>
             ))}
           </nav>
+          <NotificationBell />
           <UserMenu />
         </div>
       </header>
@@ -147,6 +154,45 @@ function TabBar(): JSX.Element {
   );
 }
 
+/**
+ * The bell, with a dot when something is unread.
+ *
+ * It polls its own tiny endpoint (`GET /api/notifications/unread-count`) rather than the
+ * inbox: the header is on every page, and the number is the only part of a message the header
+ * shows. Reading something invalidates this key, so the dot clears without a round trip.
+ */
+function NotificationBell(): JSX.Element {
+  const unread = useCountUnreadNotifications({
+    query: {
+      queryKey: getCountUnreadNotificationsQueryKey(),
+      refetchInterval: 60_000,
+    },
+  });
+  const count = unread.data?.unread ?? 0;
+
+  return (
+    <Button variant="ghost" size="sm" asChild className="ml-auto relative">
+      <Link
+        to="/notifications"
+        aria-label={
+          count > 0 ? `Notifications, ${count} unread` : "Notifications"
+        }
+        activeProps={{ className: "bg-accent text-accent-foreground" }}
+      >
+        <Bell className="size-5" aria-hidden="true" />
+        {count > 0 && (
+          <span
+            className="-top-0.5 -right-0.5 absolute flex min-w-4 items-center justify-center rounded-full bg-primary px-1 font-medium text-[0.625rem] text-primary-foreground tabular-nums"
+            aria-hidden="true"
+          >
+            {count > 99 ? "99+" : count}
+          </span>
+        )}
+      </Link>
+    </Button>
+  );
+}
+
 function UserMenu(): JSX.Element {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -164,7 +210,7 @@ function UserMenu(): JSX.Element {
   }
 
   return (
-    <div className="ml-auto flex min-w-0 items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2">
       {me.data && (
         <span className="truncate text-muted-foreground text-sm">
           {me.data.username}

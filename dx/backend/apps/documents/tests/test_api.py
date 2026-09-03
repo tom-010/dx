@@ -54,6 +54,43 @@ def test_upload_stores_files_and_queues_an_extraction(
     assert {d["title"] for d in listed.json()["items"]} == {"a.fake", "b.fake"}
 
 
+def test_a_file_already_in_the_library_is_not_filed_twice(
+    auth_client: Client,
+    user: User,
+    fake: FakeStrategy,
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+) -> None:
+    """The upload's MD5 is the tenant's answer to "do I already hold this?": the same bytes
+    again give back the document that is already there, under any name, and buy no second
+    extraction of them."""
+    with django_capture_on_commit_callbacks(execute=True):
+        first = auth_client.post("/api/documents/upload", {"files": [_file("a.fake")]})
+    document_id = first.json()[0]["id"]
+
+    with django_capture_on_commit_callbacks(execute=True):
+        again = auth_client.post("/api/documents/upload", {"files": [_file("renamed.fake")]})
+
+    assert again.status_code == 201, again.content
+    assert [d["id"] for d in again.json()] == [document_id]
+    assert again.json()[0]["title"] == "a.fake"  # the name it was filed under, not the new one
+    with acting_as(user):
+        assert Document.objects.count() == 1
+        assert DocumentContent.objects.count() == 1  # extracted once, not twice
+    assert auth_client.get("/api/documents").json()["count"] == 1
+
+
+def test_the_same_bytes_under_two_owners_are_two_documents(
+    auth_client: Client, user: User, other_user: User, fake: FakeStrategy
+) -> None:
+    """The md5 is unique per tenant, not globally: one person's file says nothing about
+    another's library."""
+    with acting_as(user):
+        (mine,) = store_documents(user, [_file()])
+    with acting_as(other_user):
+        (theirs,) = store_documents(other_user, [_file()])
+    assert mine.md5 == theirs.md5 and mine.pk != theirs.pk
+
+
 def test_the_extraction_runs_once_the_upload_commits(
     auth_client: Client,
     user: User,
@@ -66,7 +103,7 @@ def test_the_extraction_runs_once_the_upload_commits(
 
     body = auth_client.get(f"/api/documents/{document_id}").json()
     assert body["status"] == "succeeded" and body["page_count"] == 2
-    assert body["meta"] == {"title": "Annual report"}
+    assert body["meta"] == {"title": "Annual report", "filename": "report.fake"}
 
     content = auth_client.get(f"/api/documents/{document_id}/content").json()
     assert content["status"] == "succeeded"
@@ -76,16 +113,21 @@ def test_the_extraction_runs_once_the_upload_commits(
     assert content["text"].startswith("Annual report")
     assert content["page_count"] == 2
     assert content["confidence"]["n"] == 8
+    # Writing the snapshot discarded what the run kept page by page (`DraftPage`).
+    assert content["resumable_pages"] == 0
     assert content["outline"] == [{"nid": 2, "tag": "h1", "level": 1, "title": "Annual report 😀"}]
 
 
 def test_upload_deduplicates_identical_files(auth_client: Client, user: User) -> None:
+    """The same bytes twice in one batch: one document and one blob, and the batch still
+    answers once per file it was given."""
     response = auth_client.post(
         "/api/documents/upload", {"files": [_file("one.fake"), _file("two.fake")]}
     )
     assert response.status_code == 201
+    assert len({d["id"] for d in response.json()}) == 1
     with acting_as(user):
-        assert Document.objects.count() == 2
+        assert Document.objects.count() == 1
         assert Blob.objects.count() == 1
 
 
@@ -306,6 +348,18 @@ def test_the_page_list_describes_every_page_with_its_images(
         auth_client.get(f"/api/documents/{document.pk}/pages/1").json()["image_url"]
         == (body[0]["image_url"])
     )
+
+
+def test_the_page_list_comes_back_in_page_order(auth_client: Client, user: User) -> None:
+    """The list carries a region count, and an aggregate throws the model's ordering away —
+    so the endpoint says the order it means. Eight pages: two came back sorted by luck."""
+    document = upload(user, "long.pdf", text_pdf(8), "application/pdf")
+    with acting_as(user):
+        snapshot.extract_now(document, strategies.PdfStrategy())
+
+    listed = auth_client.get(f"/api/documents/{document.pk}/pages").json()
+
+    assert [page["number"] for page in listed] == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
 def test_a_page_image_is_rendered_from_the_pdf_behind_a_signed_link(

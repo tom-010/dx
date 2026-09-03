@@ -9,19 +9,27 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Sequence
+import threading
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
+from django.db import ProgrammingError, connection
 from PIL import Image
 
 from apps.accounts.models import User
 from apps.core.testing import acting_as
-from apps.documents import pipeline, snapshot, strategies
+from apps.documents import api, pipeline, snapshot, strategies
 from apps.documents.dating import DateSource
 from apps.documents.management.commands import ocr as ocr_command
-from apps.documents.models import ExtractionStatus
+from apps.documents.models import (
+    Document,
+    DocumentContentDraft,
+    ExtractionState,
+    ExtractionStatus,
+)
 from apps.documents.ocr import gemini_client, page_html, render, run
 from apps.documents.ocr.assembly import PageInput, page_contents, raw_payload
 from apps.documents.ocr.gemini_client import PageFailed
@@ -321,8 +329,8 @@ def test_empty_and_failed_pages_are_kept_as_pages_and_nothing_else() -> None:
 
 
 class StubReader:
-    """Answers from the fixture; the pages named in `fail` refuse. Repairs by closing every
-    tag the reviewer complained about — enough to prove the repair path is wired."""
+    """Answers from the fixture; the pages named in `fail` refuse, the pages named in `broken`
+    come back with markup outside the vocabulary."""
 
     def __init__(
         self,
@@ -331,15 +339,18 @@ class StubReader:
         fail: frozenset[int] = frozenset(),
         broken: frozenset[int] = frozenset(),
     ) -> None:
+        # `calls` records *that* a page was sent, not in which order: `run.read_document` reads
+        # pages in parallel, so the threads append as they get there.
         self.pages = {page.number: page for page in pages}
         self.fail = fail
         self.broken = broken
         self.calls: list[int] = []
-        self.repairs: list[str] = []
         self.dated: list[str] = []
         self.dates: dict[int, tuple[str, float]] = {}
+        self.named: list[str] = []
+        self.title = ""
 
-    def read(self, png: bytes, number: int, total: int, tail: str) -> str:
+    def read(self, png: bytes, number: int, total: int) -> str:
         self.calls.append(number)
         assert png.startswith(b"\x89PNG") and total >= number
         if number in self.fail:
@@ -351,15 +362,15 @@ class StubReader:
             html.replace("<p ", "<paragraph ").replace("</p>", "</paragraph>")
             if number in self.broken
             else html
-        )  # noqa: E501
-
-    def repair(self, html: str, problems: Sequence[str]) -> str:
-        self.repairs.append(html)
-        return html.replace("<paragraph", "<p").replace("</paragraph>", "</p>")
+        )
 
     def date(self, html: str) -> dict[int, tuple[str, float]]:
         self.dated.append(html)
         return dict(self.dates)
+
+    def name(self, html: str) -> str:
+        self.named.append(html)
+        return self.title
 
 
 @pytest.mark.django_db
@@ -371,7 +382,7 @@ def test_the_strategy_writes_a_snapshot_and_a_failed_page_makes_it_partial(user:
     with acting_as(user):
         content = snapshot.extract_now(document, strategy)
         assert content.status == ExtractionStatus.PARTIAL, content.error
-        assert reader.calls == [1, 2]
+        assert sorted(reader.calls) == [1, 2]
         assert content.stats["pipeline"]["failed_pages"] == [2]
         assert content.stats["failed_pages"] == [2]
         assert [p.number for p in content.pages.all()] == [1, 2]  # the failed page exists
@@ -393,19 +404,159 @@ def test_the_strategy_writes_a_snapshot_and_a_failed_page_makes_it_partial(user:
         assert "no page could be read" in everything_fails.error
 
 
+class DyingReader(StubReader):
+    """A reader whose connection drops on one page — the run fails as a whole, which is what
+    a `ReadTimeout` half way through a long scan looks like."""
+
+    def __init__(self, pages: list[PageInput], *, dies_on: int) -> None:
+        super().__init__(pages)
+        self.dies_on = dies_on
+
+    def read(self, png: bytes, number: int, total: int) -> str:
+        if number == self.dies_on:
+            self.calls.append(number)
+            raise TimeoutError("the read operation timed out")
+        return super().read(png, number, total)
+
+
+def draft_of(document: Document) -> DocumentContentDraft:
+    return DocumentContentDraft.objects.get(document=document)
+
+
+def plant(draft_id: uuid.UUID, state: str) -> None:
+    """Put a state the current code cannot read into a draft row, past every check the ORM
+    and pydantic would apply — what a row written by an older build looks like."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "UPDATE documents_documentcontentdraft SET state = %s::jsonb WHERE id = %s",
+            [state, str(draft_id)],
+        )
+
+
 @pytest.mark.django_db
-def test_an_unsound_document_is_repaired_before_it_is_stored(user: User) -> None:
+def test_a_run_that_dies_keeps_its_state_and_the_next_one_reads_only_the_rest(user: User) -> None:
+    """The point of the draft: "Read again" after a failure pays for the missing pages only."""
+    fixture = load_pages()[:2]
+    document = upload(user, "scan.pdf", synthetic_pdf(2), "application/pdf")
+    with acting_as(user):
+        dying = DyingReader(fixture, dies_on=2)
+        failed = snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=dying))
+        assert failed.status == ExtractionStatus.FAILED
+        assert "timed out" in failed.error and dying.calls == [1, 2]
+        # Page 1 was already back when the connection dropped, so the state holds it — and
+        # only it: a page the model refused is read again rather than remembered as failed.
+        state = draft_of(document).state
+        assert list(state.pages) == [1] and state.pages[1].html == fixture[0].html
+        assert state.schema_version == ExtractionState.SCHEMA_VERSION
+        assert api.resumable_pages(failed) == 1
+
+        again = StubReader(fixture)
+        content = snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=again))
+        assert content.status == ExtractionStatus.SUCCEEDED, content.error
+        assert again.calls == [2]  # the page that was missing, and nothing else
+        assert content.raw_output is not None
+        stored = json.loads(content.raw_output.read_bytes())
+        assert [p["number"] for p in stored["pages"]] == [1, 2]  # the resumed page replayed
+        assert not any(p.get("failed") for p in stored["pages"])
+        # The snapshot is written, so the state it was assembled from is discarded — retired
+        # and emptied, since `raw_output` now holds the same reading.
+        assert not DocumentContentDraft.objects.filter(document=document).exists()
+        retired = DocumentContentDraft.all_objects.get(document=document)
+        assert retired.deleted_at is not None and retired.state.pages == {}
+        assert api.resumable_pages(content) == 0
+
+
+@pytest.mark.django_db
+def test_a_page_the_model_refused_is_read_again_by_the_next_run(user: User) -> None:
+    """A failed page never enters the state: the next run is the chance to read it again."""
+    fixture = load_pages()[:2]
+    document = upload(user, "scan.pdf", synthetic_pdf(2), "application/pdf")
+    with acting_as(user):
+        reader = DyingReader(fixture, dies_on=2)
+        reader.fail = frozenset({1})  # page 1 refused before page 2 dropped the connection
+        run_failed = snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=reader))
+        assert run_failed.status == ExtractionStatus.FAILED
+        assert draft_of(document).state.pages == {}
+
+
+@pytest.mark.django_db
+def test_a_stored_state_this_code_cannot_read_is_discarded_and_the_run_starts_fresh(
+    user: User,
+) -> None:
+    """Scratch is never repaired or migrated: reading the document again is always correct."""
+    fixture = load_pages()[:2]
+    document = upload(user, "scan.pdf", synthetic_pdf(2), "application/pdf")
+    with acting_as(user):
+        dying = DyingReader(fixture, dies_on=2)
+        snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=dying))
+        draft = draft_of(document)
+        # Written by an older build: a shape this code does not have. Planted in SQL, because
+        # every way through the ORM would validate it on the way in — which is the point.
+        plant(draft.pk, '{"schema_version": 1, "pages": {"1": {"number": 1, "colour": "blue"}}}')
+        latest = document.latest_content()
+        assert latest is not None
+        assert snapshot.stored_state(latest) is None
+        assert api.resumable_pages(latest) == 0
+
+        again = StubReader(fixture)
+        content = snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=again))
+        assert content.status == ExtractionStatus.SUCCEEDED, content.error
+        assert again.calls == [1, 2]  # nothing was resumed: both pages were read again
+
+
+@pytest.mark.django_db
+def test_a_draft_that_cannot_be_stored_does_not_cost_the_run(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scratch is never worth a reading: if the state cannot be written, the run still runs."""
+    fixture = load_pages()[:2]
+    document = upload(user, "scan.pdf", synthetic_pdf(2), "application/pdf")
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise ProgrammingError("permission denied for table documents_documentcontentdraft")
+
+    # Exactly what a table the runtime role may not write looks like, at the one place the
+    # run touches it — the row it would create, and every state it would store on it.
+    monkeypatch.setattr(DocumentContentDraft, "save", refuse)
+    with acting_as(user):
+        reader = StubReader(fixture)
+        content = snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=reader))
+        assert content.status == ExtractionStatus.SUCCEEDED, content.error
+        assert reader.calls == [1, 2]
+
+
+@pytest.mark.django_db
+def test_a_state_from_an_older_schema_version_is_discarded_too(user: User) -> None:
+    fixture = load_pages()[:2]
+    document = upload(user, "scan.pdf", synthetic_pdf(2), "application/pdf")
+    with acting_as(user):
+        dying = strategies.GeminiOcrStrategy(reader=DyingReader(fixture, dies_on=2))
+        snapshot.extract_now(document, dying)
+        draft = draft_of(document)
+        stale = draft.state.model_dump()
+        stale["schema_version"] = ExtractionState.SCHEMA_VERSION - 1
+        plant(draft.pk, json.dumps(stale))
+        latest = document.latest_content()
+        assert latest is not None
+        assert snapshot.stored_state(latest) is None
+
+
+@pytest.mark.django_db
+def test_an_unsound_page_is_stored_with_what_is_wrong_with_it(user: User) -> None:
+    """Nothing goes back to a model to be fixed: the page is kept for what it is worth and the
+    snapshot says what the parser had against it."""
     reader = StubReader(load_pages()[:2], broken=frozenset({1}))
     document = upload(user, "scan.pdf", synthetic_pdf(2), "application/pdf")
     with acting_as(user):
         content = snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=reader))
 
         assert content.status == ExtractionStatus.SUCCEEDED, content.error
-        assert reader.repairs, "the broken page was not offered for repair"
-        assert content.stats["meta"]["ocr_problems"] == ["page 1: repaired"]
+        assert sorted(reader.calls) == [1, 2]  # once each, and no second look
+        problems = content.stats["meta"]["ocr_problems"]
+        assert any("not part of the vocabulary" in problem for problem in problems)
         assert snapshot.verify_snapshot(content) == []
-        # The repaired page is in the document like any other.
-        assert "Sehr geehrte Frau Kollegin" in content.text
+        # The rest of the document is there; only the broken page's text is lost.
+        assert "Sehr geehrte Frau Kollegin" not in content.text
 
 
 @pytest.mark.django_db
@@ -481,19 +632,38 @@ def test_extract_resumes_from_existing_raw_json(tmp_path: Path) -> None:
     pdf = synthetic_pdf(2)
     out = tmp_path / "out"
     first = list(run.read_document(pdf, reader, on_page=lambda p, png: run.write_raw(out, p, png)))
-    assert [p.number for p in first] == [1, 2] and reader.calls == [1, 2]
+    assert [p.number for p in first] == [1, 2] and sorted(reader.calls) == [1, 2]
     assert (out / "pages" / "0002.png").exists() and (out / "raw" / "0002.json").exists()
     again = list(run.read_document(pdf, reader, existing=run.existing_raw(out)))
-    assert reader.calls == [1, 2] and [p.number for p in again] == [1, 2]  # nothing sent again
+    # Nothing sent again: the call list is the two from the first run and no more.
+    assert sorted(reader.calls) == [1, 2] and [p.number for p in again] == [1, 2]
     assert render.parse_page_range("1-2, 9", 2) == [1, 2] and render.page_count(pdf) == 2
     assert len(render.thumbnail_bytes(Image.new("RGB", (2000, 1000)), 600)) > 0
 
 
-def test_tail_context_and_prompt_identity() -> None:
-    blocks, _ = parse_page(f"<p>{'x' * 900}</p>", 1)
-    tail = gemini_client.tail_context(blocks)
-    assert tail.startswith("p: ") and len(tail) == len("p: ") + gemini_client.TAIL_CHARS
-    assert gemini_client.tail_context([]) == "the previous page was blank"
+def test_a_page_is_read_once() -> None:
+    """One request per page and no second look: no review round, no re-reading."""
+    reader = StubReader(load_pages()[:2])
+    pages = list(run.read_document(synthetic_pdf(2), reader))
+    assert sorted(reader.calls) == [1, 2]
+    assert [page.html is not None for page in pages] == [True, True]
+
+
+def test_the_pages_are_read_in_parallel() -> None:
+    """Each page waits for the other before answering: read one after the other, the first
+    wait would time out. The barrier is what makes this a test rather than a hope."""
+    barrier = threading.Barrier(2, timeout=10)
+
+    class Meeting(StubReader):
+        def read(self, png: bytes, number: int, total: int) -> str:
+            barrier.wait()
+            return super().read(png, number, total)
+
+    pages = list(run.read_document(synthetic_pdf(2), Meeting(load_pages()[:2]), workers=2))
+    assert [page.number for page in pages] == [1, 2]
+
+
+def test_prompt_identity() -> None:
     assert len(gemini_client.prompt_sha256()) == 64
     config = strategies.GeminiOcrStrategy.config
     assert config["prompt_sha256"] == gemini_client.prompt_sha256()
@@ -514,3 +684,171 @@ def test_one_synthetic_page_end_to_end_with_gemini(tmp_path: Path) -> None:
     document, _ = build([result])
     assert pipeline.review(document) == []
     assert "beschwerdefrei" in built([result]).text.lower()
+
+
+@pytest.mark.django_db
+def test_the_document_is_named_from_what_it_says(user: User) -> None:
+    """The last step of the pipeline: the finished document is read once more and named. A
+    file name says what a scanner called a file; this says what the document is."""
+    reader = StubReader(load_pages())
+    reader.title = "Arztbrief Orthopädie, 12. Mai 1943"
+    document = upload(user, "2609_scan.pdf", synthetic_pdf(5), "application/pdf")
+    with acting_as(user):
+        content = snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=reader))
+
+        assert reader.named, "the document was never offered for naming"
+        assert content.title == "Arztbrief Orthopädie, 12. Mai 1943"
+        # The scanner's file name is replaced, and the original is kept to tell renames apart.
+        assert Document.objects.get(pk=document.pk).title == content.title
+        assert document.meta["filename"] == "2609_scan.pdf"
+
+        # A name a person typed is never overwritten by a later run.
+        renamed = Document.objects.get(pk=document.pk)
+        renamed.title = "Knie links"
+        renamed.save(operation=None, sources=[])
+        reader.title = "Etwas ganz anderes"
+        snapshot.extract_now(document, strategies.GeminiOcrStrategy(reader=reader))
+        assert Document.objects.get(pk=document.pk).title == "Knie links"
+
+
+def test_a_document_without_a_model_is_named_by_its_first_heading() -> None:
+    document, _ = build()
+    assert pipeline.heading_title(document) == "Arztbrief"
+    assert pipeline.heading_title('<p data-pages="1">no heading here</p>') == ""
+
+
+# --- Standing matter ------------------------------------------------------------------------------
+
+
+def test_standing_matter_is_kept_marked_all_the_way_into_the_artifact() -> None:
+    pages = [
+        page(
+            1,
+            f'<p data-aside="letterhead" {box(40, 100, 90, 900)}>Dr. med. Anna Beispiel</p>'
+            f'<p data-aside="contact" {box(90, 100, 130, 900)}>Hauptstr. 1, 87435 Kempten</p>'
+            f"<p {box(200, 100, 260, 900)}>Sehr geehrte Frau Kollegin,</p>"
+            f'<p data-aside="bank" {box(900, 100, 950, 900)}>IBAN DE04 3006 0601 0042 9200</p>',
+        )
+    ]
+    document, report = build(pages)
+    assert report.aside == 3
+    assert 'data-aside="letterhead"' in document and 'data-aside="bank"' in document
+    assert "Sehr geehrte Frau Kollegin," in document
+
+    artifact = built(pages)
+    marked = [
+        node.item.aside for node in artifact.nodes if node.item.tag == "p" and node.item.aside
+    ]
+    assert marked == ["letterhead", "contact", "bank"]
+    assert artifact.html.count("data-aside=") == 3
+    # It is text like any other: the reader is only shown it on request.
+    assert "IBAN DE04 3006 0601 0042 9200" in artifact.text
+
+
+def test_standing_matter_does_not_swallow_the_block_after_it() -> None:
+    pages = [
+        page(1, f'<p data-aside="contact" {box(900, 100, 950, 900)}>Tel. 0831 12345,</p>'),
+        page(2, f"<p {box(80, 100, 130, 900)}>befundet am 05.08.2026</p>"),
+    ]
+    _, report = build(pages)
+    assert report.merged == 0
+
+
+def test_a_tag_without_a_box_still_says_which_page_it_is_on() -> None:
+    """The model sometimes returns a tag with no `data-box`. The page is still known, and a
+    region with no geometry is how the snapshot records that — it is not a failed run."""
+    pages = [page(1, "<h2>Befund</h2><p>Reizlose Narbe.</p>")]
+    artifact = built(pages)
+    boxes = [(r.page, r.x0, r.y0, r.x1, r.y1) for node in artifact.nodes for r in node.regions]
+    assert boxes == [(1, None, None, None, None), (1, None, None, None, None)]
+    assert "Reizlose Narbe." in artifact.text
+
+
+# --- Retrying a flaky API -------------------------------------------------------------------------
+
+
+def _reader(waits: list[float]) -> gemini_client.GeminiPageReader:
+    """A reader that never sleeps: the schedule is asserted, not waited out."""
+    return gemini_client.GeminiPageReader("test-key", sleep=waits.append)
+
+
+def _models(reader: gemini_client.GeminiPageReader) -> object:
+    """The SDK object the reader sends its requests through — the seam these tests replace."""
+    return reader._client.models  # noqa: SLF001
+
+
+def test_a_rate_limited_page_is_read_again_on_the_stated_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from google.genai import errors
+
+    waits: list[float] = []
+    reader = _reader(waits)
+    attempts = 0
+
+    def flaky(**_: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 3:
+            raise errors.APIError(429, {"error": {"message": "slow down"}})
+        return SimpleNamespace(text='{"html": "<p>Befund</p>", "blank": false}')
+
+    monkeypatch.setattr(_models(reader), "generate_content", flaky)
+    assert reader.read(b"png", 1, 1) == "<p>Befund</p>"
+    assert attempts == 4
+    assert waits == list(gemini_client.RETRY_WAITS[:3])  # 1, 2, 2 — and no more
+
+
+def test_a_request_the_model_refuses_is_not_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 400 says the request is wrong; nine identical ones would be wrong nine times."""
+    from google.genai import errors
+
+    waits: list[float] = []
+    reader = _reader(waits)
+    attempts = 0
+
+    def refused(**_: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise errors.APIError(400, {"error": {"message": "the image could not be decoded"}})
+
+    monkeypatch.setattr(_models(reader), "generate_content", refused)
+    with pytest.raises(PageFailed, match="400"):
+        reader.read(b"png", 1, 1)
+    assert attempts == 1 and waits == []
+
+
+def test_a_page_that_never_comes_back_fails_after_the_last_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from google.genai import errors
+
+    waits: list[float] = []
+    reader = _reader(waits)
+
+    def down(**_: object) -> object:
+        raise errors.APIError(503, {"error": {"message": "unavailable"}})
+
+    monkeypatch.setattr(_models(reader), "generate_content", down)
+    with pytest.raises(PageFailed, match="503"):
+        reader.read(b"png", 1, 1)
+    assert waits == list(gemini_client.RETRY_WAITS)  # every wait, then it gives up
+    assert len(waits) + 1 == 9  # nine attempts
+
+
+def test_a_step_that_cannot_run_leaves_the_reading_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Best effort: the pages are already read, and a dating or a naming that will not run is
+    not a reason to lose them — but it says so in the log rather than passing for an answer."""
+    import httpx
+
+    waits: list[float] = []
+    reader = _reader(waits)
+
+    def broken(**_: object) -> object:
+        raise httpx.ConnectTimeout("no route")
+
+    monkeypatch.setattr(_models(reader), "generate_content", broken)
+    assert reader.name("<p>Befund</p>") == "" and reader.date("<p>Befund</p>") == {}
+    assert waits == list(gemini_client.RETRY_WAITS) * 2  # a dropped connection is worth retrying

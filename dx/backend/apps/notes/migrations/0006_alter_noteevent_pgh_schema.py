@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("notes", "0005_alter_noteevent_pgh_schema"),
     ]

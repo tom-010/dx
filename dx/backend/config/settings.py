@@ -92,6 +92,8 @@ INSTALLED_APPS = [
     "apps.documents",
     "apps.gallery",
     "apps.notes",
+    "apps.notifications",
+    "apps.timeline",
     # needle: installed-apps (manage.py newapp inserts new apps above this line)
 ]
 
@@ -153,12 +155,14 @@ WSGI_APPLICATION = "config.wsgi.application"
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
 # DB_ROLE picks the credentials: the runtime role `app_user` by default (row-level security
-# applies), the table owner for migrations/backups, BYPASSRLS for shell_admin (config/env.py).
+# applies), the table owner for migrations/backups, BYPASSRLS for shell_admin. DB_POOLED picks
+# the endpoint: PgBouncer for the web process, Postgres itself for everything else (config/env.py).
 DATABASES = {
     "default": django_database(
-        env.DATABASE_URL,
+        env.database_url(),
         conn_max_age=env.DB_CONN_MAX_AGE,
         credentials=env.database_credentials(),
+        pooled=env.pooled(),
     )
 }
 

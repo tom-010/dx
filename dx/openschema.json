@@ -234,6 +234,10 @@
             "title": "Page Count",
             "type": "integer"
           },
+          "resumable_pages": {
+            "title": "Resumable Pages",
+            "type": "integer"
+          },
           "status": {
             "anyOf": [
               {
@@ -252,6 +256,7 @@
         "required": [
           "status",
           "extraction",
+          "resumable_pages",
           "html",
           "text",
           "page_count",
@@ -541,6 +546,17 @@
         "title": "DateOut",
         "type": "object"
       },
+      "DatePrecision": {
+        "description": "How much of `occurred_at` is meant. A year-only event must not pretend to be 1 January,\nso the client groups and formats by this rather than by the timestamp alone.",
+        "enum": [
+          "datetime",
+          "day",
+          "month",
+          "year"
+        ],
+        "title": "DatePrecision",
+        "type": "string"
+      },
       "DateSource": {
         "description": "How a row's date is known — a column, because review queues filter on it.",
         "enum": [
@@ -821,6 +837,53 @@
         "title": "EdgeOut",
         "type": "object"
       },
+      "EventKind": {
+        "description": "The two visual weights of the feed, decided on the backend so every client agrees.\n\n`TECHNICAL` is the quiet log of what was done to the data (\"you uploaded a file\");\n`REAL_WORLD` is what the data says happened, and is what a reader actually came for.",
+        "enum": [
+          "technical",
+          "real_world"
+        ],
+        "title": "EventKind",
+        "type": "string"
+      },
+      "EventStatus": {
+        "description": "`ACTIVE` is everything phase 1 writes. The other two are for events a machine proposed\nand a person has not confirmed yet (`timeline.md` §6); the feed filters on this.",
+        "enum": [
+          "active",
+          "suggested",
+          "rejected"
+        ],
+        "title": "EventStatus",
+        "type": "string"
+      },
+      "EventTypeOut": {
+        "description": "One registered event type — everything the filter UI needs to name it.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EventKind"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "label",
+          "description"
+        ],
+        "title": "EventTypeOut",
+        "type": "object"
+      },
       "ExtractionOut": {
         "description": "One extraction run — process state, never the snapshot's rows (`extraction_out`).",
         "properties": {
@@ -856,6 +919,10 @@
           },
           "is_current": {
             "title": "Is Current",
+            "type": "boolean"
+          },
+          "stale": {
+            "title": "Stale",
             "type": "boolean"
           },
           "started_at": {
@@ -894,6 +961,7 @@
           "created",
           "started_at",
           "finished_at",
+          "stale",
           "stream_url"
         ],
         "title": "ExtractionOut",
@@ -1310,6 +1378,58 @@
         "title": "NotePatch",
         "type": "object"
       },
+      "NotificationOut": {
+        "properties": {
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "notification_type": {
+            "title": "Notification Type",
+            "type": "string"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceRef"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "notification_type",
+          "title",
+          "description",
+          "created",
+          "read_at",
+          "source"
+        ],
+        "title": "NotificationOut",
+        "type": "object"
+      },
       "OutlineEntryOut": {
         "properties": {
           "level": {
@@ -1612,6 +1732,61 @@
           "count"
         ],
         "title": "PagedNoteOut",
+        "type": "object"
+      },
+      "PagedNotificationOut": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "count"
+        ],
+        "title": "PagedNotificationOut",
+        "type": "object"
+      },
+      "PagedTimelineEventOut": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineEventOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "count"
+        ],
+        "title": "PagedTimelineEventOut",
+        "type": "object"
+      },
+      "ReadAllOut": {
+        "properties": {
+          "read": {
+            "title": "Read",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "read"
+        ],
+        "title": "ReadAllOut",
         "type": "object"
       },
       "ReadyOut": {
@@ -2024,6 +2199,25 @@
         "title": "SourceOut",
         "type": "object"
       },
+      "SourceRef": {
+        "description": "A reference to any row, for a client that has its own routing table.\n\n`type` is a lower-cased model label (\"datasets.dataset\"), `id` that row's UUID as a string.\nThe registries in the SPA (`features/timeline/registry.ts`,\n`features/notifications/registry.ts`) key on `type` to decide the icon and where a click\ngoes, so the backend never has to know that `/datasets/$datasetId` exists.\n\nIt lives here rather than in each app's `api.py` because two apps hand out the same pair,\nand pydantic names a component after its class: two identically named schemas in different\nmodules collapse into one entry in `openschema.json` — silently, and with whichever\ndocstring loaded first. One concept, one name, one definition.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "title": "SourceRef",
+        "type": "object"
+      },
       "StrategyOut": {
         "description": "An extraction strategy a client may ask for (`POST …/reextract?strategy=`).",
         "properties": {
@@ -2183,6 +2377,87 @@
         "title": "TimelineEntryOut",
         "type": "object"
       },
+      "TimelineEventOut": {
+        "properties": {
+          "date_precision": {
+            "$ref": "#/components/schemas/DatePrecision"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "title": "Image Url",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EventKind"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "occurred_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred Until"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceRef"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EventStatus"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event_type",
+          "kind",
+          "status",
+          "occurred_at",
+          "occurred_until",
+          "date_precision",
+          "recorded_at",
+          "title",
+          "description",
+          "image_url",
+          "source",
+          "payload"
+        ],
+        "title": "TimelineEventOut",
+        "type": "object"
+      },
       "TokenOut": {
         "description": "Send `access_token` as `Authorization: Bearer …`; it expires after\nACCESS_TOKEN_LIFETIME_MINUTES. Then POST `refresh_token` to /auth/refresh for a new pair\n(the refresh token is single-use) — or to /auth/logout to end the session.",
         "properties": {
@@ -2200,6 +2475,20 @@
           "refresh_token"
         ],
         "title": "TokenOut",
+        "type": "object"
+      },
+      "UnreadCountOut": {
+        "description": "The bell's indicator. Its own tiny endpoint because it is polled and the list is not.",
+        "properties": {
+          "unread": {
+            "title": "Unread",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unread"
+        ],
+        "title": "UnreadCountOut",
         "type": "object"
       },
       "UserOut": {
@@ -4199,6 +4488,168 @@
         ]
       }
     },
+    "/api/notifications": {
+      "get": {
+        "description": "The inbox. `?unread=true` is the same list narrowed to what has not been seen.",
+        "operationId": "list_notifications",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "unread",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unread",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedNotificationOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Notifications",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/notifications/read": {
+      "post": {
+        "description": "Mark everything read. Returns how many were still unread.",
+        "operationId": "read_all_notifications",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadAllOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Read All Notifications",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/notifications/unread-count": {
+      "get": {
+        "description": "Just the number, so the bell can ask for it often without fetching the list.",
+        "operationId": "count_unread_notifications",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnreadCountOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Count Unread Notifications",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/notifications/{notification_id}/read": {
+      "post": {
+        "description": "Mark one read. Idempotent — reading it twice keeps the first timestamp.",
+        "operationId": "read_notification",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notification_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Notification Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Read Notification",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
     "/api/ready": {
       "get": {
         "description": "Readiness: database reachable and migrated, Celery broker up, storage buckets present.\n503 with the failing checks otherwise — gate load balancers / compose on this. Public.",
@@ -4433,6 +4884,209 @@
         "summary": "Stream Task Events",
         "tags": [
           "tasks"
+        ]
+      }
+    },
+    "/api/timeline": {
+      "get": {
+        "description": "The feed. `types` and `status` are comma-separated lists; `since`/`until` bound\n`occurred_at`, which is what the client's date navigator sends.",
+        "operationId": "list_timeline_events",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/EventKind"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "types",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Types"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "active",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedTimelineEventOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Timeline Events",
+        "tags": [
+          "timeline"
+        ]
+      }
+    },
+    "/api/timeline/event-types": {
+      "get": {
+        "description": "Every event type this deployment can produce — the filter UI's vocabulary.",
+        "operationId": "list_timeline_event_types",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EventTypeOut"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Timeline Event Types",
+        "tags": [
+          "timeline"
+        ]
+      }
+    },
+    "/api/timeline/{event_id}": {
+      "get": {
+        "description": "One event, so a `?event=<id>` deep link opens before the feed has loaded.",
+        "operationId": "get_timeline_event",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelineEventOut"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get Timeline Event",
+        "tags": [
+          "timeline"
         ]
       }
     }

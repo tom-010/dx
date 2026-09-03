@@ -10,7 +10,10 @@ plain Python, for all of them:
 2. **Parse & prune**: each page's HTML is parsed into blocks. Furniture (`data-furniture`)
    never reaches the document, though a page number becomes the page's label; empty blocks and
    empty pages contribute nothing. Their `Page` rows survive — the document *has* that page,
-   it just says nothing — so nothing downstream needs a special case.
+   it just says nothing — so nothing downstream needs a special case. Standing matter — the
+   letterhead, the address, the bank details, the signature block (`data-aside`) — is the
+   opposite case: it *is* on the paper, so it is kept, marked, and carried all the way into
+   the artifact, where a reader is shown it only on request.
 3. **Join**: what a page break cut in two is put back together. A strategy that knows says so
    (`data-continues`, which the OCR model is asked outright); one that cannot know leaves it
    out and `looks_continued()` decides from the text. A joined block keeps one fragment per
@@ -20,11 +23,9 @@ plain Python, for all of them:
 5. **Serialize**: one HTML document for the whole file, every tag carrying `data-pages` (the
    pages it is on — several when it spans them) and `data-box` (where, per page, and which
    slice of its text sits there). This is the artifact to look at while iterating on an
-   extractor: `manage.py ocr assemble` writes it, `review()` says what is wrong with it, and a
-   model may be asked to repair it.
+   extractor: `manage.py ocr assemble` writes it and `review()` says what is wrong with it.
 6. **Convert**: the augmented HTML is parsed back into the tree the snapshot builder writes as
-   rows (`extraction_from_html`). The HTML is the source of truth, not a view of one — so a
-   repair really is a repair.
+   rows (`extraction_from_html`). The HTML is the source of truth, not a view of one.
 
 Offsets inside a block are relative to that block; the builder makes them global.
 """
@@ -229,6 +230,8 @@ class Item:
     table: Table | None
     source: StructureSource
     fragments: list[Fragment]
+    #: Standing matter — see `Block.aside`.
+    aside: str | None = None
 
 
 _MERGEABLE: dict[str, frozenset[str]] = {
@@ -275,6 +278,7 @@ def _item(block: Block, page: int) -> Item:
         text=text,
         table=table,
         source=block.source,
+        aside=block.aside,
         fragments=[Fragment(page, block.box, block.ring, 0, len(text), block.words)],
     )
 
@@ -340,6 +344,8 @@ BOX_ATTR = "data-box"
 CONTINUES_ATTR = "data-continues"
 #: Running headers, footers and page numbers, which never reach the document.
 FURNITURE_ATTR = "data-furniture"
+#: Standing matter: kept, marked, and hidden until a reader asks for it.
+ASIDE_ATTR = "data-aside"
 #: Coordinates are written with this many decimals — enough for a 5000 px page, and stable.
 BOX_DECIMALS = 4
 
@@ -429,13 +435,17 @@ class Element:
     def furniture(self) -> str | None:
         return self.attrs.get(FURNITURE_ATTR)
 
+    @property
+    def aside(self) -> str | None:
+        return self.attrs.get(ASIDE_ATTR)
+
 
 class HtmlDocument(HTMLParser):
     """A parser for *our own* HTML: the block vocabulary, its attributes, and nothing else.
 
     Strict where it matters and forgiving where it does not: an unknown tag is dropped and its
     text kept, inline markup is flattened, and a tag left open is reported — `review()` turns
-    that report into the decision to repair.
+    that report into the snapshot's `html_problems`.
     """
 
     def __init__(self) -> None:
@@ -584,6 +594,7 @@ def _block_of(element: Element, page: int, box_reader: BoxReader = _canonical_bo
         box=box,
         continues=element.continues,
         furniture=element.furniture,
+        aside=element.aside,
         source=StructureSource.DETECTED,
     )
 
@@ -606,6 +617,8 @@ class Numbering:
 def _attrs(item: Item, nid: int) -> str:
     pages = sorted({fragment.page for fragment in item.fragments})
     parts = [f'{NID_ATTR}="{nid}"']
+    if item.aside is not None:
+        parts.append(f'{ASIDE_ATTR}="{escape(item.aside, quote=True)}"')
     if pages:
         parts.append(f'{PAGES_ATTR}="{",".join(str(page) for page in pages)}"')
     if item.fragments:
@@ -661,6 +674,8 @@ def block_html(block: Block, page: int) -> str:
         attrs += f' {CONTINUES_ATTR}="true"'
     if block.furniture is not None:
         attrs += f' {FURNITURE_ATTR}="{escape(block.furniture, quote=True)}"'
+    if block.aside is not None:
+        attrs += f' {ASIDE_ATTR}="{escape(block.aside, quote=True)}"'
     if block.table_html:
         inner = Table.parse(block.table_html).inner_html()
         return f"<table{attrs}>{inner}</table>"
@@ -713,10 +728,10 @@ class Report:
     empty_pages: list[int] = field(default_factory=list)
     blocks: int = 0
     furniture: int = 0
+    aside: int = 0
     dropped: int = 0
     noise: int = 0
     merged: int = 0
-    repaired: bool = False
     problems: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -726,10 +741,10 @@ class Report:
             "empty_pages": self.empty_pages,
             "blocks": self.blocks,
             "furniture": self.furniture,
+            "aside": self.aside,
             "dropped": self.dropped,
             "noise": self.noise,
             "merged": self.merged,
-            "repaired": self.repaired,
             "problems": self.problems,
         }
 
@@ -768,6 +783,8 @@ def read_pages(pages: Sequence[PageHtml], report: Report) -> dict[int, list[Bloc
             if is_noise(block):
                 report.noise += 1
                 continue
+            if block.aside is not None:
+                report.aside += 1
             blocks.append(block)
         if not blocks:
             report.empty_pages.append(page.number)
@@ -788,6 +805,7 @@ def join(kept: dict[int, list[Block]], report: Report, *, merge_tables: bool) ->
                 first_on_page
                 and previous_page_had_content
                 and last is not None
+                and last.aside == block.aside
                 and (
                     looks_continued(last, block)
                     if block.continues is None
@@ -874,6 +892,7 @@ def _leaf(item: Item, tag: str | None = None) -> ExtractedNode:
             header=bool(item.table.header),
             table_html=item.table.inner_html(),
             source=item.source,
+            aside=item.aside,
             regions=_regions(item),
         )
     return ExtractedNode(
@@ -881,6 +900,7 @@ def _leaf(item: Item, tag: str | None = None) -> ExtractedNode:
         text=item.text,
         level=item.level,
         source=item.source,
+        aside=item.aside,
         regions=_regions(item),
     )
 
@@ -1013,6 +1033,7 @@ def _node_of(element: Element) -> ExtractedNode | None:
             header=bool(table.header),
             table_html=table.inner_html(),
             source=StructureSource.DETECTED,
+            aside=element.aside,
             regions=_regions_of(element),
         )
     text = element.text if element.tag == "pre" else _collapse(element.text)
@@ -1023,6 +1044,7 @@ def _node_of(element: Element) -> ExtractedNode | None:
         text=text,
         level=int(element.tag[1]) if element.tag in HEADINGS else None,
         source=StructureSource.DETECTED,
+        aside=element.aside,
         regions=_regions_of(element),
     )
 
@@ -1069,29 +1091,19 @@ def assemble(
     raw: bytes | None = None,
     raw_mime: str = "application/json",
     stats: dict[str, Any] | None = None,
-    repair: Callable[[str, Sequence[str]], str] | None = None,
     name: Callable[[str], str] | None = None,
 ) -> tuple[Extraction, str]:
     """The whole pipeline: pages in, and both the augmented HTML and the extraction out.
 
-    `repair` is called with the document and what `review()` found when the assembled HTML is
-    not sound — an extractor may hand that to a model. Whatever comes back is reviewed again;
-    if it is still broken the *original* is kept, because a bad repair is worse than a known
-    problem.
+    What `review()` finds wrong with the assembled document is recorded in the report rather
+    than sent to a model: an imperfect reading is stored as it is, and says so.
 
     `name` is the last step: the finished document goes in, what to call it comes out. Without
     one (or when it returns nothing) the first heading is the name.
     """
     ordered = sorted(pages, key=lambda page: page.number)
     html, report = assemble_html(ordered, merge_tables=merge_tables)
-    problems = review(html)
-    if problems and repair is not None:
-        repaired = repair(html, problems)
-        remaining = review(repaired)
-        if len(remaining) < len(problems):
-            html, problems = repaired, remaining
-            report.repaired = True
-    report.problems += problems
+    report.problems += review(html)
     extraction = extraction_from_html(
         html,
         ordered,

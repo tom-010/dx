@@ -17,6 +17,7 @@ export interface ExtractionOut {
   finished_at: string | null;
   id: string;
   is_current: boolean;
+  stale: boolean;
   started_at: string | null;
   stats: ExtractionOutStats;
   status: ExtractionStatus;

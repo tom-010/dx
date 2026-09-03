@@ -82,7 +82,7 @@ def _assemble(out: Path, merge_tables: bool) -> None:
     records = run.existing_raw(out)
     if not records:
         raise click.ClickException(f"no raw pages under {out}/raw/ — run `ocr extract` first")
-    inputs = [assembly.PageInput.from_raw(record) for _, record in sorted(records.items())]
+    inputs = [page for _, page in sorted(records.items())]
     pages, problems = assembly.page_contents(inputs)
     # The pipeline's own product first — the augmented document, the thing to iterate on —
     # and only then the form the database stores.
@@ -106,6 +106,7 @@ def _assemble(out: Path, merge_tables: bool) -> None:
         table.add_row(key, str(built.stats.get(key)))
     table.add_row("merged across pages", str(report.merged))
     table.add_row("furniture dropped", str(report.furniture))
+    table.add_row("standing matter marked", str(report.aside))
     table.add_row("empty pages", str(report.empty_pages) or "none")
     table.add_row("problems", "\n".join(problems) if problems else "[green]none[/green]")
     if built.report.content is not None:

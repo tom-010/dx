@@ -16,6 +16,7 @@ from django.db.migrations.executor import MigrationExecutor
 from apps.core import rls
 from apps.core.storage import bucket_exists, s3_storage
 from config.celery import app as celery_app
+from config.env import env
 
 
 @dataclass(frozen=True)
@@ -26,12 +27,16 @@ class Check:
 
 
 def check_database() -> Check:
+    """Reachable, and through what: the web process should say "pooled" (PgBouncer), a
+    worker or command "direct" (config/env.py `DB_POOLED`)."""
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
     except Exception as exc:  # noqa: BLE001 - any failure means "not ready"
         return Check("database", False, f"{type(exc).__name__}: {exc}")
-    return Check("database", True)
+    db = settings.DATABASES["default"]
+    via = "pooled" if env.pooled() else "direct"
+    return Check("database", True, f"{db['HOST']}:{db['PORT']} ({via})")
 
 
 def check_migrations() -> Check:

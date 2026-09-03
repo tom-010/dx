@@ -69,7 +69,13 @@ default-deny).
   (no default; dev: `app_admin`/`app_admin` in `backend/.env`; never in the web/worker
   environment). `./scripts/db.sh` runs `docker/postgres/10-roles.sh` (idempotent: creates the
   roles, hands tables to `app_migrator`, grants). Invariants: `app_user` never owns a table, is
-  never a superuser, never `BYPASSRLS`.
+  never a superuser, never `BYPASSRLS`. `DB_POOLED` picks the *endpoint*: the web process
+  connects through PgBouncer (`DATABASE_POOL_URL`, transaction pooling — fine for a request,
+  whose context is one transaction with `SET LOCAL`), everything that pins a tenant per
+  session — workers, commands, shells — and the test suite use `DATABASE_URL` directly, and
+  the migrator/admin roles always do (`Env.database_url()`). The pooler's password lookup
+  (`pgbouncer.user_lookup()`, `10-roles.sh`) refuses superusers and `BYPASSRLS` roles, so a
+  pooled connection is always one RLS applies to.
 - **Tasks**: `@tenant_task(...)` (`apps/core/tasks.py`) is the only decorator allowed in
   tenant apps (`test_tenancy.py` greps for `@shared_task`); the function takes `owner_id:
   uuid.UUID` first, ids are passed — never instances. Worker: a *pinned* session context
@@ -98,8 +104,10 @@ default-deny).
   reports success and then fails at the foreign key on commit. `apps/core/scrub.py`: `PII_FIELDS` allowlist —
   every model field with such a name needs a `SCRUBBERS` entry or the export refuses
   (`check_scrubbers()` is a test). Backups (`dumpdata`) need cross-tenant access and refuse
-  the runtime role (`CrossTenantAccessRequired`). Connect to Postgres directly (not via a
-  transaction-pooling PgBouncer) for the shells: session variables do not survive pooling.
+  the runtime role (`CrossTenantAccessRequired`). Shells, commands and workers connect to
+  Postgres directly (`DATABASE_URL`, never `DB_POOLED`): session variables do not survive
+  transaction pooling, and the pool's `DISCARD ALL` on hand-back makes sure they fail closed
+  rather than leak if someone tries.
 - **Known trade-offs of the middleware transaction**: the whole view runs inside it, so a
   multi-file upload holds a database connection while the bytes go to the object store (fine at
   this size; watch `idle in transaction` if uploads grow), and anything enqueued during a

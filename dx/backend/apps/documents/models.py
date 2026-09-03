@@ -23,6 +23,11 @@ read-only.
 Storage: every file is a `Blob`, content-addressed by sha256 and deduplicated per tenant; the
 source upload, the extractor's raw output and thumbnails are all blobs.
 
+Beside the snapshots sits one scratch table, `DocumentContentDraft`: **the whole state of an
+extraction still in flight, as one `ExtractionState` object** — the pages read so far — kept
+while the run works so that a run which dies half way through is *resumed* rather than paid
+for twice, and discarded the moment a snapshot is written.
+
 Dates: `DocumentContent`, `Page` and `Node` carry the `Dated` mixin — from when their content
 *originates* (`apps/documents/dating.py` has the rule and the stage): `date_edtf` is the
 truth, `date_min`/`date_max` its strict bounds for SQL, `date_source` how it is known,
@@ -87,9 +92,9 @@ ALLOWED_TAGS = frozenset(
     }
 )  # fmt: skip
 HEADINGS = ("h1", "h2", "h3", "h4", "h5", "h6")
-#: `data-nid`, `data-pages` and `data-date` (EDTF, when dated) are allowed on every tag;
-#: cells may also span.
-NODE_ATTRIBUTES = frozenset({"data-nid", "data-pages", "data-date"})
+#: `data-nid`, `data-pages`, `data-date` (EDTF, when dated) and `data-aside` (standing matter
+#: a reader is shown only on request) are allowed on every tag; cells may also span.
+NODE_ATTRIBUTES = frozenset({"data-nid", "data-pages", "data-date", "data-aside"})
 CELL_ATTRIBUTES = frozenset({"colspan", "rowspan"})
 #: Materialized path: zero-padded segments joined by ".", assigned from sibling order.
 PATH_WIDTH = 4
@@ -528,6 +533,12 @@ class Document(OwnedModel):
 
     #: Given at ingest (the upload's file name); `heading_title()` is the fallback.
     title = models.CharField(max_length=500, blank=True)
+    #: The uploaded file's MD5, and the tenant's answer to "do I already hold this?" — an
+    #: upload of a file already in the library is skipped rather than filed twice
+    #: (`api.store_documents`). MD5 because it is what a scanner, a mail client and a file
+    #: manager print beside a file, so a person can check by hand; the *content* key is the
+    #: blob's sha256, and nothing here rests on the hash being hard to collide with.
+    md5 = models.CharField(max_length=32)
     meta = models.JSONField(default=dict, blank=True)
     # The diagram says PROTECT; between owned models this project uses CASCADE, because only
     # tenant erasure ever hard-deletes and PROTECT would make that one delete fail.
@@ -542,11 +553,25 @@ class Document(OwnedModel):
     )
 
     class Meta(OwnedModel.Meta):
-        pass
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "md5"],
+                condition=Q(deleted_at__isnull=True),
+                name="uniq_active_document_md5_per_owner",
+            )
+        ]
 
     @staticmethod
     def example() -> Document:
-        return Document(title="Expenses 2026", source_blob=Blob.example(), meta={})
+        blob = Blob.example()
+        content = blob.file.read()
+        blob.file.seek(0)  # the example is saved from here; leave the file where it was
+        return Document(
+            title="Expenses 2026",
+            md5=hashlib.md5(content, usedforsecurity=False).hexdigest(),
+            source_blob=blob,
+            meta={},
+        )
 
     def clean(self) -> None:
         current = self.current_content
@@ -1081,3 +1106,92 @@ class PageRegion(OwnedModel):
 
     def __str__(self) -> str:
         return f"region {self.order} of node {self.node_id}"
+
+
+# --- Work in flight ---------------------------------------------------------------------------
+
+
+class PageState(PydanticModel):
+    """One page an extractor has read: what a resumed run replays instead of asking again."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    number: int
+    #: The page in the extractor's own units — pdfium points, not the model's grid.
+    width: float | None = None
+    height: float | None = None
+    #: The reading itself, as semantic page HTML.
+    html: str
+
+
+class ExtractionState(PydanticModel):
+    """**The state of one extraction, in one object.** Every thread of a run shares it, it is
+    stored as it grows and loaded again by the next run, and a run resumes from what it holds.
+
+    It is deliberately one document rather than a row per page: a run is one computation, and
+    "what has this computation got so far" should be one thing to read, write, log and reason
+    about — not a query. It may be large; a hundred-page scan is a few hundred kilobytes of
+    HTML, which is what one page image costs.
+
+    **Evolving it**: new fields need a default so a stored state still loads, and anything
+    that changes what an existing field *means* is a `SCHEMA_VERSION` bump — a state the
+    current code would misread is discarded rather than migrated (`snapshot.load_draft`).
+    Nothing in here is precious: it is scratch, and re-reading the document is always correct,
+    only slower and dearer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Bump when a field changes meaning; stored states from an older one are discarded.
+    SCHEMA_VERSION: ClassVar[int] = 2
+
+    schema_version: int = SCHEMA_VERSION
+    #: The pages already read, by page number. A page that failed is not in here — reading it
+    #: again is exactly what the next run is for.
+    pages: dict[int, PageState] = Field(default_factory=dict)
+
+
+# Deliberately not `@tracked` (`apps/core/history.py::HISTORY_EXEMPT` says why).
+class DocumentContentDraft(OwnedModel):
+    """The `ExtractionState` of one document + extractor, so a run can be resumed.
+
+    An OCR run is one paid request per page and can take half an hour; a network error on page
+    27 must not throw away the first 26. The run keeps its state here as it grows, and the next
+    run over the same bytes with the same extractor starts from it — which is what makes "Read
+    again" after a failure cheap rather than a second full bill.
+
+    One row per (document, blob, extractor), holding one state object. Writing a snapshot
+    discards it (`snapshot.discard_draft`): from then on the run's `raw_output` is *the* record
+    of what the extractor said, and this was only scratch.
+    """
+
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="drafts")
+    #: The bytes that were read. A re-uploaded source invalidates nothing — it simply stops
+    #: matching, and the document is read from scratch.
+    blob = models.ForeignKey(Blob, on_delete=models.CASCADE, related_name="+")
+    extractor = models.ForeignKey(Extractor, on_delete=models.CASCADE, related_name="+")
+    state = SchemaField(ExtractionState, default=ExtractionState)
+
+    class Meta(OwnedModel.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                fields=["document", "blob", "extractor"],
+                condition=Q(deleted_at__isnull=True),
+                name="uniq_active_content_draft",
+            )
+        ]
+
+    @staticmethod
+    def example() -> DocumentContentDraft:
+        document = Document.example()
+        return DocumentContentDraft(
+            document=document,
+            blob=document.source_blob,
+            extractor=Extractor.example(),
+            state=ExtractionState(
+                pages={1: PageState(number=1, width=612.0, height=792.0, html="<p>Rent, 1200</p>")}
+            ),
+        )
+
+    def __str__(self) -> str:
+        return f"draft of {self.document_id} ({len(self.state.pages)} pages read)"

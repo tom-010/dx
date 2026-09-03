@@ -24,9 +24,13 @@ WATCHED = ("apps", "config")
 @click.option(
     "--stop-timeout",
     type=click.FloatRange(min=0),
-    default=30,
+    default=150,
     show_default=True,
-    help="Seconds a running task may take to finish on restart before the worker is killed.",
+    help=(
+        "Seconds a running task may take to finish on restart before the worker is killed. "
+        "Generous on purpose: a killed task comes back only after the broker's visibility "
+        "timeout (2 h), while a task that drains is re-queued at once."
+    ),
 )
 @click.argument("celery_args", nargs=-1, type=click.UNPROCESSED)
 def command(stop_timeout: float, celery_args: tuple[str, ...]) -> None:

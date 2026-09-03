@@ -1,5 +1,6 @@
-# Production stack on one host: Caddy (TLS via Let's Encrypt) → app (gunicorn: API + SPA);
-# worker + beat (Celery); Postgres; Valkey (broker, results, cache); RustFS (uploads, backups).
+# Production stack on one host: Caddy (TLS via Let's Encrypt) → app (gunicorn: API + SPA) →
+# pgbouncer → Postgres; worker + beat (Celery, straight to Postgres); Valkey (broker, results,
+# cache); RustFS (uploads, backups).
 # Configuration comes from docker/.env.prod (copy docker/.env.prod.example). Run it with
 # ./scripts/prod.sh (= docker compose --env-file docker/.env.prod -f docker/docker-compose.prod.yml).
 # Only Caddy publishes ports; everything else talks over the internal network. To use managed
@@ -13,6 +14,24 @@ x-logging: &logging
     max-size: "10m"
     max-file: "5"
 
+# Shared by app, worker and beat (the wiring here wins over .env.prod, which every service
+# also reads as its env_file).
+x-app-env: &app_env
+  DEBUG: "false"
+  ALLOWED_HOSTS: '["${DOMAIN:?}"]'
+  # Runtime role `app_user` (row-level security applies). The entrypoint migrates as the table
+  # owner `app_migrator`; `app_admin` (shell_admin) is deliberately not configured here.
+  # DATABASE_URL is Postgres itself, DATABASE_POOL_URL the pooler: only `app` connects there
+  # (DB_POOLED on that service); worker and beat need a real session.
+  DATABASE_URL: ${DATABASE_URL:-postgres://app_user:${DB_APP_PASSWORD:?}@db:5432/dx}
+  DATABASE_POOL_URL: ${DATABASE_POOL_URL:-postgres://app_user:${DB_APP_PASSWORD:?}@pgbouncer:6432/dx}
+  DB_MIGRATOR_USER: ${DB_MIGRATOR_USER:-app_migrator}
+  DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?}
+  CACHE_URL: ${CACHE_URL:-redis://redis:6379/1}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+  CELERY_EAGER: "false"
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
+
 # Shared by app, worker and beat: same image, same environment, different command.
 x-app: &app
   image: ${IMAGE:-dx-app:latest}
@@ -23,20 +42,9 @@ x-app: &app
       APP_VERSION: ${APP_VERSION:-dev}
   restart: unless-stopped
   logging: *logging
-  # Every key of backend/config/env.py may be set in .env.prod; the wiring below wins.
+  # Every key of backend/config/env.py may be set in .env.prod; `environment` wins.
   env_file: .env.prod
-  environment:
-    DEBUG: "false"
-    ALLOWED_HOSTS: '["${DOMAIN:?}"]'
-    # Runtime role `app_user` (row-level security applies). The entrypoint migrates as the table
-    # owner `app_migrator`; `app_admin` (shell_admin) is deliberately not configured here.
-    DATABASE_URL: ${DATABASE_URL:-postgres://app_user:${DB_APP_PASSWORD:?}@db:5432/dx}
-    DB_MIGRATOR_USER: ${DB_MIGRATOR_USER:-app_migrator}
-    DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?}
-    CACHE_URL: ${CACHE_URL:-redis://redis:6379/1}
-    CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
-    CELERY_EAGER: "false"
-    S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
+  environment: *app_env
 
 services:
   caddy:
@@ -60,6 +68,11 @@ services:
 
   app:
     <<: *app
+    environment:
+      <<: *app_env
+      # gunicorn's threads connect through `pgbouncer` (backend/config/env.py); worker and beat
+      # keep direct sessions. DB_POOLED=false in .env.prod = no pooler at all.
+      DB_POOLED: "${DB_POOLED:-true}"
     healthcheck:
       # Readiness: database migrated, broker, buckets (apps/core/health.py) — worker and beat wait for it.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=8)"]
@@ -69,6 +82,8 @@ services:
       start_period: 30s
     depends_on:
       db:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -98,16 +113,8 @@ services:
     <<: *app
     command: ["celery", "-A", "config", "worker", "-B", "-Q", "maintenance", "--concurrency=1", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
     environment:
-      DEBUG: "false"
-      ALLOWED_HOSTS: '["${DOMAIN:?}"]'
-      DATABASE_URL: ${DATABASE_URL:-postgres://app_user:${DB_APP_PASSWORD:?}@db:5432/dx}
-      DB_MIGRATOR_USER: ${DB_MIGRATOR_USER:-app_migrator}
-      DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?}
+      <<: *app_env
       DB_ROLE: migrator
-      CACHE_URL: ${CACHE_URL:-redis://redis:6379/1}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
-      CELERY_EAGER: "false"
-      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
     healthcheck:
       # Scoped to this container (see the worker service): the ordinary worker would otherwise
       # answer for it, and a wedged maintenance worker — the only consumer of the maintenance
@@ -121,9 +128,12 @@ services:
       app:
         condition: service_healthy
 
-  # docker/postgres/10-roles.sh creates the application roles on a fresh volume. For a volume
-  # from before it, run it once: ./scripts/prod.sh exec -T db sh /docker-entrypoint-initdb.d/10-roles.sh
+  # docker/postgres/10-roles.sh creates the application roles (and the pooler's lookup role +
+  # function) on a fresh volume. For a volume from before it — or from before `pgbouncer` —
+  # run it once: ./scripts/prod.sh exec -T db sh /docker-entrypoint-initdb.d/10-roles.sh
   # (idempotent; it also hands tables created by `dx` to app_migrator).
+  # max_connections stays at the default 100: the web tier comes in through `pgbouncer`
+  # (its budget is worked out there), everything else holds a connection or two.
   db:
     image: postgres:18-alpine
     restart: unless-stopped
@@ -137,6 +147,7 @@ services:
       # Optional and deliberately not in .env.prod (that file is every service's env_file):
       # pass it on the command line when (re)setting it, or ALTER ROLE app_admin by hand.
       APP_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-}
+      PGBOUNCER_PASSWORD: ${PGBOUNCER_PASSWORD:?}
     volumes:
       # Postgres 18 images keep data under /var/lib/postgresql (not .../data).
       - pgdata:/var/lib/postgresql
@@ -146,6 +157,89 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+
+
+  # Connection pooler in front of `db` (PgBouncer, transaction pooling): the web process's
+  # database endpoint (DATABASE_POOL_URL + DB_POOLED on `app`). Thousands of client connections
+  # are cheap here — a few kB and a file descriptor each, no Postgres backend — and every
+  # transaction borrows one of a small pool of real connections for its duration, which is
+  # exactly the shape of a request (one transaction with `SET LOCAL app.user_id` inside).
+  # `worker` and `beat` talk to `db` directly: transaction pooling drops session state after
+  # every commit, and they pin their tenant per session (backend/apps/core/db.py).
+  # Authentication: a client logs in with its own Postgres password (SCRAM) and PgBouncer checks
+  # it against the secret Postgres holds, fetched through the `pgbouncer` role and its lookup
+  # function (docker/postgres/10-roles.sh) — no second copy of any password here. The lookup
+  # refuses superusers and BYPASSRLS roles, so nothing that bypasses row-level security can come
+  # through the pooler. Pools/clients/stats (PGBOUNCER_PASSWORD from .env.prod):
+  #   ./scripts/prod.sh exec -e PGPASSWORD=… pgbouncer psql -h 127.0.0.1 -p 6432 -U pgbouncer pgbouncer -c 'SHOW POOLS'
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: dx
+      # The lookup role's own credentials — the one entry in PgBouncer's user list; every
+      # other user is verified through AUTH_QUERY.
+      DB_USER: pgbouncer
+      DB_PASSWORD: ${PGBOUNCER_PASSWORD:?}
+      AUTH_TYPE: scram-sha-256
+      AUTH_QUERY: SELECT uname, phash FROM pgbouncer.user_lookup($$1)
+      ADMIN_USERS: pgbouncer
+      LISTEN_PORT: "6432"
+      POOL_MODE: transaction
+      # --- Sizing. Two unrelated numbers: how many clients may connect *here*, and how many
+      # real connections PgBouncer opens *to Postgres*.
+      # max_client_conn — client sockets. The web tier is WEB_CONCURRENCY × GUNICORN_THREADS per
+      # replica (16 by default; with DB_CONN_MAX_AGE=0 a thread only holds one during a request),
+      # and a slot costs a few kB plus a file descriptor, so 10000 is headroom for many replicas
+      # and threads rather than a target. `ulimits` below covers the descriptors: PgBouncer
+      # needs max_client_conn plus the server side.
+      # default_pool_size — real connections per (user, database) pair, i.e. the app_user pool.
+      # Postgres throughput peaks around 2 × cores plus disks; beyond that, connections only
+      # queue inside Postgres instead of in front of it. 20 is plenty for a small host — raise it
+      # with the host, never with the client count. reserve_pool_size adds 5 more once a client
+      # has waited reserve_pool_timeout seconds: a burst absorber, not the working set.
+      # max_db_connections — hard ceiling on the backends this pooler opens to `dx`, all users
+      # together. It must stay below Postgres' max_connections (100 by default) minus what
+      # connects directly: worker (CELERY_CONCURRENCY), beat, the entrypoint's migrate, an ops
+      # shell, and the 3 superuser_reserved_connections — 60 + ~10 + 3 < 100.
+      # A client that finds no free server connection waits (query_wait_timeout, 120 s) rather
+      # than failing: the queue is the point.
+      MAX_CLIENT_CONN: "${PGBOUNCER_MAX_CLIENT_CONN:-10000}"
+      DEFAULT_POOL_SIZE: "${PGBOUNCER_POOL_SIZE:-20}"
+      RESERVE_POOL_SIZE: "5"
+      RESERVE_POOL_TIMEOUT: "3"
+      MAX_DB_CONNECTIONS: "60"
+      # Transaction pooling never runs the reset query by default. With this, PgBouncer issues
+      # DISCARD ALL whenever a server connection is handed back, so a process that wrongly pins
+      # session state through the pooler (a tenant SET, a SET ROLE) loses it deterministically —
+      # fails closed, never sees another client's tenant — for one extra round trip per
+      # transaction.
+      SERVER_RESET_QUERY_ALWAYS: "1"
+      # Startup parameters PgBouncer cannot track are refused; this one is sent by JDBC/ODBC
+      # tools and is harmless.
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+      # Silent on success (CLAUDE.md "Logging"): no line per client login/logout — with a
+      # connection per request that would be two per request — and no stats every minute
+      # (`SHOW STATS` on the console has them). Pooler errors are still logged.
+      LOG_CONNECTIONS: "0"
+      LOG_DISCONNECTIONS: "0"
+      LOG_STATS: "0"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      # The admin database, as the user PgBouncer knows by itself: answers without Postgres.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432", "-U", "pgbouncer", "-d", "pgbouncer"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      db:
+        condition: service_healthy
 
   # Celery broker + results (db 0) and Django's cache (db 1). Append-only file in a volume:
   # queued tasks survive restarts (settings.py "Durability").

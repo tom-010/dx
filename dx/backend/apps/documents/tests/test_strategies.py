@@ -3,6 +3,7 @@
 
 import math
 from collections.abc import Sequence
+from typing import Any, ClassVar
 
 import pytest
 
@@ -93,7 +94,7 @@ def test_an_html_source_becomes_a_snapshot_without_pages(user: User) -> None:
         assert '<pre data-nid="11">  code\n  more</pre>' in content.html
         assert "<script" not in content.html and "alert" not in content.text
         assert document.heading_title() == "Title"
-        assert document.meta == {"title": "My Doc"}
+        assert document.meta == {"title": "My Doc", "filename": "doc.html"}
         assert content.node(8).text() == "H1\tH2\n1 x\t2"
 
 
@@ -220,3 +221,23 @@ def test_a_line_is_as_wide_as_its_text_not_as_its_widest_run() -> None:
     # The whole line, not the longer of the two runs (which would end at 150 + 9 chars).
     assert line.x1 == pytest.approx(150.0 + extraction.ADVANCE * 10.0 * len(line.text))
     assert line.x1 > 150.0 + extraction.ADVANCE * 10.0 * len(" Hartmann".strip())
+
+
+@pytest.mark.django_db
+def test_an_extractor_whose_configuration_moved_must_say_so(user: User) -> None:
+    """A version is a promise that two snapshots were made the same way, so a config that
+    changed under a version that did not is a failed run, not a quiet lie in the provenance."""
+
+    class Pinned(strategies.PlainTextStrategy):
+        name = "pinned"
+        tool_version = "1"
+        config: ClassVar[dict[str, Any]] = {"model": "one"}
+
+    with acting_as(user):
+        first = snapshot.extractor_row(Pinned())
+        assert first.config == {"model": "one"}
+        assert snapshot.extractor_row(Pinned()) == first  # unchanged: the same row
+
+        Pinned.config = {"model": "two"}
+        with pytest.raises(snapshot.SnapshotError, match="bump its tool_version"):
+            snapshot.extractor_row(Pinned())

@@ -66,6 +66,11 @@ store stays private, and the bundled compose works without a browser-reachable `
   dedup was reversed for them by the documents brief (2026-09-02), because a snapshot pins the
   exact bytes it was extracted from and the extractor's raw output is stored the same way. No
   other app dedups: a store-level mechanism is still where a general one would belong.
+  A `Document` dedups **once more, a layer up**: `Document.md5` is unique per active row per
+  owner, so re-uploading a file the tenant already holds gives the document that is already
+  there rather than a second one over the same blob (`api.store_documents`). Two hashes, two
+  questions: the blob's sha256 is "are these the same bytes", the document's md5 is "have I
+  already filed this file" — and MD5 because it is the one a person can reproduce by hand.
 - Versioning: deleting a document writes a delete marker, the previous version stays (recoverable
   in the console / `list_object_versions`); nothing in the app restores versions yet, and there
   is no lifecycle rule expiring old versions — add one before the store gets big.

@@ -27,6 +27,7 @@ Kriterien hinter allen Entscheidungen, in Prioritätsreihenfolge:
 | Formulare           | react-hook-form + generierte Zod-Schemas                                          |
 | Backend             | Django + **django-ninja** (Pydantic, RPC-förmige Endpoints)                       |
 | Datenbank           | PostgreSQL                                                                        |
+| Connection pooling  | PgBouncer (transaction mode) in front of Postgres for the web process only; workers, commands, shells and tests connect directly (decision 2026-09-03, English) |
 | Multitenancy        | Single DB/schema, row-level: `owner` FK + django-scopes + Postgres RLS (§11, English) |
 | API-Vertrag         | OpenAPI (aus ninja) → **orval** → typisierter TS-Client                           |
 | Auth                | Token-basiert, einheitlich für Web + Native; Authorization in der Service-Schicht |

@@ -22,6 +22,7 @@ export interface ContentOut {
   meta: ContentOutMeta;
   outline: OutlineEntryOut[];
   page_count: number;
+  resumable_pages: number;
   status: ExtractionStatus | null;
   text: string;
 }

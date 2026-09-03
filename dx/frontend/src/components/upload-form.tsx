@@ -38,9 +38,15 @@ export function UploadForm({
 
   function addFiles(list: FileList | null): void {
     if (!list) return;
+    // Read the list *now*, not inside the updater: clearing the input empties this very
+    // FileList object (Chrome hands out the same one), and a drop's dataTransfer is neutered
+    // when the handler returns. React runs the updater later whenever an update for this
+    // state is already queued — a second pick then arrived as zero files, and nothing
+    // happened.
+    const incoming = Array.from(list);
     setSelected((current) => {
       const known = new Set(current.map((file) => `${file.name}:${file.size}`));
-      const added = Array.from(list).filter(
+      const added = incoming.filter(
         (file) => !known.has(`${file.name}:${file.size}`),
       );
       return [...current, ...added];

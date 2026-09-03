@@ -983,7 +983,8 @@ def test_the_request_page_shows_what_the_client_sent_and_what_it_wrote(
     assert "why=test" in body
     assert "&lt;redacted&gt;" in body  # the Authorization header, present but not its value
     assert "&quot;via api&quot;" in body  # the JSON body, pretty-printed
-    assert "wrote 3 versions" in body  # the dataset, its tag link and the tag
+    # the dataset, its tag link, the tag, and the notification the creation sent
+    assert "wrote 4 versions" in body
     assert "Dataset</span>" in body and "Tag</span>" in body
 
 

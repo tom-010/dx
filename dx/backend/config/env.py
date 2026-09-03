@@ -54,11 +54,26 @@ class Env(BaseSettings):
     # browser preload lists) once HTTPS is known to work everywhere — browsers remember it.
     SECURE_HSTS_SECONDS: int = 3600
 
-    # --- Database. Matches the dev database in docker/docker-compose.yml. Query parameters
-    # become psycopg connection options, e.g. `?sslmode=require` for a managed Postgres. The
-    # credentials in the URL are the *runtime* role `app_user`, which row-level security applies
-    # to (CLAUDE.md "Multitenancy"; docker/postgres/10-roles.sh creates the roles).
+    # --- Database. DATABASE_URL is Postgres itself (the dev database in docker/docker-compose.yml).
+    # Query parameters become psycopg connection options, e.g. `?sslmode=require` for a managed
+    # Postgres. The credentials in the URL are the *runtime* role `app_user`, which row-level
+    # security applies to (CLAUDE.md "Multitenancy"; docker/postgres/10-roles.sh creates the roles).
     DATABASE_URL: PostgresDsn = PostgresDsn("postgres://app_user:app_user@localhost:5432/dx")
+    # PgBouncer in front of it (transaction pooling; the `pgbouncer` service of both compose
+    # files, port 6432): same database, same credentials, different host. None = no pooler.
+    DATABASE_POOL_URL: PostgresDsn | None = PostgresDsn(
+        "postgres://app_user:app_user@localhost:6432/dx"
+    )
+    # Connect through DATABASE_POOL_URL instead of DATABASE_URL. **Only the web process** sets
+    # this (the compose `app` services, backend/scripts/serve.sh for runserver): its threads
+    # hold cheap pooler connections and borrow a real one per transaction, which is exactly the
+    # shape of a request — one transaction with `SET LOCAL app.user_id` inside
+    # (apps/core/middleware.py). Transaction pooling drops session state after every commit,
+    # and everything else relies on a session: a Celery worker pins its tenant with a
+    # session-level SET (apps/core/db.py), so do the shells and every command; the test suite
+    # creates and drops databases. They keep DATABASE_URL. The migrator and admin roles always
+    # do (`database_url()`): maintenance wants a real session and holds one connection anyway.
+    DB_POOLED: bool = False
     # Which credentials this process connects with (host/port/database always come from
     # DATABASE_URL): "app" = the URL's own (RLS enforced), "migrator" = DB_MIGRATOR_* (owns the
     # tables: migrate, rls_sync, backups, the test suite), "admin" = DB_ADMIN_* (BYPASSRLS:
@@ -75,9 +90,11 @@ class Env(BaseSettings):
     # DB_ADMIN_USER=app_admin / DB_ADMIN_PASSWORD=app_admin into backend/.env.
     DB_ADMIN_USER: str | None = None
     DB_ADMIN_PASSWORD: str | None = None
-    # Keep connections open between requests for this many seconds (0 = one per request; use 0
-    # behind a transaction-pooling pgbouncer).
-    DB_CONN_MAX_AGE: int = 60
+    # Keep a connection open between requests for this many seconds. 0 = a fresh one per
+    # request: cheap behind the pooler (a SCRAM handshake, no Postgres backend), and the only
+    # leak-free choice for runserver, whose throw-away request threads never close a kept
+    # connection. Raise it (~60) only for a gunicorn that connects to Postgres directly.
+    DB_CONN_MAX_AGE: int = 0
     # Django's cache (sessions, ...): Valkey/Redis, database 1 (Celery uses 0).
     CACHE_URL: str = "redis://localhost:6379/1"
     # Location of the Vite build output (`pnpm build`); collected by collectstatic.
@@ -151,6 +168,19 @@ class Env(BaseSettings):
     def https_only(self) -> bool:
         return self.HTTPS_ONLY if self.HTTPS_ONLY is not None else not self.DEBUG
 
+    def pooled(self, role: DbRole | None = None) -> bool:
+        """Whether `role` (default DB_ROLE) connects through the pooler: DB_POOLED, and only the
+        runtime role — migrator and admin always get a real session."""
+        return self.DB_POOLED and (role or self.DB_ROLE) == "app"
+
+    def database_url(self, role: DbRole | None = None) -> PostgresDsn:
+        """Where `role` connects: DATABASE_POOL_URL when `pooled()`, DATABASE_URL otherwise."""
+        if not self.pooled(role):
+            return self.DATABASE_URL
+        if self.DATABASE_POOL_URL is None:
+            raise ValueError("DB_POOLED=true needs DATABASE_POOL_URL")
+        return self.DATABASE_POOL_URL
+
     def database_credentials(self, role: DbRole | None = None) -> tuple[str, str] | None:
         """(user, password) for `role` (default DB_ROLE); None = the DATABASE_URL's own.
 
@@ -187,12 +217,17 @@ class Env(BaseSettings):
 
 
 def django_database(
-    url: PostgresDsn, *, conn_max_age: int = 0, credentials: tuple[str, str] | None = None
+    url: PostgresDsn,
+    *,
+    conn_max_age: int = 0,
+    credentials: tuple[str, str] | None = None,
+    pooled: bool = False,
 ) -> dict[str, Any]:
     """Translate a Postgres DSN into Django's DATABASES entry format.
 
     Query parameters (`?sslmode=require&connect_timeout=5`) are handed to psycopg as OPTIONS.
     `credentials` replaces the user/password of the URL (`Env.database_credentials()`).
+    `pooled` = the URL is a transaction-pooling PgBouncer (`Env.pooled()`).
     """
     host = url.hosts()[0]
     # pydantic keeps credentials percent-encoded.
@@ -214,6 +249,10 @@ def django_database(
         # The tenant middleware owns the request transaction (`SET LOCAL` has to run inside it,
         # before the view); Django's per-view transactions would start too late. Keep off.
         "ATOMIC_REQUESTS": False,
+        # A named (server-side) cursor lives on the Postgres session, which a transaction pooler
+        # swaps under the client between fetches — Django's one requirement for PgBouncer in
+        # transaction mode. Direct connections keep them (`.iterator()` streams in chunks).
+        "DISABLE_SERVER_SIDE_CURSORS": pooled,
     }
 
 

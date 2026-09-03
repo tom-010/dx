@@ -207,9 +207,13 @@ def fake() -> Iterator[FakeStrategy]:
 def upload(
     user: User,
     name: str = "report.fake",
-    content: bytes = b"fake bytes",
+    content: bytes | None = None,
     content_type: str = "application/x-fake",
 ) -> Document:
+    """One uploaded document. The default content is derived from the name, because a tenant
+    files any given bytes once (`Document.md5`): two uploads that mean two documents have to
+    be two files."""
+    content = f"fake bytes for {name}".encode() if content is None else content
     with acting_as(user):
         (document,) = store_documents(
             user, [SimpleUploadedFile(name, content, content_type=content_type)]

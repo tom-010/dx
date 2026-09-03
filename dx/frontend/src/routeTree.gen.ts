@@ -10,11 +10,14 @@
 
 import { Route as rootRouteImport } from "./routes/__root";
 import { Route as IndexRouteImport } from "./routes/index";
-import { Route as DatasetsRouteImport } from "./routes/datasets";
 import { Route as GalleryRouteImport } from "./routes/gallery";
+import { Route as HealthRouteImport } from "./routes/health";
 import { Route as LoginRouteImport } from "./routes/login";
 import { Route as NotesRouteImport } from "./routes/notes";
+import { Route as NotificationsRouteImport } from "./routes/notifications";
 import { Route as TasksRouteImport } from "./routes/tasks";
+import { Route as DatasetsIndexRouteImport } from "./routes/datasets.index";
+import { Route as DatasetsDatasetIdRouteImport } from "./routes/datasets.$datasetId";
 import { Route as DocumentsIndexRouteImport } from "./routes/documents.index";
 import { Route as DocumentsDocumentIdRouteImport } from "./routes/documents.$documentId";
 import { Route as HistoryResourceObjectIdRouteImport } from "./routes/history.$resource.$objectId";
@@ -25,14 +28,14 @@ const IndexRoute = IndexRouteImport.update({
   path: "/",
   getParentRoute: () => rootRouteImport,
 } as any);
-const DatasetsRoute = DatasetsRouteImport.update({
-  id: "/datasets",
-  path: "/datasets",
-  getParentRoute: () => rootRouteImport,
-} as any);
 const GalleryRoute = GalleryRouteImport.update({
   id: "/gallery",
   path: "/gallery",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const HealthRoute = HealthRouteImport.update({
+  id: "/health",
+  path: "/health",
   getParentRoute: () => rootRouteImport,
 } as any);
 const LoginRoute = LoginRouteImport.update({
@@ -45,9 +48,24 @@ const NotesRoute = NotesRouteImport.update({
   path: "/notes",
   getParentRoute: () => rootRouteImport,
 } as any);
+const NotificationsRoute = NotificationsRouteImport.update({
+  id: "/notifications",
+  path: "/notifications",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const TasksRoute = TasksRouteImport.update({
   id: "/tasks",
   path: "/tasks",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const DatasetsIndexRoute = DatasetsIndexRouteImport.update({
+  id: "/datasets/",
+  path: "/datasets/",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const DatasetsDatasetIdRoute = DatasetsDatasetIdRouteImport.update({
+  id: "/datasets/$datasetId",
+  path: "/datasets/$datasetId",
   getParentRoute: () => rootRouteImport,
 } as any);
 const DocumentsIndexRoute = DocumentsIndexRouteImport.update({
@@ -73,24 +91,30 @@ const LineageResourceObjectIdRoute = LineageResourceObjectIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
-  "/datasets": typeof DatasetsRoute;
   "/gallery": typeof GalleryRoute;
+  "/health": typeof HealthRoute;
   "/login": typeof LoginRoute;
   "/notes": typeof NotesRoute;
+  "/notifications": typeof NotificationsRoute;
   "/tasks": typeof TasksRoute;
+  "/datasets/$datasetId": typeof DatasetsDatasetIdRoute;
   "/documents/$documentId": typeof DocumentsDocumentIdRoute;
+  "/datasets/": typeof DatasetsIndexRoute;
   "/documents/": typeof DocumentsIndexRoute;
   "/history/$resource/$objectId": typeof HistoryResourceObjectIdRoute;
   "/lineage/$resource/$objectId": typeof LineageResourceObjectIdRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
-  "/datasets": typeof DatasetsRoute;
   "/gallery": typeof GalleryRoute;
+  "/health": typeof HealthRoute;
   "/login": typeof LoginRoute;
   "/notes": typeof NotesRoute;
+  "/notifications": typeof NotificationsRoute;
   "/tasks": typeof TasksRoute;
+  "/datasets/$datasetId": typeof DatasetsDatasetIdRoute;
   "/documents/$documentId": typeof DocumentsDocumentIdRoute;
+  "/datasets": typeof DatasetsIndexRoute;
   "/documents": typeof DocumentsIndexRoute;
   "/history/$resource/$objectId": typeof HistoryResourceObjectIdRoute;
   "/lineage/$resource/$objectId": typeof LineageResourceObjectIdRoute;
@@ -98,12 +122,15 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof IndexRoute;
-  "/datasets": typeof DatasetsRoute;
   "/gallery": typeof GalleryRoute;
+  "/health": typeof HealthRoute;
   "/login": typeof LoginRoute;
   "/notes": typeof NotesRoute;
+  "/notifications": typeof NotificationsRoute;
   "/tasks": typeof TasksRoute;
+  "/datasets/$datasetId": typeof DatasetsDatasetIdRoute;
   "/documents/$documentId": typeof DocumentsDocumentIdRoute;
+  "/datasets/": typeof DatasetsIndexRoute;
   "/documents/": typeof DocumentsIndexRoute;
   "/history/$resource/$objectId": typeof HistoryResourceObjectIdRoute;
   "/lineage/$resource/$objectId": typeof LineageResourceObjectIdRoute;
@@ -112,36 +139,45 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
   fullPaths:
     | "/"
-    | "/datasets"
     | "/gallery"
+    | "/health"
     | "/login"
     | "/notes"
+    | "/notifications"
     | "/tasks"
+    | "/datasets/$datasetId"
     | "/documents/$documentId"
+    | "/datasets/"
     | "/documents/"
     | "/history/$resource/$objectId"
     | "/lineage/$resource/$objectId";
   fileRoutesByTo: FileRoutesByTo;
   to:
     | "/"
-    | "/datasets"
     | "/gallery"
+    | "/health"
     | "/login"
     | "/notes"
+    | "/notifications"
     | "/tasks"
+    | "/datasets/$datasetId"
     | "/documents/$documentId"
+    | "/datasets"
     | "/documents"
     | "/history/$resource/$objectId"
     | "/lineage/$resource/$objectId";
   id:
     | "__root__"
     | "/"
-    | "/datasets"
     | "/gallery"
+    | "/health"
     | "/login"
     | "/notes"
+    | "/notifications"
     | "/tasks"
+    | "/datasets/$datasetId"
     | "/documents/$documentId"
+    | "/datasets/"
     | "/documents/"
     | "/history/$resource/$objectId"
     | "/lineage/$resource/$objectId";
@@ -149,12 +185,15 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
-  DatasetsRoute: typeof DatasetsRoute;
   GalleryRoute: typeof GalleryRoute;
+  HealthRoute: typeof HealthRoute;
   LoginRoute: typeof LoginRoute;
   NotesRoute: typeof NotesRoute;
+  NotificationsRoute: typeof NotificationsRoute;
   TasksRoute: typeof TasksRoute;
+  DatasetsDatasetIdRoute: typeof DatasetsDatasetIdRoute;
   DocumentsDocumentIdRoute: typeof DocumentsDocumentIdRoute;
+  DatasetsIndexRoute: typeof DatasetsIndexRoute;
   DocumentsIndexRoute: typeof DocumentsIndexRoute;
   HistoryResourceObjectIdRoute: typeof HistoryResourceObjectIdRoute;
   LineageResourceObjectIdRoute: typeof LineageResourceObjectIdRoute;
@@ -169,18 +208,18 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof IndexRouteImport;
       parentRoute: typeof rootRouteImport;
     };
-    "/datasets": {
-      id: "/datasets";
-      path: "/datasets";
-      fullPath: "/datasets";
-      preLoaderRoute: typeof DatasetsRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
     "/gallery": {
       id: "/gallery";
       path: "/gallery";
       fullPath: "/gallery";
       preLoaderRoute: typeof GalleryRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/health": {
+      id: "/health";
+      path: "/health";
+      fullPath: "/health";
+      preLoaderRoute: typeof HealthRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/login": {
@@ -197,11 +236,32 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof NotesRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/notifications": {
+      id: "/notifications";
+      path: "/notifications";
+      fullPath: "/notifications";
+      preLoaderRoute: typeof NotificationsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/tasks": {
       id: "/tasks";
       path: "/tasks";
       fullPath: "/tasks";
       preLoaderRoute: typeof TasksRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/datasets/": {
+      id: "/datasets/";
+      path: "/datasets";
+      fullPath: "/datasets/";
+      preLoaderRoute: typeof DatasetsIndexRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/datasets/$datasetId": {
+      id: "/datasets/$datasetId";
+      path: "/datasets/$datasetId";
+      fullPath: "/datasets/$datasetId";
+      preLoaderRoute: typeof DatasetsDatasetIdRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/documents/": {
@@ -237,12 +297,15 @@ declare module "@tanstack/react-router" {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  DatasetsRoute: DatasetsRoute,
   GalleryRoute: GalleryRoute,
+  HealthRoute: HealthRoute,
   LoginRoute: LoginRoute,
   NotesRoute: NotesRoute,
+  NotificationsRoute: NotificationsRoute,
   TasksRoute: TasksRoute,
+  DatasetsDatasetIdRoute: DatasetsDatasetIdRoute,
   DocumentsDocumentIdRoute: DocumentsDocumentIdRoute,
+  DatasetsIndexRoute: DatasetsIndexRoute,
   DocumentsIndexRoute: DocumentsIndexRoute,
   HistoryResourceObjectIdRoute: HistoryResourceObjectIdRoute,
   LineageResourceObjectIdRoute: LineageResourceObjectIdRoute,

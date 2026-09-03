@@ -11,6 +11,8 @@ set -eu
 # (config/settings.py). Warnings count as errors: a misconfigured container must not serve.
 python manage.py check --deploy --fail-level WARNING
 
+# The web process connects through PgBouncer (DB_POOLED), whose password check needs Postgres
+# as well, so one successful connection here means both are up.
 attempts=0
 until python manage.py shell -c "from django.db import connection; connection.ensure_connection()" >/dev/null 2>&1; do
   attempts=$((attempts + 1))
@@ -23,9 +25,10 @@ until python manage.py shell -c "from django.db import connection; connection.en
 done
 
 # Only the web process prepares the database; workers start once it is healthy (compose).
-# Schema changes run as the table owner (DB_MIGRATOR_*): migrate, then the row-level security
-# policies for new tables, then the drift check that gates the deploy. gunicorn itself keeps
-# DB_ROLE=app (`app_user`, subject to RLS) — /api/ready refuses anything else.
+# Schema changes run as the table owner (DB_MIGRATOR_*) and, like every maintenance role,
+# straight against Postgres rather than the pooler (config/env.py): migrate, then the row-level
+# security policies for new tables, then the drift check that gates the deploy. gunicorn itself
+# keeps DB_ROLE=app (`app_user`, subject to RLS) — /api/ready refuses anything else.
 if [ "${1:-}" = "gunicorn" ] && [ "${MIGRATE_ON_START:-true}" = "true" ]; then
   python manage.py ensure_bucket
   DB_ROLE=migrator python manage.py migrate --noinput

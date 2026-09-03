@@ -36,7 +36,10 @@ from PIL import Image
 #: one page's render and never across a network call or a database query.
 PDFIUM_LOCK = threading.Lock()
 
-DPI = 150
+#: What a page is rasterized at for the model. 200 rather than 150 because handwriting is
+#: what costs the most resolution: a doctor's marginal note is small, thin and already twice
+#: photocopied, and the reading is only as good as the pixels it is made from.
+DPI = 200
 #: Long-edge cap in pixels: an A0 plan at 300 dpi would be 140 megapixels otherwise.
 MAX_PX = 5000
 #: Thumbnail long edges: a preview card (300 CSS px at 2x) and a table row (48 CSS px at 2x).
@@ -149,10 +152,12 @@ def thumbnail_bytes(image: Image.Image, long_edge: int = THUMB_PX) -> bytes:
     return jpeg_bytes(copy)
 
 
-def render_image(pdf: bytes, number: int, *, dpi: int = DPI, long_edge: int | None = None) -> bytes:
-    """One page as a JPEG — what the workspace draws its region overlay on.
+def render_one(pdf: bytes | Path, number: int, *, dpi: int = DPI) -> RenderedPage:
+    """One page, with the document opened and closed around it — what a worker thread renders.
 
-    Raises `IndexError` for a page the document does not have.
+    `render_pages` is the sequential walk; this is the one page a thread wants without holding
+    a document handle other threads would have to wait on. Raises `IndexError` for a page the
+    document does not have.
     """
     with PDFIUM_LOCK:
         document = pdfium.PdfDocument(pdf)
@@ -168,6 +173,12 @@ def render_image(pdf: bytes, number: int, *, dpi: int = DPI, long_edge: int | No
                 page.close()
         finally:
             document.close()
+    return RenderedPage(number=number, image=image, width=width, height=height)
+
+
+def render_image(pdf: bytes, number: int, *, dpi: int = DPI, long_edge: int | None = None) -> bytes:
+    """One page as a JPEG — what the workspace draws its region overlay on."""
+    image = render_one(pdf, number, dpi=dpi).image
     return jpeg_bytes(image) if long_edge is None else thumbnail_bytes(image, long_edge)
 
 

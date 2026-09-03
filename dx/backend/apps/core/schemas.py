@@ -12,3 +12,21 @@ from pydantic import ConfigDict
 
 class StrictSchema(Schema):
     model_config = ConfigDict(extra="forbid")
+
+
+class SourceRef(Schema):
+    """A reference to any row, for a client that has its own routing table.
+
+    `type` is a lower-cased model label ("datasets.dataset"), `id` that row's UUID as a string.
+    The registries in the SPA (`features/timeline/registry.ts`,
+    `features/notifications/registry.ts`) key on `type` to decide the icon and where a click
+    goes, so the backend never has to know that `/datasets/$datasetId` exists.
+
+    It lives here rather than in each app's `api.py` because two apps hand out the same pair,
+    and pydantic names a component after its class: two identically named schemas in different
+    modules collapse into one entry in `openschema.json` — silently, and with whichever
+    docstring loaded first. One concept, one name, one definition.
+    """
+
+    type: str
+    id: str

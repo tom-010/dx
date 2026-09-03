@@ -11,7 +11,9 @@ from config.settings import *  # noqa: F403  # extends the real settings on purp
 
 # The suite connects as the table owner: it creates the test database and migrates it. Each
 # database test then switches to the runtime role (`SET ROLE app_user`, backend/conftest.py), so
-# row-level security is enforced in tests exactly as in production.
+# row-level security is enforced in tests exactly as in production. Always Postgres itself, never
+# the pooler: creating and dropping databases and `SET ROLE` are session-level, and a transaction
+# pooler would still hold idle connections to a database the runner is trying to drop.
 DATABASES = {
     "default": django_database(env.DATABASE_URL, credentials=env.database_credentials("migrator")),
 }
