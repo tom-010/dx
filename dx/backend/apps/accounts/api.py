@@ -71,6 +71,15 @@ class UserOut(Schema):
     first_name: str
     last_name: str
     is_staff: bool
+    #: The language of this user's data (`accounts.models.Language`): what search analyses
+    #: their text as.
+    language: Language
+
+
+class UserPatch(StrictSchema):
+    """What a user may change about themselves. Only the language today."""
+
+    language: Language | None = None
 
 
 class ApiTokenIn(StrictSchema):
@@ -252,6 +261,17 @@ def register(request: HttpRequest, payload: RegisterIn) -> Status[TokenOut]:
 @router.get("/auth/me", response=UserOut)
 def get_current_user(request: HttpRequest) -> User:
     return current_user(request)
+
+
+@router.patch("/auth/me", response=UserOut)
+def update_current_user(request: HttpRequest, payload: UserPatch) -> User:
+    """Change one's own settings. A language change takes effect on the next search sync: the
+    user's index is rebuilt for the new analyzers (`apps/search/index.py`)."""
+    user = current_user(request)
+    if payload.language is not None:
+        user.language = payload.language
+        user.save(update_fields=["language"])
+    return user
 
 
 @router.post("/auth/refresh", response=TokenOut, auth=None)

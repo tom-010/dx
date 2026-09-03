@@ -6,8 +6,12 @@ there is no DELETE either.
 
     GET  /api/notifications                 the inbox, paginated, `?unread=true` to narrow it
     GET  /api/notifications/unread-count    what the bell shows
-    POST /api/notifications/{id}/read       one message, read
-    POST /api/notifications/read            all of them, read
+    POST /api/notifications/read            the ones the inbox has just shown, read
+
+**Reading is what the inbox does, and only the inbox.** Opening a notification navigates
+somewhere, and a navigation must not quietly change the record — so nothing else in the app
+marks anything read. The page marks the notifications it is showing, by id, which is also why
+this takes a list rather than being "read everything": what is on page two has not been seen.
 
 Like the timeline, the backend ships a `source` (`{type, id}`) and no route: where a
 notification leads is the SPA's registry's business
@@ -22,17 +26,21 @@ from datetime import datetime
 
 from django.db.models import QuerySet
 from django.http import HttpRequest
-from ninja import Router, Schema
+from ninja import Field, Router, Schema
 from ninja.errors import HttpError
 from ninja.pagination import PageNumberPagination, paginate
 
 from apps.accounts.api import current_user
 from apps.accounts.models import User
-from apps.core.schemas import SourceRef
+from apps.core.schemas import SourceRef, StrictSchema
 from apps.notifications import services
 from apps.notifications.models import Notification, NotificationId
 
 router = Router(tags=["notifications"])
+
+#: A cap, not a policy: one request marks at most a page of an inbox
+#: (`NINJA_PAGINATION_PER_PAGE` is 50, its maximum 500).
+MAX_READ_IDS = 500
 
 
 # --- Schemas -------------------------------------------------------------------------------------
@@ -60,7 +68,13 @@ class UnreadCountOut(Schema):
     unread: int
 
 
-class ReadAllOut(Schema):
+class ReadIn(StrictSchema):
+    """The notifications the reader has seen (`POST /api/notifications/read`)."""
+
+    ids: list[uuid.UUID] = Field(max_length=MAX_READ_IDS)
+
+
+class ReadOut(Schema):
     read: int
 
 
@@ -99,15 +113,11 @@ def count_unread_notifications(request: HttpRequest) -> UnreadCountOut:
     return UnreadCountOut(unread=services.unread_for(current_user(request)).count())
 
 
-@router.post("/notifications/read", response=ReadAllOut)
-def read_all_notifications(request: HttpRequest) -> ReadAllOut:
-    """Mark everything read. Returns how many were still unread."""
-    return ReadAllOut(read=services.mark_all_read(current_user(request)))
+@router.post("/notifications/read", response=ReadOut)
+def read_notifications(request: HttpRequest, payload: ReadIn) -> ReadOut:
+    """Mark the named notifications read — the ones the inbox has just shown.
 
-
-@router.post("/notifications/{notification_id}/read", response=NotificationOut)
-def read_notification(request: HttpRequest, notification_id: uuid.UUID) -> Notification:
-    """Mark one read. Idempotent — reading it twice keeps the first timestamp."""
-    notification = get_notification_for(current_user(request), NotificationId(notification_id))
-    notification.mark_read()
-    return notification
+    Idempotent: ones already read keep their first timestamp and are not counted. Ids that are
+    not the caller's do not match their queryset, so they are ignored rather than a 404.
+    """
+    return ReadOut(read=services.mark_read(current_user(request), payload.ids))

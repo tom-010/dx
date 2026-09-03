@@ -40,28 +40,53 @@ def test_creating_a_dataset_puts_a_message_in_the_inbox(auth_client: Client) -> 
     assert notification["source"] == {"type": "datasets.dataset", "id": dataset["id"]}
 
 
+def read(auth_client: Client, ids: list[str]) -> dict[str, Any]:
+    response = auth_client.post(
+        "/api/notifications/read", {"ids": ids}, content_type="application/json"
+    )
+    assert response.status_code == 200, response.content
+    body: dict[str, Any] = response.json()
+    return body
+
+
 def test_the_bell_counts_what_is_unread(auth_client: Client) -> None:
     create_dataset(auth_client, "A")
     create_dataset(auth_client, "B")
     assert auth_client.get("/api/notifications/unread-count").json() == {"unread": 2}
 
-    unread_id = auth_client.get("/api/notifications?unread=true").json()["items"][0]["id"]
-    read = auth_client.post(f"/api/notifications/{unread_id}/read")
-    assert read.status_code == 200
-    assert read.json()["read_at"] is not None
+    first = auth_client.get("/api/notifications?unread=true").json()["items"][0]["id"]
+    assert read(auth_client, [first]) == {"read": 1}
 
     assert auth_client.get("/api/notifications/unread-count").json() == {"unread": 1}
     assert auth_client.get("/api/notifications?unread=true").json()["count"] == 1
     assert auth_client.get("/api/notifications").json()["count"] == 2  # still in the list
 
 
-def test_read_all(auth_client: Client) -> None:
+def test_reading_a_whole_page_at_once(auth_client: Client) -> None:
+    """What the inbox does on arrival: mark everything it is showing, in one request."""
     create_dataset(auth_client, "A")
     create_dataset(auth_client, "B")
+    shown = [item["id"] for item in auth_client.get("/api/notifications").json()["items"]]
 
-    assert auth_client.post("/api/notifications/read").json() == {"read": 2}
+    assert read(auth_client, shown) == {"read": 2}
     assert auth_client.get("/api/notifications/unread-count").json() == {"unread": 0}
-    assert auth_client.post("/api/notifications/read").json() == {"read": 0}
+    assert read(auth_client, shown) == {"read": 0}  # idempotent
+
+
+def test_pagination_leaves_the_pages_it_did_not_show_unread(auth_client: Client) -> None:
+    for name in ("A", "B", "C"):
+        create_dataset(auth_client, name)
+
+    page_one = auth_client.get("/api/notifications?page=1&page_size=2").json()
+    assert page_one["count"] == 3
+    assert len(page_one["items"]) == 2
+
+    assert read(auth_client, [item["id"] for item in page_one["items"]]) == {"read": 2}
+    assert auth_client.get("/api/notifications/unread-count").json() == {"unread": 1}
+
+    page_two = auth_client.get("/api/notifications?page=2&page_size=2").json()
+    assert len(page_two["items"]) == 1
+    assert page_two["items"][0]["read_at"] is None
 
 
 def test_deleting_the_dataset_takes_its_message_with_it(auth_client: Client) -> None:
@@ -80,13 +105,13 @@ def test_another_users_inbox_is_not_visible(
 
     assert other.get("/api/notifications").json() == {"items": [], "count": 0}
     assert other.get("/api/notifications/unread-count").json() == {"unread": 0}
-    assert other.post(f"/api/notifications/{notification_id}/read").status_code == 404
+    assert read(other, [notification_id]) == {"read": 0}
     # ...and the owner's message is untouched.
     assert auth_client.get("/api/notifications").json()["items"][0]["read_at"] is None
 
 
-def test_reading_something_that_does_not_exist_is_a_404(auth_client: Client) -> None:
-    assert auth_client.post(f"/api/notifications/{uuid.uuid7()}/read").status_code == 404
+def test_reading_an_id_that_does_not_exist_changes_nothing(auth_client: Client) -> None:
+    assert read(auth_client, [str(uuid.uuid7())]) == {"read": 0}
 
 
 def test_the_inbox_needs_a_token(client: Client) -> None:

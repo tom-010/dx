@@ -76,15 +76,29 @@ def test_deleting_the_dataset_retires_its_notification(user: User) -> None:
         assert Notification.all_objects.deleted().count() == 1
 
 
-def test_unread_and_mark_all_read(user: User) -> None:
+def test_only_the_named_notifications_are_read(user: User) -> None:
+    """The inbox marks the page it is showing, so what it has not shown stays unread."""
     with acting_as(user):
-        create_dataset_for(user, name="A")
+        first = create_dataset_for(user, name="A")
         create_dataset_for(user, name="B")
+        shown = assert_notified(first, DATASET_CREATED)
 
         assert services.unread_for(user).count() == 2
-        assert services.mark_all_read(user) == 2
-        assert services.unread_for(user).count() == 0
-        assert services.mark_all_read(user) == 0  # nothing left to read
+        assert services.mark_read(user, [shown.pk]) == 1
+        assert services.unread_for(user).count() == 1
+        assert services.mark_read(user, [shown.pk]) == 0  # already read, not counted twice
+
+
+def test_another_users_ids_are_ignored(user: User, other_user: User) -> None:
+    """Not a 404: the queryset is the caller's, so a foreign id simply matches nothing."""
+    with acting_as(other_user):
+        theirs = assert_notified(create_dataset_for(other_user, name="Theirs"), DATASET_CREATED)
+    with acting_as(user):
+        create_dataset_for(user, name="Mine")
+        assert services.mark_read(user, [theirs.pk]) == 0
+        assert services.unread_for(user).count() == 1
+    with acting_as(other_user):
+        assert services.unread_for(other_user).count() == 1  # untouched
 
 
 def test_a_notification_is_not_a_derivation(user: User) -> None:

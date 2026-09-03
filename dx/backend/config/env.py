@@ -114,8 +114,25 @@ class Env(BaseSettings):
     EMAIL_URL: str | None = None
     DEFAULT_FROM_EMAIL: str = "noreply@localhost"
 
-    # --- Google Gemini (google-genai; `manage.py playground gemini`). Unset = it refuses to run.
+    # --- Google Gemini (google-genai; `manage.py playground gemini`, the `gemini-ocr` extractor,
+    # the search embeddings). Unset = those refuse to run.
     GEMINI_API_KEY: str | None = None
+
+    # --- Search (apps/search). OpenSearch holds one disposable index per tenant; the canonical
+    # projection lives in Postgres. Credentials go in the URL (`https://user:pw@host:9200`);
+    # a `https` URL verifies the certificate. Dev: the compose `opensearch` service, no auth.
+    OPENSEARCH_URL: str = "http://localhost:9200"
+    # "opensearch" = the real engine; "memory" = an in-process stand-in with the same contract,
+    # for tests and for a machine without the container (correct, not good — no analyzers).
+    SEARCH_BACKEND: Literal["opensearch", "memory"] = "opensearch"
+    # Which `Embedder` turns text into vectors (apps/search/embeddings.py): "google" = the Gemini
+    # embedding endpoint (needs GEMINI_API_KEY), "hash" = deterministic local vectors (tests,
+    # offline evaluation), "none" = no vectors at all, lexical search only.
+    SEARCH_EMBEDDER: Literal["google", "hash", "none"] = "google"
+    # Model and output size of the Google embedder. Both are part of every index's identity:
+    # changing either makes the next sync build a fresh index and re-embed (apps/search/index.py).
+    SEARCH_EMBEDDING_MODEL: str = "gemini-embedding-2-preview"
+    SEARCH_EMBEDDING_DIMS: int = 768
 
     # --- Error monitoring (https://sentry.io, NOTES.md §8). Unset = off.
     SENTRY_DSN: str | None = None

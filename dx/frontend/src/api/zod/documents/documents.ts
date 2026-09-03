@@ -171,8 +171,9 @@ export const ListExtractionStrategiesResponse = zod.array(
 );
 
 /**
- * Upload one or more files as multipart/form-data (field name `files`). Each gets an
- * extraction queued when an extractor handles its type.
+ * Upload one or more files as multipart/form-data (field name `files`). Only the types in
+ * `SUPPORTED_UPLOAD_FORMATS` are accepted — anything else is a 422 and nothing is stored.
+ * Each gets an extraction queued when an extractor handles its type.
  * @summary Upload Documents
  */
 export const UploadDocumentsBody = zod.object({
@@ -225,6 +226,23 @@ export const UploadDocumentsResponseItem = zod.object({
   view_url: zod.string(),
 });
 export const UploadDocumentsResponse = zod.array(UploadDocumentsResponseItem);
+
+/**
+ * The file types an upload accepts — the file picker filters by exactly these.
+ * @summary List Upload Formats
+ */
+export const ListUploadFormatsResponseItem = zod
+  .object({
+    extensions: zod.array(zod.string()),
+    label: zod.string(),
+    mime_type: zod.string(),
+  })
+  .describe(
+    "A file type `POST \/documents\/upload` accepts (`SUPPORTED_UPLOAD_FORMATS`).",
+  );
+export const ListUploadFormatsResponse = zod.array(
+  ListUploadFormatsResponseItem,
+);
 
 /**
  * Soft delete, and the stored object stays.

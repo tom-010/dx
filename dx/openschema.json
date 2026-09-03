@@ -1776,7 +1776,27 @@
         "title": "PagedTimelineEventOut",
         "type": "object"
       },
-      "ReadAllOut": {
+      "ReadIn": {
+        "additionalProperties": false,
+        "description": "The notifications the reader has seen (`POST /api/notifications/read`).",
+        "properties": {
+          "ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "ReadIn",
+        "type": "object"
+      },
+      "ReadOut": {
         "properties": {
           "read": {
             "title": "Read",
@@ -1786,7 +1806,7 @@
         "required": [
           "read"
         ],
-        "title": "ReadAllOut",
+        "title": "ReadOut",
         "type": "object"
       },
       "ReadyOut": {
@@ -2489,6 +2509,33 @@
           "unread"
         ],
         "title": "UnreadCountOut",
+        "type": "object"
+      },
+      "UploadFormatOut": {
+        "description": "A file type `POST /documents/upload` accepts (`SUPPORTED_UPLOAD_FORMATS`).",
+        "properties": {
+          "extensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Extensions",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "mime_type",
+          "extensions"
+        ],
+        "title": "UploadFormatOut",
         "type": "object"
       },
       "UserOut": {
@@ -3234,7 +3281,7 @@
     },
     "/api/documents/upload": {
       "post": {
-        "description": "Upload one or more files as multipart/form-data (field name `files`). Each gets an\nextraction queued when an extractor handles its type.",
+        "description": "Upload one or more files as multipart/form-data (field name `files`). Only the types in\n`SUPPORTED_UPLOAD_FORMATS` are accepted — anything else is a 422 and nothing is stored.\nEach gets an extraction queued when an extractor handles its type.",
         "operationId": "upload_documents",
         "parameters": [],
         "requestBody": {
@@ -3283,6 +3330,38 @@
           }
         ],
         "summary": "Upload Documents",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/documents/upload-formats": {
+      "get": {
+        "description": "The file types an upload accepts — the file picker filters by exactly these.",
+        "operationId": "list_upload_formats",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UploadFormatOut"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Upload Formats",
         "tags": [
           "documents"
         ]
@@ -4557,15 +4636,25 @@
     },
     "/api/notifications/read": {
       "post": {
-        "description": "Mark everything read. Returns how many were still unread.",
-        "operationId": "read_all_notifications",
+        "description": "Mark the named notifications read — the ones the inbox has just shown.\n\nIdempotent: ones already read keep their first timestamp and are not counted. Ids that are\nnot the caller's do not match their queryset, so they are ignored rather than a 404.",
+        "operationId": "read_notifications",
         "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadIn"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReadAllOut"
+                  "$ref": "#/components/schemas/ReadOut"
                 }
               }
             },
@@ -4577,7 +4666,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Read All Notifications",
+        "summary": "Read Notifications",
         "tags": [
           "notifications"
         ]
@@ -4606,45 +4695,6 @@
           }
         ],
         "summary": "Count Unread Notifications",
-        "tags": [
-          "notifications"
-        ]
-      }
-    },
-    "/api/notifications/{notification_id}/read": {
-      "post": {
-        "description": "Mark one read. Idempotent — reading it twice keeps the first timestamp.",
-        "operationId": "read_notification",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "notification_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Notification Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotificationOut"
-                }
-              }
-            },
-            "description": "OK"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Read Notification",
         "tags": [
           "notifications"
         ]

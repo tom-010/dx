@@ -55,6 +55,26 @@ router = Router(tags=["documents"])
 
 MAX_DOCUMENT_SIZE = 25 * 1024 * 1024  # 25 MiB
 MAX_DOCUMENTS_PER_UPLOAD = 20
+
+
+@dataclass(frozen=True)
+class UploadFormat:
+    """A file type an upload accepts: the label a person reads, the MIME type the blob is
+    stored under, and the file-name extensions the picker filters by."""
+
+    label: str
+    mime_type: str
+    extensions: tuple[str, ...]
+
+
+#: The file types `POST /documents/upload` accepts. The file picker reads this list over the
+#: API (`GET /documents/upload-formats`) and the server checks against it, so a new format is
+#: one entry here and nothing else. It is deliberately *not* `strategies.MIME_STRATEGIES`:
+#: extractors exist for text and html as well, but only the scans this app is for are offered.
+SUPPORTED_UPLOAD_FORMATS: list[UploadFormat] = [
+    UploadFormat(label="PDF", mime_type="application/pdf", extensions=(".pdf",)),
+]
+
 DOWNLOAD_LINK_MAX_AGE = 60 * 60  # seconds
 _DOWNLOAD_SALT = "documents.download"
 SEARCH_LIMIT = 20
@@ -301,6 +321,15 @@ class StrategyOut(Schema):
     mime_types: list[str]
 
 
+class UploadFormatOut(Schema):
+    """A file type `POST /documents/upload` accepts (`SUPPORTED_UPLOAD_FORMATS`)."""
+
+    label: str
+    mime_type: str
+    #: Lower-case, with the dot — what an `<input accept>` wants.
+    extensions: list[str]
+
+
 class SearchHitOut(Schema):
     document_id: uuid.UUID
     title: str
@@ -368,6 +397,9 @@ def validate_upload(files: Sequence[UploadedFile[bytes]]) -> None:
             raise HttpError(422, f"{file.name} is empty")
         if size > MAX_DOCUMENT_SIZE:
             raise HttpError(422, f"{file.name} exceeds {MAX_DOCUMENT_SIZE // (1024 * 1024)} MiB")
+        if mime_type_of(file) not in {fmt.mime_type for fmt in SUPPORTED_UPLOAD_FORMATS}:
+            offered = ", ".join(fmt.label for fmt in SUPPORTED_UPLOAD_FORMATS)
+            raise HttpError(422, f"{file.name}: only {offered} files can be uploaded")
 
 
 def store_documents(user: User, files: Sequence[UploadedFile[bytes]]) -> list[Document]:
@@ -668,7 +700,7 @@ def list_documents(request: HttpRequest, period: str | None = None) -> QuerySet[
 DESCRIPTION_LIMIT = 220
 
 
-def strategy_description(strategy: strategies.ExtractionStrategy) -> str:
+def strategy_description(strategy: type[strategies.ExtractionStrategy]) -> str:
     """The first paragraph of the strategy's docstring, on one line — it is written for the
     person choosing one, so there is nothing else to maintain."""
     first = (strategy.__doc__ or "").strip().split("\n\n")[0]
@@ -686,11 +718,20 @@ def list_extraction_strategies(request: HttpRequest) -> list[StrategyOut]:
             name=strategy.name,
             tool_version=strategy.tool_version,
             description=strategy_description(strategy),
-            mime_types=sorted(
-                mime for mime, name in strategies.MIME_STRATEGIES.items() if name == strategy.name
-            ),
+            mime_types=strategies.mime_types_of(strategy.name),
         )
+        # The registry holds factories, and everything shown here is a class variable — so the
+        # listing describes every strategy without constructing any of them.
         for strategy in sorted(strategies.STRATEGIES.values(), key=lambda s: s.name)
+    ]
+
+
+@router.get("/documents/upload-formats", response=list[UploadFormatOut])
+def list_upload_formats(request: HttpRequest) -> list[UploadFormatOut]:
+    """The file types an upload accepts — the file picker filters by exactly these."""
+    return [
+        UploadFormatOut(label=fmt.label, mime_type=fmt.mime_type, extensions=list(fmt.extensions))
+        for fmt in SUPPORTED_UPLOAD_FORMATS
     ]
 
 
@@ -713,8 +754,9 @@ def search_documents(request: HttpRequest, q: str) -> list[SearchHitOut]:
 def upload_documents(
     request: HttpRequest, files: File[list[NinjaUploadedFile]]
 ) -> Status[list[Document]]:
-    """Upload one or more files as multipart/form-data (field name `files`). Each gets an
-    extraction queued when an extractor handles its type."""
+    """Upload one or more files as multipart/form-data (field name `files`). Only the types in
+    `SUPPORTED_UPLOAD_FORMATS` are accepted — anything else is a 422 and nothing is stored.
+    Each gets an extraction queued when an extractor handles its type."""
     user = current_user(request)
     documents = store_documents(user, files)
     for document in documents:

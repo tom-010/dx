@@ -18,6 +18,16 @@ RefreshTokenId = NewType("RefreshTokenId", uuid.UUID)
 API_TOKEN_PREFIX = "tk_"
 
 
+class Language(models.TextChoices):
+    """The languages a user's data can be in. Explicit per user, never guessed from a browser
+    header: it decides how their text is analysed for search (stemming, stop words — one
+    OpenSearch index per user, built for this language; `apps/search/index.py`) and which
+    translation the API answers in where it has one."""
+
+    GERMAN = "de", "Deutsch"
+    ENGLISH = "en", "English"
+
+
 class User(AbstractUser):
     """The project's user model (`AUTH_USER_MODEL = "accounts.User"`).
 
@@ -27,6 +37,9 @@ class User(AbstractUser):
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    #: The language of this user's data (`Language`). German by default: that is what the
+    #: records this app is built for are written in.
+    language = models.CharField(max_length=5, choices=Language.choices, default=Language.GERMAN)
 
     class Meta(AbstractUser.Meta):
         ordering = ["username"]

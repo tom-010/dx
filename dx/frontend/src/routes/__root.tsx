@@ -155,17 +155,20 @@ function TabBar(): JSX.Element {
 }
 
 /**
- * The bell, with a dot when something is unread.
+ * The bell, with a count when something is unread.
  *
  * It polls its own tiny endpoint (`GET /api/notifications/unread-count`) rather than the
  * inbox: the header is on every page, and the number is the only part of a message the header
- * shows. Reading something invalidates this key, so the dot clears without a round trip.
+ * shows. Polling is the whole mechanism — one integer every five seconds, which at this
+ * project's size is cheaper than any way of pushing it — so nothing else in the app has to
+ * remember that its write might have produced a notification. The inbox invalidates this key
+ * when it marks a page read, so the count drops immediately rather than at the next tick.
  */
 function NotificationBell(): JSX.Element {
   const unread = useCountUnreadNotifications({
     query: {
       queryKey: getCountUnreadNotificationsQueryKey(),
-      refetchInterval: 60_000,
+      refetchInterval: 5_000,
     },
   });
   const count = unread.data?.unread ?? 0;

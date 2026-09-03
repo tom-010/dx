@@ -20,6 +20,7 @@ from apps.core.request_record import BODY_LIMIT, REDACTED, RequestRecord
 from apps.core.testing import acting_as
 from apps.datasets.models import Dataset
 from apps.documents.models import Document
+from apps.documents.testing import uploadable
 
 pytestmark = pytest.mark.django_db
 
@@ -111,7 +112,9 @@ def test_an_upload_records_the_request_but_not_the_file(auth_client: Client, use
     """Django raises on `request.body` once the view has read the files — and a file would not
     belong here if it did not. The request itself is still recorded."""
     upload = SimpleUploadedFile("rows.csv", b"a,b\n1,2\n", content_type="text/csv")
-    response = auth_client.post("/api/documents/upload", data={"files": [upload]})
+    # A CSV is not a type the upload offers; this test is about the record, not the picker.
+    with uploadable("text/csv"):
+        response = auth_client.post("/api/documents/upload", data={"files": [upload]})
     assert response.status_code == 201, response.content
 
     with tenant_context(user.pk):
@@ -144,7 +147,8 @@ def test_a_body_over_the_limit_is_recorded_by_size_only(auth_client: Client, use
 def test_a_lineage_edge_carries_the_request_too(auth_client: Client, user: User) -> None:
     """The import endpoint is the app's one derivation: its edge names the request as well."""
     upload = SimpleUploadedFile("rows.csv", b"a,b\n1,2\n3,4\n", content_type="text/csv")
-    uploaded = auth_client.post("/api/documents/upload", data={"files": [upload]})
+    with uploadable("text/csv"):
+        uploaded = auth_client.post("/api/documents/upload", data={"files": [upload]})
     document_id = uploaded.json()[0]["id"]
     imported = auth_client.post(
         "/api/datasets/import-document",

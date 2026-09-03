@@ -93,6 +93,7 @@ INSTALLED_APPS = [
     "apps.gallery",
     "apps.notes",
     "apps.notifications",
+    "apps.search",
     "apps.timeline",
     # needle: installed-apps (manage.py newapp inserts new apps above this line)
 ]
@@ -361,12 +362,35 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.core.tasks.backup_database",
         "schedule": crontab(hour=3, minute=0),
     },
+    # Search outbox rows a worker never got to (broker down, a poison row that has cooled off):
+    # find the tenants that have any and enqueue their projection (apps/search/tasks.py).
+    "search-outbox-sweep": {
+        "task": "apps.search.tasks.sweep_outbox",
+        "schedule": crontab(minute="*/10"),
+    },
 }
-# Cross-tenant maintenance (the backup dumps every user's rows) runs on its own queue, consumed
-# only by the maintenance worker that connects as the table owner (`celery worker -B -Q
-# maintenance` with DB_ROLE=migrator — docker/docker-compose.prod.yml `beat`). The regular
-# workers run as `app_user` and never see these tasks; row-level security would hide the data.
-CELERY_TASK_ROUTES = {"apps.core.tasks.backup_database": {"queue": "maintenance"}}
+# Cross-tenant maintenance (the backup dumps every user's rows; the search sweep looks at every
+# tenant's outbox) runs on its own queue, consumed only by the maintenance worker that connects
+# as the table owner (`celery worker -B -Q maintenance` with DB_ROLE=migrator —
+# docker/docker-compose.prod.yml `beat`). The regular workers run as `app_user` and never see
+# these tasks; row-level security would hide the data.
+CELERY_TASK_ROUTES = {
+    "apps.core.tasks.backup_database": {"queue": "maintenance"},
+    "apps.search.tasks.sweep_outbox": {"queue": "maintenance"},
+}
+
+
+# Search (apps/search): the engine, the embedder and the embedding model. The pg projection is
+# canonical; the OpenSearch index per tenant is derived and named after the language, the
+# embedding model and the dimensions, so changing any of them means a fresh index, built by the
+# next sync (apps/search/index.py). settings_test.py swaps in the in-memory backend and the
+# deterministic embedder.
+
+OPENSEARCH_URL = env.OPENSEARCH_URL
+SEARCH_BACKEND = env.SEARCH_BACKEND
+SEARCH_EMBEDDER = env.SEARCH_EMBEDDER
+SEARCH_EMBEDDING_MODEL = env.SEARCH_EMBEDDING_MODEL
+SEARCH_EMBEDDING_DIMS = env.SEARCH_EMBEDDING_DIMS
 
 
 # Email — EMAIL_URL (console output when unset; production needs smtp://…, see config/env.py)

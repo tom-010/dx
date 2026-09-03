@@ -21,6 +21,7 @@ from apps.core.storage import ensure_bucket
 from apps.core.testing import acting_as
 from apps.documents.api import get_document_for, store_documents
 from apps.documents.models import Document, DocumentId
+from apps.documents.testing import uploadable
 from config.settings import S3_STORAGE
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ def _keys(storage: S3Storage) -> list[str]:
 
 
 def test_upload_download_delete_through_object_store(s3: S3Storage, user: User) -> None:
-    with acting_as(user):
+    with acting_as(user), uploadable("text/plain"):
         one, two = store_documents(
             user,
             [

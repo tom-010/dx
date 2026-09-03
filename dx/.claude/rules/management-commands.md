@@ -59,6 +59,8 @@ paths:
   `newapp`, `deleteapp`, `newcommand`, `hello_world`, `playground` (a click group of
   experiments: `gemini` via `GEMINI_API_KEY`, `render` = the sample PDF rasterized page by page to PNGs), `tui`, `rls_sync`, `pull_tenant`,
   `load_tenant`, `delete_tenant` (core; the last three are one user's data — `docs/tenant-data.md`). Exception to
+  `extract` (documents; runs any extraction strategy on a file — **stdout only, nothing
+  written**, `--strategy` or a numbered picker, `-f text|html|json|outline`). Exception to
   the click rule: `shell_as` and `shell_admin` subclass Django's `shell` command (`BaseCommand`)
   so the REPL runs in-process inside the pinned tenant context; test them with `call_command`.
 - Tests use `click.testing.CliRunner().invoke(module.command, [...])` and assert on

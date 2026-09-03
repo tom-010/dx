@@ -36,6 +36,7 @@ import type {
   StrategyOut,
   TimelineEntryOut,
   UploadDocumentsBody,
+  UploadFormatOut,
 } from "../model";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
@@ -335,8 +336,9 @@ export const getUploadDocumentsUrl = () => {
 };
 
 /**
- * Upload one or more files as multipart/form-data (field name `files`). Each gets an
- * extraction queued when an extractor handles its type.
+ * Upload one or more files as multipart/form-data (field name `files`). Only the types in
+ * `SUPPORTED_UPLOAD_FORMATS` are accepted — anything else is a 422 and nothing is stored.
+ * Each gets an extraction queued when an extractor handles its type.
  * @summary Upload Documents
  */
 export const uploadDocuments = async (
@@ -420,6 +422,82 @@ export const useUploadDocuments = <
 > => {
   return useMutation(getUploadDocumentsMutationOptions(options));
 };
+export const getListUploadFormatsUrl = () => {
+  return `/api/documents/upload-formats`;
+};
+
+/**
+ * The file types an upload accepts — the file picker filters by exactly these.
+ * @summary List Upload Formats
+ */
+export const listUploadFormats = async (
+  options?: Parameters<typeof customFetch>[1],
+): Promise<UploadFormatOut[]> => {
+  return customFetch<UploadFormatOut[]>(getListUploadFormatsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListUploadFormatsQueryKey = () => {
+  return [`/api/documents/upload-formats`] as const;
+};
+
+export const getListUploadFormatsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listUploadFormats>>,
+  TError = unknown,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listUploadFormats>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListUploadFormatsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listUploadFormats>>
+  > = ({ signal }) => listUploadFormats({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listUploadFormats>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListUploadFormatsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listUploadFormats>>
+>;
+export type ListUploadFormatsQueryError = unknown;
+
+/**
+ * @summary List Upload Formats
+ */
+
+export function useListUploadFormats<
+  TData = Awaited<ReturnType<typeof listUploadFormats>>,
+  TError = unknown,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listUploadFormats>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListUploadFormatsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
 export const getDeleteDocumentUrl = (documentId: string) => {
   return `/api/documents/${documentId}`;
 };

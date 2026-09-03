@@ -20,6 +20,7 @@ from apps.documents.extraction import (
     Extraction,
 )
 from apps.documents.models import Document, StructureSource
+from apps.documents.testing import uploadable
 
 HEADING = "Annual report 😀"
 STRADDLING = "First paragraph spanning two pages"
@@ -196,11 +197,14 @@ def media_root(settings: Settings, tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake() -> Iterator[FakeStrategy]:
-    """The fake strategy, registered for `application/x-fake` for the test's duration."""
+    """The fake strategy, registered for `application/x-fake` for the test's duration — and
+    that type accepted by the upload while it is, so a test can post bytes no extractor of the
+    real world would ever be asked to read (`apps/documents/testing.py`)."""
     strategy = FakeStrategy()
-    strategies.register(strategy, "application/x-fake")
-    yield strategy
-    del strategies.STRATEGIES[strategy.name]
+    strategies.register(FakeStrategy, "application/x-fake")  # the class is the factory
+    with uploadable("application/x-fake"):
+        yield strategy
+    del strategies.STRATEGIES[FakeStrategy.name]
     del strategies.MIME_STRATEGIES["application/x-fake"]
 
 
@@ -214,7 +218,9 @@ def upload(
     files any given bytes once (`Document.md5`): two uploads that mean two documents have to
     be two files."""
     content = f"fake bytes for {name}".encode() if content is None else content
-    with acting_as(user):
+    # Whatever type the test asked for is accepted here — the rule that only PDFs may be
+    # uploaded is the API's, and it is tested against the endpoint (`test_api.py`).
+    with acting_as(user), uploadable(content_type):
         (document,) = store_documents(
             user, [SimpleUploadedFile(name, content, content_type=content_type)]
         )

@@ -20,6 +20,7 @@ from apps.datasets.api import import_dataset_for
 from apps.datasets.models import Dataset, DatasetOptions
 from apps.documents.api import store_documents
 from apps.documents.models import Document, DocumentId
+from apps.documents.testing import uploadable
 
 pytestmark = pytest.mark.django_db
 
@@ -34,7 +35,12 @@ class DocumentEventRow(EventRow, Protocol):
 
 
 def _upload(user: User, name: str = "orders.csv", body: bytes = CSV) -> Document:
-    (document,) = store_documents(user, [SimpleUploadedFile(name, body, content_type="text/csv")])
+    # A CSV is not one of the types the upload offers (`documents.api.SUPPORTED_UPLOAD_FORMATS`);
+    # the import reads whatever is in the library, so the test puts one there.
+    with uploadable("text/csv"):
+        (document,) = store_documents(
+            user, [SimpleUploadedFile(name, body, content_type="text/csv")]
+        )
     return document
 
 

@@ -524,6 +524,11 @@ class HandRolledStrategy(strategies.ExtractionStrategy):
     name = "hand-rolled"
     tool_version = "1"
 
+    def read_file(self, data: bytes, mime_type: str) -> Extraction:
+        """Every strategy can read bytes, even one that writes its own row — that is what
+        makes it runnable by `manage.py extract`."""
+        return Extraction(nodes=[ExtractedNode(tag="p", text="by hand")])
+
     def extract(self, document: Document) -> DocumentContent:
         content = DocumentContent.create(
             operation=None,

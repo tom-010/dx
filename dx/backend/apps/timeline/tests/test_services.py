@@ -14,6 +14,7 @@ from apps.accounts.models import User
 from apps.core.testing import acting_as
 from apps.documents.api import store_documents
 from apps.documents.models import Document
+from apps.documents.testing import uploadable
 from apps.documents.timeline_events import DOCUMENT_UPLOADED
 from apps.timeline import services
 from apps.timeline.contracts import (
@@ -112,7 +113,10 @@ def test_extraction_retitles_the_card(user: User) -> None:
 
     with acting_as(user):
         file = SimpleUploadedFile("notes.txt", b"Kickoff\n\nAgreed.", content_type="text/plain")
-        document = store_documents(user, [file])[0]
+        # Text is extractable but not uploadable (`documents.api.SUPPORTED_UPLOAD_FORMATS`);
+        # this test wants the cheapest extraction there is, not the picker's rule.
+        with uploadable("text/plain"):
+            document = store_documents(user, [file])[0]
         content = snapshot.start_extraction(document)
         assert content is not None
         document.refresh_from_db()

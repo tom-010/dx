@@ -5,6 +5,7 @@ Three calls, and a feature app only ever needs the first two:
     notifications.notify("datasets.created", dataset)   # tell the owner about it
     notifications.remove(dataset)                       # the thing is gone; retire its messages
     notifications.unread_for(user)                      # what the bell counts
+    notifications.mark_read(user, ids)                  # the reader has seen these
 
 `notify` runs in the caller's transaction and has no side effect beyond the row, so the domain
 change and the message land together or not at all. It is an upsert on (source, type): calling
@@ -22,6 +23,7 @@ was built from is nothing.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 from django.db.models import QuerySet
 
@@ -112,14 +114,18 @@ def unread_for(user: User) -> QuerySet[Notification]:
     return Notification.objects.for_user(user).filter(read_at__isnull=True)
 
 
-def mark_all_read(user: User) -> int:
-    """Read everything at once. Returns how many were still unread.
+def mark_read(user: User, ids: Sequence[uuid.UUID]) -> int:
+    """Read the notifications the reader has actually seen. Returns how many were still unread.
+
+    Named ids rather than "everything": the inbox marks the page it is showing, so what is on
+    page two stays unread until it is shown. Ids the user does not own simply do not match —
+    the queryset is theirs — so a foreign id is a no-op, not a 404.
 
     A loop rather than a queryset `.update()`: an `.update()` is versioned by the trigger but
     runs no `save()`, so it would leave the version rows with no caller and no request behind
-    them. An inbox is small enough for this to be the cheaper trade.
+    them. A page of an inbox is small enough for this to be the cheaper trade.
     """
-    pending = list(unread_for(user))
+    pending = list(unread_for(user).filter(pk__in=list(ids)))
     for notification in pending:
         notification.mark_read()
     return len(pending)

@@ -53,6 +53,20 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
   once per distinct text (`apps/core/source.py`). A write through the API also records the
   request that made it — method, path, redacted headers, JSON body — once per request, in
   `core.RequestRecord` (`version.request_id`, `edge.request`; `apps/core/request_record.py`).
+- **A pipeline that saves one row N times: restructure, never un-version.** Capture is a trigger and
+  event tables are append-only — there is no amend. In order: compute in memory and write **once**
+  (`documents.snapshot.write_snapshot`); make each run a new **immutable snapshot** plus a pointer
+  flip rather than an edit (`DocumentContent` + `switch_current`); put durable in-flight state in an
+  **unversioned scratch row** (`HISTORY_EXEMPT` with a reason — `DocumentContentDraft`, rewritten per
+  page, emptied when the snapshot lands). Only when it truly is one row changing state N times, wrap
+  the loop in `history_context("…")` and save with `operation=None`: the versions stay, share one
+  context and read as **one** revision. It matters at payload × count — a growing `jsonb` saved per
+  page is quadratic; thirty small saves are nothing.
+- **Lineage the same way**: an edge is pinned to the version the write produced, so collect sources
+  during the run and pass them once on the write that produces the row anyone would rebuild
+  (`deriving()` nests by replacement, not accumulation; reading via `obj.sources()` already spans
+  versions). `bulk_create` records no edge and no stack — right for structural children (a `Node`
+  belongs to its content; it is not derived from the blob), wrong for anything actually computed.
 - **Soft delete in one line**: `obj.delete()` / `qs.delete()` are soft (a versioned UPDATE of
   `deleted_at`, no cascade), `obj.hard_delete()` / `qs.hard_delete()` really remove the row and
   its history (erasure, credential purging, test teardown only), `Model.objects` hides deleted
@@ -70,7 +84,9 @@ Architecture decisions and rationale live in `NOTES.md` (currently German; the d
 - **Notifications are the same pattern, addressed to a person**: a feature declares a
   `NotificationType` in its `notification_types.py` and calls `notifications.notify(key, obj)` /
   `remove(obj)`; the row carries `title`, an optional `description` and `read_at`, and there is
-  no rebuild — a message belongs to a moment, so it records no lineage either.
+  no rebuild — a message belongs to a moment, so it records no lineage either. **Only the inbox
+  page marks anything read**, by naming the ids it just showed; no other page has a side effect
+  on the record.
 
 ## Where the detail lives
 
@@ -145,6 +161,7 @@ Other little ideas:
 | Soft delete API      | `docs/soft-delete.md` (delete, read, restore, cascade, the one escape hatch) |
 | DB connections       | `docs/db-connections.md` (who holds a connection per process, the runserver + `DB_CONN_MAX_AGE` leak, how to read `pg_stat_activity` against host pids) |
 | Snapshot housekeeping | `DB_ROLE=migrator manage.py prune_contents [--days N] [--keep-latest] [--dry-run]` (retire old non-current extraction snapshots) · `DB_ROLE=migrator manage.py gc_blobs [--dry-run]` (retire blobs nothing references); both soft-delete — `apps/documents/ops.py` |
+| Run an extractor on a file | `cd backend && uv run python manage.py extract FILE [--strategy NAME] [-f text|html|json|outline]` (**writes nothing** — any registered strategy, printed to stdout; omit `--strategy` for a picker. `tesseract` is local and offline, `gemini-ocr` sends page images to Google) |
 | OCR iteration loop   | `cd backend && uv run python manage.py ocr extract FILE.pdf --out out/ --pages 1-3` (pdfium → Gemini → `out/raw/`; needs `GEMINI_API_KEY`; **synthetic/redacted pages only until the legal basis for real records is confirmed**) · `ocr assemble --out out/` (raw → `content.html`, `content.txt`, `nodes.json`, `preview/`) · `ocr run FILE.pdf` = both; `apps/documents/ocr/` |
 | Rebuild the timeline | `cd backend && uv run python manage.py rebuild_timeline [--type KEY] [--user NAME] [--dry-run]` (recomputes `apps/timeline`'s projection from the rows it projects; run once after deploying a new event type) |
 | Lineage demo data    | `cd backend && uv run python manage.py lineage_demo [--clean]` (builds 11 lineage shapes out of ModelA/ModelB — chain, merge, split, diamond, feedback, rebuild, erased, hub, churn, restore, moving — and prints an explorer link per shape) |

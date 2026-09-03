@@ -9,7 +9,7 @@
             tree = Extraction(nodes=[...], pages=[...])           # apps/documents/extraction.py
             return self.snapshot(document, tree)                  # rows, offsets, confidence
 
-    register(DoclingStrategy(), "application/pdf", "image/tiff")
+    register(DoclingStrategy, "application/pdf", "image/tiff")   # the class, not an instance
 
 `ExtractionStrategy` is the abstract base: **takes a `Document`, returns its `DocumentContent`**
 — the snapshot, written and terminal. `self.snapshot(document, tree)` does everything the
@@ -25,9 +25,17 @@ a whole-document failure; report pages that failed through `Extraction.failed_pa
 
 The registry at the bottom is the whole "which strategy for which file" decision:
 `strategy_for_mime()` at upload, `strategy_named()` when the task runs (the `Extractor` row a
-snapshot points at is a strategy's `name` + `tool_version`). Built in: `plain-text`, `html`,
-`pypdf` (born-digital PDFs without OCR, so no confidence), and `gemini-ocr` (opt-in vision
-OCR for scans, `apps/documents/ocr/`).
+snapshot points at is a strategy's `name` + `tool_version`). It holds **factories, not
+instances** — the class is the factory, since `name`/`tool_version`/`config` are class
+variables — so every run constructs its own and nothing is shared between two runs in one
+worker. Built in: `plain-text`, `html`, `pypdf` (born-digital PDFs without OCR, so no
+confidence), `gemini-ocr` (the default for PDFs: vision OCR for scans,
+`apps/documents/ocr/`) and `tesseract` (opt-in, local and offline, real per-word confidence
+but no structure).
+
+`read_file(data, mime_type) -> Extraction` is the strategy proper and needs no database, so
+any strategy runs against a file on disk: `manage.py extract FILE [--strategy NAME]` prints
+what it read and writes nothing.
 """
 
 from __future__ import annotations
@@ -52,7 +60,14 @@ from apps.documents.extraction import (
     HtmlTree,
 )
 from apps.documents.models import Document, DocumentContent, PageState, StructureSource
-from apps.documents.ocr import assembly, gemini_client, page_html, render, run
+from apps.documents.ocr import (
+    assembly,
+    gemini_client,
+    page_html,
+    render,
+    run,
+    tesseract,
+)
 from config.env import env
 
 log = structlog.get_logger(__name__)
@@ -97,9 +112,23 @@ class ExtractionStrategy(ABC):
     config: ClassVar[dict[str, Any]] = {}
 
     @abstractmethod
+    def read_file(self, data: bytes, mime_type: str) -> Extraction:
+        """**The strategy proper**: these bytes, as the extraction tree.
+
+        No `Document`, no snapshot, no database — a file and a MIME type in, a tree out. That
+        is what makes an extractor runnable against a file on disk (`manage.py extract`), and
+        testable without a row. `extract()` below is this plus the write.
+
+        The ambient run helpers a strategy may consult (`snapshot.run_state`,
+        `rebuild_source`, `report_progress`) are null objects outside a run, so the same code
+        path serves both callers.
+        """
+
     def extract(self, document: Document) -> DocumentContent:
-        """The snapshot of `document` produced by this strategy: written, terminal (SUCCEEDED
-        or PARTIAL), not yet current. Raise for a whole-document failure."""
+        """The database path: the tree, then the snapshot — written, terminal (SUCCEEDED or
+        PARTIAL), not yet current. Raise for a whole-document failure."""
+        blob = document.source_blob
+        return self.snapshot(document, self.read_file(blob.read_bytes(), blob.mime_type))
 
     def snapshot(self, document: Document, extraction: Extraction) -> DocumentContent:
         """Write `extraction` as this strategy's snapshot of `document` and return it.
@@ -123,7 +152,12 @@ class TreeStrategy(ExtractionStrategy):
     running the extractor — implement it when the output holds enough to do so.
     """
 
+    def read_file(self, data: bytes, mime_type: str) -> Extraction:
+        return self.parse(data, mime_type)
+
     def extract(self, document: Document) -> DocumentContent:
+        """Overridden only for the rebuild shortcut: a run queued `from_raw=True` reprojects
+        the previous extractor output instead of parsing the file again."""
         from apps.documents import snapshot  # noqa: PLC0415 - snapshot imports this module
 
         blob = document.source_blob
@@ -162,7 +196,7 @@ class PagedStrategy(ExtractionStrategy):
     """
 
     @abstractmethod
-    def read(self, document: Document) -> PagesRead:
+    def read(self, data: bytes) -> PagesRead:
         """Stage 1: the file, page by page, as semantic HTML."""
 
     def date(self, html: str) -> dict[int, DateEstimate]:
@@ -173,8 +207,8 @@ class PagedStrategy(ExtractionStrategy):
         """What to call the finished document; the pipeline falls back to its first heading."""
         return ""
 
-    def extract(self, document: Document) -> DocumentContent:
-        read = self.read(document)
+    def read_file(self, data: bytes, mime_type: str) -> Extraction:
+        read = self.read(data)
         extraction, html = pipeline.assemble(
             read.pages,
             meta=read.meta,
@@ -185,7 +219,7 @@ class PagedStrategy(ExtractionStrategy):
         # The document is addressable now (every tag numbered), so a model can date it node by
         # node before the deterministic stage runs over the result.
         extraction.dates = self.date(html)
-        return self.snapshot(document, extraction)
+        return extraction
 
 
 # --- Built-in strategies ------------------------------------------------------------------------
@@ -259,17 +293,13 @@ class PdfStrategy(PagedStrategy):
     #: version: a snapshot from before the block detection must stay comparable.
     tool_version = f"{pypdf.__version__}+html1"
 
-    def read(self, document: Document) -> PagesRead:
+    def read(self, data: bytes) -> PagesRead:
         from apps.documents import snapshot  # noqa: PLC0415 - snapshot imports this module
 
         source = snapshot.rebuild_source()
-        payload = (
-            _payload_of(source[0])
-            if source is not None
-            else self._read_pdf(document.source_blob.read_bytes())
-        )
+        payload = _payload_of(source[0]) if source is not None else self._read_pdf(data)
         if payload is None:
-            payload = self._read_pdf(document.source_blob.read_bytes())
+            payload = self._read_pdf(data)
         return self._pages(payload)
 
     @staticmethod
@@ -405,7 +435,7 @@ class GeminiOcrStrategy(PagedStrategy):
             )
         return self._reader
 
-    def read(self, document: Document) -> PagesRead:
+    def read(self, data: bytes) -> PagesRead:
         from apps.documents import snapshot  # noqa: PLC0415 - snapshot imports this module
 
         # The state of this run — the pages an earlier attempt already read included. Every
@@ -422,7 +452,6 @@ class GeminiOcrStrategy(PagedStrategy):
         if source is not None:
             inputs = assembly.pages_from_raw(source[0])
         else:
-            data = document.source_blob.read_bytes()
             total = render.page_count(data)
             inputs = []
             for page in run.read_document(
@@ -477,6 +506,70 @@ class GeminiOcrStrategy(PagedStrategy):
         return estimates
 
 
+class TesseractStrategy(PagedStrategy):
+    """`tesseract`: local, offline OCR — the counterpart to `gemini-ocr` on the same file.
+
+    Two OCR strategies for one MIME type is what the registry is for, and they fail in opposite
+    directions: Gemini reads a page the way a person does (headings, tables, the letterhead)
+    and costs a call per page to a third party; tesseract runs on this machine, sends nothing
+    anywhere, and reports no structure at all — every block is a paragraph, and the pipeline's
+    own stages do what can be done from text alone.
+
+    Opt in with `?strategy=tesseract` on `reextract`, or `manage.py extract FILE --strategy
+    tesseract`. It is **not** a default for any MIME type: a scan read as unstructured
+    paragraphs is a worse artifact than one read with its headings, and choosing it should be a
+    decision (usually: no network, or no legal basis for sending the page anywhere).
+
+    The adapter is `apps/documents/ocr/tesseract.py`; this class is the page loop around it.
+    """
+
+    name = "tesseract"
+    #: The engine *major* version this adapter targets, not the build on this machine. It has
+    #: to be readable without running anything — `Extractor` rows and the strategy listing both
+    #: take it off the class — and shelling out at import time would make a missing binary
+    #: break Django's startup rather than this one run. The exact build (`5.3.4`) goes into the
+    #: snapshot's `meta`, where it belongs: a fact about the run, not about the extractor.
+    tool_version = "5"
+    #: `lang` is a *preference*, not a setting: the first pack that is installed wins
+    #: (`tesseract.pick_language`). German leads because that is what this corpus is.
+    config: ClassVar[dict[str, Any]] = {"dpi": render.DPI, "lang": ["deu", "eng"], "psm": 1}
+
+    def read(self, data: bytes) -> PagesRead:
+        """Every page rendered and read, in order. A missing binary or language pack fails the
+        whole document — that is a broken installation, not a page that could not be read."""
+        tesseract.require_binary()
+        language = tesseract.pick_language(list(self.config["lang"]))
+        total = render.page_count(data)
+        if total == 0:
+            raise ExtractionError("the PDF has no pages")
+        pages: list[pipeline.PageHtml] = []
+        raw: dict[str, str] = {}
+        for rendered in render.render_pages(data, dpi=int(self.config["dpi"])):
+            image = rendered.image
+            blocks, tsv = tesseract.read_page(
+                render.png_bytes(image), image.width, image.height, language=language
+            )
+            raw[str(rendered.number)] = tsv
+            pages.append(
+                pipeline.PageHtml(
+                    number=rendered.number,
+                    html=pipeline.page_html(blocks, rendered.number),
+                    width=rendered.width,
+                    height=rendered.height,
+                    thumbnail=render.thumbnail_bytes(image),
+                )
+            )
+            snapshot_progress(len(pages), total)
+        if not any(page.html for page in pages):
+            raise ExtractionError("tesseract read no text on any page")
+        return PagesRead(
+            pages=pages,
+            # The TSV per page: enough to rebuild the artifact without re-running the engine.
+            raw=json.dumps(raw).encode(),
+            meta={"tesseract": tesseract.version(), "lang": language},
+        )
+
+
 # --- Registry ------------------------------------------------------------------------------------
 
 
@@ -484,9 +577,22 @@ class UnknownStrategy(LookupError):
     """No strategy is registered under that name."""
 
 
-STRATEGIES: dict[str, ExtractionStrategy] = {
+#: name → the factory that builds one. **The class is the factory**: `name`, `tool_version` and
+#: `config` are class variables, so the registry can be listed and described without
+#: constructing anything, and `STRATEGIES[name]()` is the construction.
+#:
+#: Factories, not the instances this used to hold, because a strategy is *work in progress*
+#: while it runs: `GeminiOcrStrategy` caches its API client on itself, and a shared singleton
+#: means two runs in one worker share it. One run, one instance, made where the run starts.
+STRATEGIES: dict[str, type[ExtractionStrategy]] = {
     strategy.name: strategy
-    for strategy in (PlainTextStrategy(), HtmlStrategy(), PdfStrategy(), GeminiOcrStrategy())
+    for strategy in (
+        PlainTextStrategy,
+        HtmlStrategy,
+        PdfStrategy,
+        GeminiOcrStrategy,
+        TesseractStrategy,
+    )
 }
 
 #: MIME type → strategy name: the default strategy for an upload of that type.
@@ -507,19 +613,32 @@ MIME_STRATEGIES: dict[str, str] = {
 
 
 def strategy_for_mime(mime_type: str) -> ExtractionStrategy | None:
+    """A fresh strategy for this MIME type, or None where no factory claims it."""
     name = MIME_STRATEGIES.get(mime_type.split(";")[0].strip().lower())
-    return STRATEGIES[name] if name else None
+    return STRATEGIES[name]() if name else None
 
 
 def strategy_named(name: str) -> ExtractionStrategy:
+    """A fresh strategy by name. Every run gets its own — see `STRATEGIES`."""
     try:
-        return STRATEGIES[name]
+        factory = STRATEGIES[name]
     except KeyError:
         raise UnknownStrategy(f"no extraction strategy named {name!r}") from None
+    return factory()
 
 
-def register(strategy: ExtractionStrategy, *mime_types: str) -> None:
-    """Add a strategy, and make it the default for these MIME types."""
+def strategy_names() -> list[str]:
+    """Every registered name, sorted — what a picker offers and `--strategy` accepts."""
+    return sorted(STRATEGIES)
+
+
+def mime_types_of(name: str) -> list[str]:
+    """The MIME types this strategy is the default for."""
+    return sorted(mime for mime, chosen in MIME_STRATEGIES.items() if chosen == name)
+
+
+def register(strategy: type[ExtractionStrategy], *mime_types: str) -> None:
+    """Add a strategy factory, and make it the default for these MIME types."""
     STRATEGIES[strategy.name] = strategy
     for mime_type in mime_types:
         MIME_STRATEGIES[mime_type] = strategy.name

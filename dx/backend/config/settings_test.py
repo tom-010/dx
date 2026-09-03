@@ -38,6 +38,14 @@ STORAGES = {
     },
 }
 
+# Search: the in-process backend and deterministic vectors — no OpenSearch, no Google. The real
+# engine is covered by apps/search/tests/test_opensearch.py (marker `slow`, needs the compose
+# `opensearch`).
+SEARCH_BACKEND = "memory"
+SEARCH_EMBEDDER = "hash"
+SEARCH_EMBEDDING_MODEL = "hash-test"
+SEARCH_EMBEDDING_DIMS = 64
+
 # Cache: in-process, so sessions (cached_db) and anything cached need no Valkey.
 CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 

@@ -95,9 +95,19 @@ paths:
     tree → the content envelope (else the `Document.meta["date_hint"]` / file-metadata prior)
     → inheritance down; dated tags carry `data-date`. Re-dating is a rebuild from `raw_output`
     (`reextract(from_raw=True)`, `TreeStrategy.reproject`), a normal flip, no second lifecycle.
-    `strategies.py`: the abstract `ExtractionStrategy` (`extract(document) -> DocumentContent`,
-    with `self.snapshot(document, tree)` doing the rows), the built-ins `plain-text`, `html`,
-    `pypdf`, and the opt-in `gemini-ocr` (**`ocr/`**: `page_html.py` — the page contract, the
+    `strategies.py`: the abstract `ExtractionStrategy` — **`read_file(data, mime_type) ->
+    Extraction` is the strategy proper** (bytes in, tree out, no `Document` and no database),
+    and `extract(document) -> DocumentContent` is that plus `self.snapshot(document, tree)`
+    doing the rows. That split is what makes `manage.py extract FILE [--strategy NAME]`
+    possible: any registered strategy, run against a file on disk, printed to stdout, nothing
+    written. The **registry holds factories, not instances** — the class is the factory, since
+    `name`/`tool_version`/`config` are class variables, so the listing describes every strategy
+    without constructing one and every run gets its own (`GeminiOcrStrategy` caches its API
+    client on itself). Built-ins: `plain-text`, `html`, `pypdf`, the opt-in local
+    `tesseract` (`ocr/tesseract.py`: pdfium → the binary's TSV → one paragraph per (block,
+    par); asserts the binary and a language pack, prefers `deu`; no structure, and its per-word
+    confidence does not survive the page-HTML seam), and `gemini-ocr` (**`ocr/`**:
+    `page_html.py` — the page contract, the
     versioned prompt and the y-first `data-box` → envelope conversion; `gemini_client.py` —
     `GeminiPageReader` with backoff, thinking at MINIMAL, and **one request per page: no
     review round and no repair call**; `render.py` — pdfium rasterization, one page in memory;
@@ -121,7 +131,12 @@ paths:
     be *stored* never fails the run. That table is deliberately unversioned (`HISTORY_EXEMPT`):
     it is rewritten once per page. `ops.py` +
     the commands `prune_contents` / `gc_blobs` (soft deletes; files stay). `api.py`: multipart
-    `POST /api/documents/upload` (blob + document + a queued extraction per file), paginated
+    `POST /api/documents/upload` (blob + document + a queued extraction per file) — which
+    accepts only the file types in `SUPPORTED_UPLOAD_FORMATS` (PDF today; *not*
+    `strategies.MIME_STRATEGIES`, which is what an extractor can read), served to the file
+    picker as `GET /api/documents/upload-formats` so the SPA filters by exactly what the
+    server checks; a test that needs to store another type says so with
+    `documents.testing.uploadable(...)`. Paginated
     list/get/PATCH/delete, `GET …/download` (signed link names the owner; the view opens
     their `tenant_context`), and the facade: `GET …/content`, `…/pages/{n}`, `…/hit`,
     `…/timeline` (dated nodes; `?source=`/`?max_conf=` make it a review queue),
@@ -166,10 +181,14 @@ paths:
     `source_model` + `source_id`, and `read_at` — the one column the reader owns).
     `contracts.py`: `NotificationData` + the `NotificationType` registry (no `backfill()`, on
     purpose). `services.py`: `notify` (an upsert on (source, type) that refreshes the wording
-    and **never un-reads** something), `remove`, `unread_for`, `mark_all_read`. Reads and one
-    write: paginated `GET /api/notifications` (`?unread=true`),
-    `GET /api/notifications/unread-count` (the bell polls this, not the list),
-    `POST /api/notifications/{id}/read`, `POST /api/notifications/read`. **`sources=[]`**, unlike
+    and **never un-reads** something), `remove`, `unread_for`, `mark_read(user, ids)`. Reads and
+    one write: paginated `GET /api/notifications` (`?unread=true`),
+    `GET /api/notifications/unread-count` (the bell polls this every 5s, not the list),
+    `POST /api/notifications/read` with `{ids: [...]}`. **Reading is the inbox's doing and only
+    the inbox's**: opening a notification navigates somewhere, and a navigation must not quietly
+    change the record — so the page marks the ids it has just shown, and a later page of the
+    list stays unread until the reader gets to it. That is why the endpoint takes a list rather
+    than being "read everything". **`sources=[]`**, unlike
     the timeline: nothing recomputes a message, so an edge would only fill
     `stale_derivations()` with rows no rebuild will act on. A module joins by writing one
     `notification_types.py` (imported by `NotificationsConfig.ready()`) and calling

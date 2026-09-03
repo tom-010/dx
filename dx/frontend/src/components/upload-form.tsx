@@ -14,13 +14,37 @@ type UploadFormProps = {
   title: string;
   /** The primary line in the drop zone — what the user is about to choose. */
   action?: string;
-  /** `accept` attribute of the file input, e.g. "image/*,video/*". */
+  /**
+   * `accept` attribute of the file input, e.g. "image/*,video/*" or
+   * "application/pdf,.pdf" — the picker filters by it, and so does this form: a file
+   * dropped on the zone never went past a picker.
+   */
   accept?: string;
   onUpload: (files: File[]) => void;
   pending: boolean;
   error: string | null;
   uploadedCount: number | null;
 };
+
+/**
+ * Does the file match one entry of an `accept` list? The same three forms the attribute
+ * itself allows: ".pdf", "application/pdf", "image/*".
+ */
+function matches(file: File, entry: string): boolean {
+  const type = file.type.toLowerCase();
+  if (entry.startsWith(".")) return file.name.toLowerCase().endsWith(entry);
+  if (entry.endsWith("/*")) return type.startsWith(entry.slice(0, -1));
+  return type === entry;
+}
+
+function accepted(file: File, accept: string | undefined): boolean {
+  if (!accept) return true;
+  return accept
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+    .some((entry) => matches(file, entry));
+}
 
 /** Multi-file picker; tap to choose, plus drag & drop where there is a pointer. */
 export function UploadForm({
@@ -35,6 +59,7 @@ export function UploadForm({
   const inputId = useId();
   const [selected, setSelected] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
+  const [rejected, setRejected] = useState<string[]>([]);
 
   function addFiles(list: FileList | null): void {
     if (!list) return;
@@ -43,7 +68,14 @@ export function UploadForm({
     // when the handler returns. React runs the updater later whenever an update for this
     // state is already queued — a second pick then arrived as zero files, and nothing
     // happened.
-    const incoming = Array.from(list);
+    const all = Array.from(list);
+    // The `accept` attribute only steers the picker: a drop, and some pickers' "all files",
+    // arrive unfiltered. The server rejects the batch either way — saying it here means the
+    // upload button is never armed with a file that cannot be sent.
+    const incoming = all.filter((file) => accepted(file, accept));
+    setRejected(
+      all.filter((file) => !accepted(file, accept)).map((file) => file.name),
+    );
     setSelected((current) => {
       const known = new Set(current.map((file) => `${file.name}:${file.size}`));
       const added = incoming.filter(
@@ -68,6 +100,7 @@ export function UploadForm({
     if (selected.length === 0) return;
     onUpload(selected);
     setSelected([]);
+    setRejected([]);
   }
 
   return (
@@ -128,6 +161,12 @@ export function UploadForm({
             </li>
           ))}
         </ul>
+      )}
+
+      {rejected.length > 0 && (
+        <p className="text-destructive text-sm">
+          Not a supported file type, left out: {rejected.join(", ")}
+        </p>
       )}
 
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-4">

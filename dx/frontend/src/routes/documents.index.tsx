@@ -1,6 +1,7 @@
 /**
  * The library: every document the reader owns, newest first, grouped by the month its
- * information comes from.
+ * information comes from — the *end* of that span, so a record covering several years sits
+ * where a reader looks for it rather than where it started (`timeOf`).
  *
  * The row shows the paper — a thumbnail of page one — because that is what a person
  * recognises; the file name is the caption, not the object. A status chip appears only when
@@ -38,10 +39,16 @@ import {
   getSearchDocumentsQueryKey,
   useDeleteDocument,
   useListDocuments,
+  useListUploadFormats,
   useSearchDocuments,
   useUploadDocuments,
 } from "@/api/documents/documents";
-import type { DocumentOut, ExtractionStatus, SearchHitOut } from "@/api/model";
+import type {
+  DocumentOut,
+  ExtractionStatus,
+  SearchHitOut,
+  UploadFormatOut,
+} from "@/api/model";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -75,6 +82,23 @@ type DocumentsSearch = {
 
 function optional(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** The `accept` attribute for the formats the API accepts — MIME types and extensions. */
+function acceptOf(formats: UploadFormatOut[] | undefined): string | undefined {
+  if (formats === undefined || formats.length === 0) return undefined;
+  return formats
+    .flatMap((format) => [format.mime_type, ...format.extensions])
+    .join(",");
+}
+
+/** "Choose PDF files" — and just "Choose files" until the API has said which. */
+function actionOf(formats: UploadFormatOut[] | undefined): string {
+  const labels = (formats ?? []).map((format) => format.label);
+  const last = labels.pop();
+  if (last === undefined) return "Choose files";
+  const named = labels.length === 0 ? last : `${labels.join(", ")} or ${last}`;
+  return `Choose ${named} files`;
 }
 
 export const Route = createFileRoute("/documents/")({
@@ -120,6 +144,9 @@ function DocumentsPage(): JSX.Element {
   const upload = useUploadDocuments({
     mutation: { onSuccess: invalidateList },
   });
+  // What may be uploaded is the backend's list, not a constant here: the picker filters by
+  // exactly what the server accepts (`documents.api.SUPPORTED_UPLOAD_FORMATS`).
+  const formats = useListUploadFormats();
   const remove = useDeleteDocument({
     mutation: {
       onSuccess: (): void => {
@@ -220,6 +247,8 @@ function DocumentsPage(): JSX.Element {
       {add && (
         <UploadForm
           title="Add documents"
+          action={actionOf(formats.data)}
+          accept={acceptOf(formats.data)}
           onUpload={(files: File[]): void => upload.mutate({ data: { files } })}
           pending={upload.isPending}
           error={upload.isError ? errorMessage(upload.error) : null}
@@ -365,9 +394,15 @@ function Notices({
  * When a document's information comes from, else when the file arrived. The list sorts and
  * groups by this — a letter written in May belongs under May, not under the day it was
  * scanned — and the row says which of the two it is showing.
+ *
+ * A date here is a *span*, not a point (`apps/documents/dating.py`), and the bound that
+ * decides where it belongs is the **end** of it: a record covering 1998–2004 is a 2004
+ * document to someone scrolling a history, not a 1998 one, and grouping by the start scatters
+ * long spans back into whatever year they happened to begin. `min` is the fallback for a span
+ * that is open at the top ("from 1998 onwards"), where it is the only bound there is.
  */
 function timeOf(document: DocumentOut): { at: Date; origin: boolean } {
-  const bound = document.date?.min ?? document.date?.max ?? null;
+  const bound = document.date?.max ?? document.date?.min ?? null;
   if (bound !== null) return { at: new Date(bound), origin: true };
   return { at: new Date(document.created), origin: false };
 }

@@ -1,4 +1,4 @@
-# Dev infrastructure. `db`, `pgbouncer`, `redis` and `s3` are always started; `app` + `worker`
+# Dev infrastructure. `db`, `pgbouncer`, `redis`, `s3` and `opensearch` are always started; `app` + `worker`
 # (the built image) only with `--profile app`.
 name: dx
 
@@ -17,6 +17,7 @@ x-app-env: &app_env
   S3_ACCESS_KEY: dx
   S3_SECRET_KEY: dxdxdxdx
   S3_BUCKET: dx-media
+  OPENSEARCH_URL: http://opensearch:9200
   DEBUG: "false"
   ALLOWED_HOSTS: '["localhost"]'
   # Plain http on :8080 — the production image refuses to start otherwise (docker/entrypoint.sh
@@ -157,6 +158,45 @@ services:
       timeout: 3s
       retries: 10
 
+  # Search engine (apps/search): one index per tenant, OpenSearch's German/English analyzers,
+  # exact k-NN over the Gemini embeddings, highlighting and typeahead. Postgres stays the truth
+  # — the pg projection (`search_root`/`search_unit`) is canonical and every index here is
+  # disposable, rebuilt in seconds by `manage.py rebuild_search --reindex`. Sized for a laptop:
+  #   - one node, one shard and no replicas per index (the app creates them that way);
+  #   - a 512 MB heap (the full distribution — k-NN, analysis plugins, dashboards' backends — does
+  #     not boot reliably below that; Serial GC because there is nothing to parallelize);
+  #   - the security plugin off (plain http, no password: dev only, port bound to localhost);
+  #   - the performance analyzer agent off (a second JVM otherwise);
+  #   - the disk watermarks off (a laptop disk over 85% full would otherwise turn every index
+  #     read-only, which reads like a bug in the app).
+  # Production needs the security plugin (TLS + a password) and its own decision on sizing.
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m -XX:+UseSerialGC"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      # Indices are created explicitly with their mapping (apps/search/opensearch.py); a typo in
+      # an index name must not quietly create an unmapped one.
+      action.auto_create_index: "false"
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - osdata:/usr/share/opensearch/data
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:9200/_cluster/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
   # The bundled image (frontend + backend). Build it with ./scripts/build.sh.
   app:
     profiles: ["app"]
@@ -185,6 +225,8 @@ services:
         condition: service_healthy
       s3:
         condition: service_healthy
+      opensearch:
+        condition: service_healthy
 
   # Celery worker: same image, same env, different command. Starts once `app` is healthy, i.e.
   # after the entrypoint applied the migrations (only the web process migrates).
@@ -208,3 +250,4 @@ volumes:
   pgdata:
   valkeydata:
   s3data:
+  osdata:

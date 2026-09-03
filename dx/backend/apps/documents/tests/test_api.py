@@ -118,7 +118,9 @@ def test_the_extraction_runs_once_the_upload_commits(
     assert content["outline"] == [{"nid": 2, "tag": "h1", "level": 1, "title": "Annual report 😀"}]
 
 
-def test_upload_deduplicates_identical_files(auth_client: Client, user: User) -> None:
+def test_upload_deduplicates_identical_files(
+    auth_client: Client, user: User, fake: FakeStrategy
+) -> None:
     """The same bytes twice in one batch: one document and one blob, and the batch still
     answers once per file it was given."""
     response = auth_client.post(
@@ -142,6 +144,46 @@ def test_upload_rejects_empty_file(auth_client: Client, user: User) -> None:
 
 def test_upload_without_files_is_a_validation_error(auth_client: Client) -> None:
     assert auth_client.post("/api/documents/upload", {}).status_code == 422
+
+
+def test_upload_accepts_only_the_offered_formats(auth_client: Client, user: User) -> None:
+    """A file type the picker does not offer is a 422, and the batch it was in is not stored —
+    a PDF in the same batch included."""
+    response = auth_client.post(
+        "/api/documents/upload",
+        {
+            "files": [
+                SimpleUploadedFile("scan.pdf", text_pdf(), content_type="application/pdf"),
+                SimpleUploadedFile("notes.txt", b"plain", content_type="text/plain"),
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "notes.txt: only PDF files can be uploaded"}
+    with acting_as(user):
+        assert Document.objects.count() == 0
+
+
+def test_a_pdf_is_uploadable(auth_client: Client, user: User) -> None:
+    """The other half of the rule: the one offered format goes through."""
+    response = auth_client.post(
+        "/api/documents/upload",
+        {"files": [SimpleUploadedFile("scan.pdf", text_pdf(), content_type="application/pdf")]},
+    )
+
+    assert response.status_code == 201, response.content
+    assert response.json()[0]["mime_type"] == "application/pdf"
+
+
+def test_the_offered_formats_are_what_the_upload_accepts(auth_client: Client) -> None:
+    """What the file picker filters by — the same list the upload checks against."""
+    response = auth_client.get("/api/documents/upload-formats")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"label": "PDF", "mime_type": "application/pdf", "extensions": [".pdf"]}
+    ]
 
 
 def test_page_hit_and_search_read_the_current_snapshot(
@@ -311,7 +353,7 @@ def test_lookup_raises_for_unknown_id(user: User) -> None:
         get_document_for(user, DocumentId(uuid.uuid7()))
 
 
-def test_store_documents_does_not_extract_by_itself(user: User) -> None:
+def test_store_documents_does_not_extract_by_itself(user: User, fake: FakeStrategy) -> None:
     with acting_as(user):
         (document,) = store_documents(user, [_file()])
         assert document.latest_content() is None

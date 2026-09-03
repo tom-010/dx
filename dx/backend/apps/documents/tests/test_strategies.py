@@ -161,16 +161,27 @@ def test_an_unreadable_pdf_is_an_extraction_error(user: User) -> None:
 
 
 def test_the_registry_maps_mime_types_to_strategies() -> None:
-    plain = strategies.STRATEGIES["plain-text"]
-    assert strategies.strategy_for_mime("text/plain; charset=utf-8") is plain
+    """The registry holds factories, so a lookup *builds* one — `is` would be wrong here."""
+    assert isinstance(
+        strategies.strategy_for_mime("text/plain; charset=utf-8"), strategies.PlainTextStrategy
+    )
     # A PDF is a scan until proven otherwise, and a scan's own text layer cannot be trusted.
-    assert strategies.strategy_for_mime("application/PDF") is strategies.STRATEGIES["gemini-ocr"]
+    assert isinstance(strategies.strategy_for_mime("application/PDF"), strategies.GeminiOcrStrategy)
     assert strategies.strategy_named("pypdf").name == "pypdf"  # still there, opt-in
+    assert strategies.strategy_named("tesseract").name == "tesseract"  # opt-in, no MIME default
     assert strategies.strategy_for_mime("image/png") is None
     assert strategies.strategy_named("html").tool_version == "1"
     with pytest.raises(strategies.UnknownStrategy):
         strategies.strategy_named("nope")
-    assert str(strategies.STRATEGIES["pypdf"]).startswith("pypdf ")
+    assert str(strategies.strategy_named("pypdf")).startswith("pypdf ")
+    assert "tesseract" in strategies.strategy_names()
+    assert strategies.mime_types_of("gemini-ocr") == ["application/pdf"]
+
+
+def test_every_run_gets_its_own_strategy() -> None:
+    """Why factories: a strategy is work in progress while it runs (`GeminiOcrStrategy` caches
+    its API client on itself), so two runs in one worker must not share one."""
+    assert strategies.strategy_named("pypdf") is not strategies.strategy_named("pypdf")
 
 
 def test_rendering_is_serialized_across_threads() -> None:
@@ -241,3 +252,21 @@ def test_an_extractor_whose_configuration_moved_must_say_so(user: User) -> None:
         Pinned.config = {"model": "two"}
         with pytest.raises(snapshot.SnapshotError, match="bump its tool_version"):
             snapshot.extractor_row(Pinned())
+
+
+def test_read_file_is_the_database_free_half_of_every_strategy() -> None:
+    """The interface `manage.py extract` rests on: bytes in, tree out, no `Document`, no rows.
+
+    `extract()` is that plus the write, which is why the command can run any registered
+    strategy against a file on disk without a database at all.
+    """
+    for name in strategies.strategy_names():
+        strategy = strategies.strategy_named(name)
+        assert type(strategy).read_file is not strategies.ExtractionStrategy.read_file, (
+            f"{name} does not implement read_file"
+        )
+
+    extraction = strategies.strategy_named("plain-text").read_file(
+        b"First block.\n\nSecond block.", "text/plain"
+    )
+    assert [node.text for node in extraction.nodes] == ["First block.", "Second block."]
